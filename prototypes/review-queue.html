@@ -1,0 +1,231 @@
+<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#faf9f5;color:#141413}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
+<!--
+  Reference copy of the claude.ai-hosted review queue prototype (2026-09-25).
+  It depends on the claude.ai artifact runtime (window.claude.use("db")), a
+  hosted document store; see docs/prior-prototype.md for why it is replaced.
+  Outside claude.ai it renders the "Offline view" notice only.
+-->
+<title>cgwalters-bot Review Queue</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+:root{
+  --ground:#f3f5f8; --surface:#ffffff; --ink:#172130; --muted:#5a6677; --line:#d8dee6;
+  --accent:#2a56c6; --accent-soft:#e6ecfb;
+  --p1:#b93b12; --p1-soft:#fbe9e2; --p2:#9a6512; --p2-soft:#f8efdd; --p3:#667385; --p3-soft:#eceff3;
+  --ok:#2c7a4f; --ok-soft:#e2f2e8;
+  --sans:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    color-scheme:dark;
+    --ground:#0e131a; --surface:#161d27; --ink:#e4e9f0; --muted:#95a1b3; --line:#29333f;
+    --accent:#86a6ff; --accent-soft:#1c2842;
+    --p1:#ff8a63; --p1-soft:#3a1d14; --p2:#f0b85a; --p2-soft:#33270f; --p3:#9aa6b8; --p3-soft:#1f2631;
+    --ok:#6fcf97; --ok-soft:#13291d;
+  }
+}
+:root[data-theme="dark"]{
+  color-scheme:dark;
+  --ground:#0e131a; --surface:#161d27; --ink:#e4e9f0; --muted:#95a1b3; --line:#29333f;
+  --accent:#86a6ff; --accent-soft:#1c2842;
+  --p1:#ff8a63; --p1-soft:#3a1d14; --p2:#f0b85a; --p2-soft:#33270f; --p3:#9aa6b8; --p3-soft:#1f2631;
+  --ok:#6fcf97; --ok-soft:#13291d;
+}
+body{background:var(--ground);color:var(--ink);font:15px/1.5 var(--sans);padding-inline:16px;padding-block:0 48px}
+.wrap{max-width:900px;margin:0 auto}
+header.top{position:sticky;top:env(safe-area-inset-top,0px);z-index:5;background:var(--ground);padding-block:14px 10px;border-bottom:1px solid var(--line);display:grid;gap:10px}
+.titlerow{display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:8px 16px}
+h1{font-size:20px;font-weight:600;margin:0;letter-spacing:-.01em;text-wrap:balance}
+.meta{font:12px var(--mono);color:var(--muted)}
+.counts{display:flex;flex-wrap:wrap;gap:6px}
+.count{font:12px var(--mono);font-variant-numeric:tabular-nums;padding:3px 8px;border-radius:4px;background:var(--surface);border:1px solid var(--line);color:var(--muted)}
+.count b{color:var(--ink);font-weight:500}
+.filters{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.chip{font:13px var(--sans);border:1px solid var(--line);background:var(--surface);color:var(--ink);padding:4px 10px;border-radius:999px;cursor:pointer}
+.chip[aria-pressed="true"]{background:var(--accent);border-color:var(--accent);color:var(--surface)}
+select.chip{padding-right:6px}
+.chip:focus-visible,button:focus-visible,textarea:focus-visible,input:focus-visible,a:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.notice{margin-top:14px;padding:10px 12px;border:1px solid var(--line);background:var(--surface);border-radius:6px;color:var(--muted);font-size:14px}
+.list{display:grid;gap:12px;margin-top:14px}
+.group-h{font:12px var(--mono);letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin:14px 0 -2px}
+article.item{background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:14px 16px;display:grid;gap:10px}
+article.item.is-done{opacity:.62}
+.hdr{display:flex;flex-wrap:wrap;gap:6px 8px;align-items:center}
+.pill{font:11px var(--mono);font-weight:500;letter-spacing:.04em;padding:2px 7px;border-radius:4px}
+.pill.p1{color:var(--p1);background:var(--p1-soft)} .pill.p2{color:var(--p2);background:var(--p2-soft)} .pill.p3{color:var(--p3);background:var(--p3-soft)}
+.tag{font:12px var(--mono);color:var(--muted)}
+.state{margin-left:auto;font:11px var(--mono);letter-spacing:.04em;padding:2px 7px;border-radius:4px;color:var(--muted);background:var(--p3-soft)}
+.state.answered{color:var(--accent);background:var(--accent-soft)} .state.done{color:var(--ok);background:var(--ok-soft)} .state.deferred{color:var(--p2);background:var(--p2-soft)}
+h2{font-size:16px;font-weight:600;margin:0;line-height:1.35;text-wrap:balance}
+h2 code,.ctx code{font:.92em var(--mono)}
+.ctx{margin:0;color:var(--ink);max-width:70ch}
+.blocking{font-size:13px;color:var(--muted);margin:0}
+.links{display:flex;flex-wrap:wrap;gap:4px 14px;font-size:13px}
+.links a{color:var(--accent);text-decoration:none;border-bottom:1px solid transparent}
+.links a:hover{border-bottom-color:var(--accent)}
+fieldset{border:0;margin:0;padding:0;display:grid;gap:6px}
+legend{font:12px var(--mono);color:var(--muted);margin-bottom:4px}
+label.opt{display:flex;gap:8px;align-items:flex-start;padding:7px 9px;border:1px solid var(--line);border-radius:6px;cursor:pointer;font-size:14px}
+label.opt:has(input:checked){border-color:var(--accent);background:var(--accent-soft)}
+label.opt input{margin-top:3px;accent-color:var(--accent)}
+.rec{font:11px var(--mono);color:var(--ok);margin-left:6px;white-space:nowrap}
+textarea{width:100%;box-sizing:border-box;min-height:64px;resize:vertical;font:14px/1.45 var(--sans);color:var(--ink);background:var(--ground);border:1px solid var(--line);border-radius:6px;padding:8px 10px}
+.actions{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+button{font:13px var(--sans);font-weight:500;border-radius:6px;padding:6px 12px;cursor:pointer;border:1px solid var(--line);background:var(--surface);color:var(--ink)}
+button.primary{background:var(--accent);border-color:var(--accent);color:var(--surface)}
+button:disabled{opacity:.5;cursor:default}
+.saved{font:12px var(--mono);color:var(--muted)}
+.empty{color:var(--muted);padding:24px 0;text-align:center}
+@media (prefers-reduced-motion:no-preference){article.item{transition:opacity .2s}}
+</style>
+
+<div class="wrap">
+  <header class="top">
+    <div class="titlerow">
+      <h1>Review queue</h1>
+      <span class="meta" id="meta">Loading…</span>
+    </div>
+    <div class="counts" id="counts"></div>
+    <div class="filters" role="group" aria-label="Filters">
+      <button class="chip" id="f-open" aria-pressed="true" type="button">Needs you</button>
+      <button class="chip" id="f-all" aria-pressed="false" type="button">All</button>
+      <select class="chip" id="f-area" aria-label="Area"><option value="">All areas</option></select>
+      <select class="chip" id="f-kind" aria-label="Kind"><option value="">All kinds</option></select>
+    </div>
+  </header>
+  <div class="notice" id="notice" hidden></div>
+  <div class="list" id="list"></div>
+</div>
+
+<script>
+(function(){
+  const $ = (s, r=document) => r.querySelector(s);
+  const state = { items: new Map(), replies: new Map(), filter: "open", area: "", kind: "", db: null, readOnly: false, drafts: new Map() };
+  const KIND_LABEL = {decision:"Decision", review:"Review", action:"Action", credential:"Credential / setting"};
+
+  function fmtTime(iso){ try{ const d=new Date(iso); return d.toLocaleString([], {month:"short",day:"numeric",hour:"2-digit",minute:"2-digit"}); }catch(e){ return ""; } }
+  function el(tag, attrs, ...kids){ const n=document.createElement(tag); if(attrs) for(const [k,v] of Object.entries(attrs)){ if(v==null) continue; if(k==="class") n.className=v; else if(k==="text") n.textContent=v; else n.setAttribute(k,v);} for(const k of kids){ if(k!=null) n.append(k);} return n; }
+  // Render `code` spans from backticks, as text nodes only.
+  function rich(text){ const f=document.createDocumentFragment(); String(text||"").split(/(`[^`]+`)/).forEach(p=>{ if(p.startsWith("`")&&p.endsWith("`")&&p.length>2) f.append(el("code",{text:p.slice(1,-1)})); else f.append(document.createTextNode(p)); }); return f; }
+
+  function statusOf(id){ return (state.replies.get(id)||{}).status || "open"; }
+
+  function renderCounts(){
+    const c = $("#counts"); c.textContent="";
+    const all=[...state.items.values()];
+    const open = all.filter(i=>["open"].includes(statusOf(i.id)));
+    const by = p => open.filter(i=>i.priority===p).length;
+    const answered = all.filter(i=>statusOf(i.id)==="answered").length;
+    const done = all.filter(i=>["done","deferred"].includes(statusOf(i.id))).length;
+    [["P1 open",by(1)],["P2 open",by(2)],["P3 open",by(3)],["Answered",answered],["Done/deferred",done]].forEach(([k,v])=>{ const s=el("span",{class:"count"}); s.append(document.createTextNode(k+" "), el("b",{text:String(v)})); c.append(s); });
+  }
+
+  function fillSelects(){
+    const areas=new Set(), kinds=new Set();
+    for(const i of state.items.values()){ areas.add(i.area); kinds.add(i.kind); }
+    const fa=$("#f-area"), fk=$("#f-kind");
+    const keepA=fa.value, keepK=fk.value;
+    fa.length=1; fk.length=1;
+    [...areas].sort().forEach(a=>fa.append(el("option",{value:a,text:a})));
+    [...kinds].sort().forEach(k=>fk.append(el("option",{value:k,text:KIND_LABEL[k]||k})));
+    fa.value=keepA; fk.value=keepK;
+  }
+
+  async function save(id, patch){
+    if(!state.db || state.readOnly) return;
+    const prev = state.replies.get(id)||{};
+    const next = Object.assign({}, prev, patch, {updatedAt:new Date().toISOString()});
+    try{ await state.db.doc("replies/"+id).set(next); }
+    catch(e){
+      if(e && e.code==="invalid_argument"){ state.readOnly=true; showNotice("Your replies can't be saved from this view (read-only access)."); render(); }
+      else showNotice("Couldn't save the reply ("+(e&&e.code||"error")+"). Try again in a moment.");
+    }
+  }
+
+  function card(item){
+    const rep = state.replies.get(item.id)||{};
+    const st = rep.status||"open";
+    const a = el("article",{class:"item"+((st==="done"||st==="deferred")?" is-done":""), id:"q-"+item.id});
+    const hdr = el("div",{class:"hdr"},
+      el("span",{class:"pill p"+item.priority, text:"P"+item.priority}),
+      el("span",{class:"tag", text:(KIND_LABEL[item.kind]||item.kind)+" · "+item.area}),
+      el("span",{class:"state "+st, text: st==="open"?"needs you":st}));
+    const h = el("h2"); h.append(rich(item.title));
+    a.append(hdr, h);
+    const ctx = el("p",{class:"ctx"}); ctx.append(rich(item.context)); a.append(ctx);
+    if(item.blocking) a.append(el("p",{class:"blocking", text:"Unblocks: "+item.blocking}));
+    if(item.links && item.links.length){ const l=el("div",{class:"links"}); item.links.forEach(x=>l.append(el("a",{href:x.url,target:"_blank",rel:"noopener",text:x.label}))); a.append(l); }
+
+    const draft = state.drafts.get(item.id) || {choice: rep.choice ?? null, text: rep.text ?? ""};
+    if(item.options && item.options.length){
+      const fs=el("fieldset"); fs.append(el("legend",{text:"Choose"}));
+      item.options.forEach((o,idx)=>{
+        const text = typeof o==="string"?o:o.text; const rec = typeof o==="object" && o.recommended;
+        const inp=el("input",{type:"radio",name:"opt-"+item.id,id:"opt-"+item.id+"-"+idx,value:text});
+        if(draft.choice===text) inp.checked=true;
+        if(state.readOnly) inp.disabled=true;
+        inp.addEventListener("change",()=>{ const d=state.drafts.get(item.id)||{choice:rep.choice??null,text:rep.text??""}; d.choice=text; state.drafts.set(item.id,d); });
+        const lab=el("label",{class:"opt",for:inp.id}); const span=el("span"); span.append(rich(text)); if(rec) span.append(el("span",{class:"rec",text:"recommended"}));
+        lab.append(inp, span); fs.append(lab);
+      });
+      a.append(fs);
+    }
+    const ta=el("textarea",{id:"txt-"+item.id,placeholder:"Reply or instructions for the bot (optional)","aria-label":"Reply"});
+    ta.value=draft.text||""; if(state.readOnly) ta.disabled=true;
+    ta.addEventListener("input",()=>{ const d=state.drafts.get(item.id)||{choice:rep.choice??null,text:rep.text??""}; d.text=ta.value; state.drafts.set(item.id,d); });
+    a.append(ta);
+
+    const acts=el("div",{class:"actions"});
+    const bSend=el("button",{class:"primary",type:"button",text:"Send answer"});
+    const bDone=el("button",{type:"button",text:"Done, no action"});
+    const bDefer=el("button",{type:"button",text:"Defer"});
+    const bReopen=el("button",{type:"button",text:"Reopen"});
+    const disabled = !state.db || state.readOnly;
+    [bSend,bDone,bDefer,bReopen].forEach(b=>b.disabled=disabled);
+    bSend.addEventListener("click",async()=>{ const d=state.drafts.get(item.id)||{choice:rep.choice??null,text:rep.text??""}; if(!d.choice && !d.text.trim()){ ta.focus(); return; } bSend.disabled=true; await save(item.id,{choice:d.choice||null,text:d.text||"",status:"answered"}); state.drafts.delete(item.id); });
+    bDone.addEventListener("click",async()=>{ const d=state.drafts.get(item.id)||{}; await save(item.id,{choice:d.choice??rep.choice??null,text:d.text??rep.text??"",status:"done"}); state.drafts.delete(item.id); });
+    bDefer.addEventListener("click",async()=>{ const d=state.drafts.get(item.id)||{}; await save(item.id,{choice:d.choice??rep.choice??null,text:d.text??rep.text??"",status:"deferred"}); state.drafts.delete(item.id); });
+    bReopen.addEventListener("click",async()=>{ await save(item.id,{status:"open"}); });
+    if(st==="open") acts.append(bSend,bDone,bDefer); else acts.append(bSend,bReopen);
+    if(rep.updatedAt) acts.append(el("span",{class:"saved",text:"Saved "+fmtTime(rep.updatedAt)+(rep.ack?" · bot: "+rep.ack:"")}));
+    a.append(acts);
+    return a;
+  }
+
+  function render(){
+    renderCounts();
+    const list=$("#list"); list.textContent="";
+    let items=[...state.items.values()].sort((a,b)=>(a.order??0)-(b.order??0));
+    if(state.filter==="open") items=items.filter(i=>statusOf(i.id)==="open");
+    if(state.area) items=items.filter(i=>i.area===state.area);
+    if(state.kind) items=items.filter(i=>i.kind===state.kind);
+    if(!items.length){ list.append(el("div",{class:"empty",text: state.items.size? "Nothing here needs you. Switch to All to see answered items." : "No items yet."})); return; }
+    let lastP=null;
+    for(const i of items){ if(i.priority!==lastP){ lastP=i.priority; list.append(el("div",{class:"group-h",text:["","Priority 1: blocking or time-sensitive","Priority 2","Priority 3"][i.priority]||("Priority "+i.priority)})); } list.append(card(i)); }
+  }
+
+  function showNotice(t){ const n=$("#notice"); n.textContent=t; n.hidden=false; }
+
+  $("#f-open").addEventListener("click",()=>{ state.filter="open"; $("#f-open").setAttribute("aria-pressed","true"); $("#f-all").setAttribute("aria-pressed","false"); render(); });
+  $("#f-all").addEventListener("click",()=>{ state.filter="all"; $("#f-all").setAttribute("aria-pressed","true"); $("#f-open").setAttribute("aria-pressed","false"); render(); });
+  $("#f-area").addEventListener("change",e=>{ state.area=e.target.value; render(); });
+  $("#f-kind").addEventListener("change",e=>{ state.kind=e.target.value; render(); });
+
+  render();
+
+  (async()=>{
+    const db = window.claude && window.claude.use ? await window.claude.use("db") : null;
+    if(!db){ $("#meta").textContent="Offline view"; showNotice("Replies need the live page on claude.ai; this view can't load or save them."); return; }
+    state.db=db;
+    try{ const user = await window.claude.use("user"); const can = user ? await user.can("data.write") : null; if(can===false){ state.readOnly=true; showNotice("You can read this queue but not reply from this account."); } }catch(e){}
+    db.doc("meta/info").onSnapshot(s=>{ const d=s.exists?s.data():null; $("#meta").textContent = d ? ("Compiled "+fmtTime(d.compiledAt)+(d.note?" · "+d.note:"")) : "Live"; }, ()=>{});
+    db.collection("items").onSnapshot(snap=>{ state.items=new Map(snap.docs.map(d=>[d.id, Object.assign({id:d.id}, d.data())])); fillSelects(); render(); }, e=>showNotice("Couldn't load the queue ("+e.code+"). Reload the page."));
+    db.collection("replies").onSnapshot(snap=>{ state.replies=new Map(snap.docs.map(d=>[d.id, d.data()])); render(); }, e=>showNotice("Couldn't load saved replies ("+e.code+"). Reload the page."));
+  })();
+})();
+</script>
+
+</body></html>

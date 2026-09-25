@@ -1,0 +1,44 @@
+# The claude.ai prototype
+
+The first review queue was a single HTML page published as a private
+claude.ai artifact (2026-09-25). A reference copy is in
+[prototypes/review-queue.html](../prototypes/review-queue.html).
+
+It showed 67 items the bot had compiled from the Workstream board,
+fork PR bodies and analysis gists: decisions, reviews, actions and
+credential/setting requests, each with a priority, an area, context, links,
+and for decisions a list of options with one marked as recommended. For each
+item you could pick an option, write a reply, or mark it done or deferred.
+
+Its storage was the artifact runtime's hosted document store
+(`window.claude.use("db")`): an `items` collection that the bot wrote with a
+tool call, and a `replies` collection the page wrote (empty when this was
+written).
+
+## What it got right
+
+- One screen of "things that need you", sorted by priority, with the
+  question and the recommended option up front. That's the shape to keep.
+- Decisions as explicit options, not free text, so answering takes one tap.
+- A phone-friendly layout and plain-DOM rendering (no `innerHTML` for
+  untrusted text).
+
+## Why it is being replaced
+
+- **A lookaside database.** Items and replies lived in a hosted store that
+  is neither git nor markdown: no history, no diffs, no review, readable by
+  the bot only through one vendor's tool, and invisible to every other
+  tool. That's exactly what the source-of-truth principle rules out.
+- **A copy, not a view.** The items were a snapshot compiled from the
+  board and PRs, so they went stale as soon as the bot moved on, and a
+  reply had to be copied back to the board by hand or by another job.
+- **No forge actions.** It couldn't show a diff, edit a commit message,
+  sign off or promote; those need the forge's API with your own identity.
+- **Tied to one host.** It only worked inside claude.ai, so it could never
+  serve the personal Forgejo.
+
+The replacement keeps the queue's shape but reads it from markdown files in
+a git repository and writes answers back as commits made as you; see
+[design.md](design.md). The prototype's items map one-to-one onto that
+format (`kind`, `priority`, `area`, `options`, `links`) and are migrated
+with the board.
