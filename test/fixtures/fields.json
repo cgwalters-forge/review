@@ -1,0 +1,9 @@
+[
+  {"id": 101, "name": "Title", "data_type": "title"},
+  {"id": 102, "name": "Status", "data_type": "single_select"},
+  {"id": 103, "name": "Why", "data_type": "text"},
+  {"id": 104, "name": "Priority", "data_type": "single_select"},
+  {"id": 105, "name": "Org", "data_type": "single_select"},
+  {"id": 106, "name": "Branch", "data_type": "text"},
+  {"id": 107, "name": "Gist", "data_type": "text"}
+]
