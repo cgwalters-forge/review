@@ -1,128 +1,129 @@
 # review: design
 
-Status: proposal, 2026-09-25. Tracks
-[cgwalters-bot/cgwalters-bot#8](https://github.com/cgwalters-bot/cgwalters-bot/issues/8).
-It builds on the pivot plan's review-workflow part
+Status: proposal, revised 2026-09-25 after an independent fact-check.
+Tracks
+[cgwalters-bot/cgwalters-bot#8](https://github.com/cgwalters-bot/cgwalters-bot/issues/8)
+and builds on the review-workflow part of the pivot plan
 ([gist](https://gist.github.com/cgwalters-bot/17b14e3407e4cb30bda7cb03e58e2481)).
-Choices marked **Decision** are recommendations for cgwalters to accept or
-overrule. The questions for him are at the end.
+Each **Decision** is a recommendation for cgwalters to accept or overrule.
+The questions for him are at the end.
 
 ## Summary
 
-- **Source of truth.** Work items become markdown files with YAML front matter
-  in an ordinary git repository (`items/<slug>.md`, provisionally in
-  `cgwalters-forge/workstream`). The app writes answers and field edits as
-  commits made as you, through the contents API, which both GitHub and Forgejo
-  support with a blob-sha precondition. The bot reads them with `git pull`.
-  The Projects v2 board becomes a one-way mirror, then optional. PRs, their
-  descriptions and their commits stay where they are: on the forge and in git.
-- **Static site?** For Forgejo, yes: its OAuth2 provider accepts public
-  clients with PKCE, and the token endpoint honours the instance's `[cors]`
-  settings. For GitHub, almost: everything except the OAuth code exchange
-  works from a static page. That exchange still needs the client secret, and
-  `github.com/login/*` sends no CORS headers. GitHub's own "SPA support" is
-  on its roadmap as Paused. So GitHub needs a ~200-line stateless relay. It
-  runs on `forge`, serves the static files too, and keeps no database.
-- **Auth.** A new, dedicated GitHub App, `cgwalters-review`, used only
-  through user-to-server tokens. The tokens expire after 8 hours, are limited
-  to where the app is installed, and are attributed to you. The refresh token
-  never reaches JavaScript: it stays in a sealed HttpOnly cookie. On Forgejo,
-  an OAuth2 application with scoped grants. The bot's own app (`cgwaltersbot`)
-  is never involved.
-- **Stack.** The browser app is strict TypeScript with Preact, bundled to
-  static files. The relay and the bot-side `review-items` CLI are Rust. A
-  forge adapter interface has GitHub and Forgejo implementations.
-- **Sign-off.** On GitHub, a reword or sign-off is pure API: new commits
-  reusing each original tree, then a compare-and-swap ref update. Forgejo has
-  no create-commit API, so on your instance it's done in the browser with
-  isomorphic-git, which needs one `app.ini` setting.
-- **Prior art.** Nothing does this already. Borrow Backlog.md's file format,
-  Gerrit NoteDb's "state changes are commits with trailers", Sveltia CMS's
-  dual-forge auth, and ReviewStack's per-commit review UI.
+- **Source of truth.**
+  - Work items become markdown files with a small, restricted front matter
+    in an ordinary git repository: `items/<slug>.md`, provisionally in
+    `cgwalters-forge/workstream`.
+  - The app writes your answers as commits, through the contents API.
+  - The bot reads them with `git pull`. It trusts an answer only if **you
+    pushed** the commit that introduced it, which it checks against the
+    forge's push log, not the commit's author fields.
+  - PRs, their descriptions and their commits stay where they already are,
+    on the forge and in git.
+  - The Projects board becomes a one-way mirror, and later optional.
+- **Static site?**
+  - Forgejo: yes. Its OAuth2 provider accepts public clients with PKCE, and
+    its token endpoint honours the instance's `[cors]` settings.
+  - GitHub: everything except the OAuth code exchange. That still requires
+    the client secret, and `github.com/login/*` has no CORS; GitHub's
+    single-page-app work is Paused. So GitHub needs a small stateless relay.
+  - Both are served tailnet-only from `forge` with `tailscale serve`.
+- **Auth.**
+  - GitHub: a dedicated GitHub App, `cgwalters-review`, used only through
+    user-to-server tokens. They expire after 8 hours, are limited to where
+    the app is installed, and are attributed to you. The relay is a
+    token-mediating backend (RFC 10017 §6.2) that keeps the refresh token in
+    a sealed HttpOnly cookie.
+  - Forgejo: an OAuth2 application with scoped grants.
+  - The bot's own app, `cgwaltersbot`, is never involved.
+- **Shape.**
+  - A shared item-format library, plus two thin client-side apps, one for
+    GitHub and one for Forgejo. Both are strict TypeScript.
+  - The relay and the bot's `review-items` CLI are Rust.
+  - The served code is deployed only from commits you approved, and the bot
+    can't touch what's served.
+- **Sign-off.**
+  - GitHub: pure API. New commits reuse each original tree, then a
+    compare-and-swap ref update.
+  - Forgejo: no commit-creation API. The browser uses isomorphic-git with a
+    pre-push head check, or the relay does the rewrite server-side.
+- **Prior art.** Nothing does this already. We borrow ideas from Gerrit
+  NoteDb, Backlog.md, Sveltia CMS and ReviewStack.
 
 ## 1. Source of truth: git and markdown
 
 ### What must be stored
 
-1. The queue: what needs you, by priority. Today that's the Workstream board
-   (Projects v2: Status, Priority, Workflow, Org, Why, Branch, Gist, and
-   draft bodies) plus questions scattered through Why fields, fork-PR
-   bot-meta sections and gists. The claude.ai prototype copied 67 of them
-   into a hosted store.
-2. Your answers to decisions.
-3. Review actions on forge PRs: description edits, reworded or signed-off
-   commits, `/promote`.
+1. **The queue: what needs you, by priority.** Today that's spread across:
+   - the Workstream board (Projects v2, owned by the `cgwalters-bot` user):
+     Status, Priority, Workflow, Org, Why, Branch, Gist, and draft bodies;
+   - questions in Why fields, fork-PR bot-meta sections and gists;
+   - the claude.ai prototype, which copied 67 of them into a hosted store.
+2. **Your answers** to decisions, and your triage approvals (triage → todo).
+3. **Review actions on forge PRs:** description edits, reworded or
+   signed-off commits, `/promote`.
 
-Item 3 already has a native home: the PR is a forge object, and commits are
-git. The app edits those in place and adds no store of its own. The question
-is items 1 and 2.
+Item 3 already has a native home: the PR is a forge object, and its commits
+are git. The app edits them in place and adds no store of its own. The open
+question is where items 1 and 2 live.
 
 ### Options
 
-**(a) A git repository of markdown work items.** One file per item, with
-front matter for the fields and markdown sections for the prose.
+**(a) A git repository of markdown work items.** One file per item.
 - History, diffs and blame come from git.
-- Plain text portable to any forge, or none; readable in any editor or on
-  the forge's web UI.
-- Concurrency: the contents API update requires the blob sha you last read,
-  and rejects stale writes on both
-  [GitHub](https://docs.github.com/en/rest/repos/contents#create-or-update-file-contents)
-  and Forgejo (`sha` is required; a mismatch is `ErrSHADoesNotMatch` in
-  [services/repository/files/update.go](https://codeberg.org/forgejo/forgejo/src/branch/forgejo/services/repository/files/update.go)).
-  The bot writes with `git pull --rebase` and push. Edits from the two sides
-  touch different parts of a file (you: answers; the bot: status and
-  results), so rebases stay clean.
-- Cost: a sync job if the board is kept, and a migration.
+- It's plain text: portable to any forge, or none.
+- Both forges' contents API refuse an update whose blob `sha` is stale:
+  - [GitHub](https://docs.github.com/en/rest/repos/contents#create-or-update-file-contents)
+    documents 409/422;
+  - on Forgejo a mismatch is `ErrSHADoesNotMatch`, returned as 409 (`routers/api/v1/repo/file.go`).
+- The costs: a board sync if the board is kept, a migration, and a trust
+  check (below).
 
 **(b) Issues or PRs as the markdown source, with labels for status.**
-- Also markdown, and Forgejo has issue and label APIs.
-- But neither forge versions issue bodies in git, and neither has a
-  precondition on `PATCH` of an issue or PR body. It is last-writer-wins,
-  which is exactly why `bot-pr get-body`/`set-body` has to dig through
-  GitHub's edit history to avoid clobbering your edits.
-- Issues scatter across repositories, many of them upstream, where the
-  bot's queue has no business. A dedicated tracker repo solves that, but it
-  becomes (a) without the git history.
+- Neither forge versions issue bodies in git.
+- Neither has a precondition on `PATCH` of a body: last writer wins. That's
+  why `bot-pr set-body` has to reconstruct your edits from GitHub's edit
+  history.
+- A dedicated tracker repo of issues is (a) without the git history.
 
 **(c) Projects v2 draft bodies (today).**
-- Not git; no diffs; GraphQL only; the GraphQL quota is shared by every
-  agent.
-- GitHub Apps can't access user-owned projects
-  ([report](https://dev.to/mfauveau/why-your-github-app-cant-see-your-personal-projects-4d39),
+- Not git, and GraphQL only, on a quota every agent shares.
+- GitHub Apps can't access user-owned projects: there's no account-level
+  Projects permission, and reports say "Resource not accessible by
+  integration" ([dev.to](https://dev.to/mfauveau/why-your-github-app-cant-see-your-personal-projects-4d39),
   [discussion](https://github.com/orgs/community/discussions/64849)).
-- No Forgejo equivalent. Forgejo's REST API has no project, board or column
-  endpoints at all: none in
-  [the swagger spec](https://codeberg.org/forgejo/forgejo/src/branch/forgejo/templates/swagger/v1_json.tmpl).
-  [forgejo#5330](https://codeberg.org/forgejo/forgejo/issues/5330) is open,
-  and the large PR [forgejo#9384](https://codeberg.org/forgejo/forgejo/pulls/9384)
-  was closed to be split up.
+- Forgejo's REST API has no project endpoints at all (none in
+  [the swagger spec](https://codeberg.org/forgejo/forgejo/src/branch/forgejo/templates/swagger/v1_json.tmpl)).
+  [forgejo#5330](https://codeberg.org/forgejo/forgejo/issues/5330) is
+  open, and [forgejo#9384](https://codeberg.org/forgejo/forgejo/pulls/9384)
+  was closed unmerged to be split up.
 
-**Decision: (a).** It's the only option that is git and markdown, portable
-to Forgejo, and has a real concurrency primitive on both forges. Issues
-remain what they are: upstream conversations the items link to.
+**Decision: (a).** It's the only option that is git plus markdown, portable to
+Forgejo, and has a concurrency primitive on both forges.
 
 ### Item format
 
-This follows [Backlog.md](https://github.com/MrLesk/Backlog.md) where it can.
-It's the closest existing format: markdown tasks with YAML front matter,
-actively maintained, with a CLI and an MCP server.
+The format is loosely modelled on
+[Backlog.md](https://github.com/MrLesk/Backlog.md) (markdown tasks with front
+matter) but is **not compatible with its tooling**. Backlog.md expects
+`task-N - Title.md` names, an `id`, and its own status values.
 
 ```markdown
 ---
+format: 1
 title: "composefs varlink: keep the org.composefs prefix?"
-status: needs-human        # triage todo in-progress draft needs-human in-review done
-priority: P2               # P0..P3
-workflow: branch           # branch analysis pr manual
-kind: decision             # work decision review action credential
+status: needs-human
+priority: P2
+rank: 35
+workflow: branch
+kind: decision
 org: composefs
-links:
-  - https://github.com/composefs/composefs-rs/issues/651
-pr: https://github.com/cgwalters-forge/composefs-rs/pull/7   # the forge PR, if any
-gist: []
+links: [https://github.com/composefs/composefs-rs/issues/651]
+pr: https://github.com/cgwalters-forge/composefs-rs/pull/7
 created: 2026-09-24
 ---
 
-Why this item exists, and the latest result, in a few sentences.
+Why this item exists and the latest result, in a few sentences.
 
 ## Questions
 
@@ -130,604 +131,660 @@ Why this item exists, and the latest result, in a few sentences.
 
 The name can't change after v1, and the Go server already uses it.
 
-- [ ] Register composefs.org and keep org.composefs (recommended)
-- [ ] Switch to io.github.composefs.*
-- [ ] Keep the name without owning the domain
+- A) Register composefs.org and keep org.composefs (recommended)
+- B) Switch to io.github.composefs.*
+- C) Keep the name without owning the domain
 
-#### Answer
-
+<!-- answer q1 BEGIN -->
+<!-- answer q1 END -->
 ```
 
-Rules:
-- One file per item. The slug is stable, and the file name is the item's
-  identity (`items/composefs-varlink-name-domain.md`). Done items stay in
-  place with `status: done`; nothing else needs cleaning up.
-- `## Questions` holds one `### qN:` subsection per question, each with
-  option checkboxes and an `#### Answer` block. The app answers by checking
-  one box and writing under `#### Answer`. Everything else is the bot's.
-- Every commit carries trailers, as in Gerrit's
-  [NoteDb](https://gerrit-review.googlesource.com/Documentation/note-db.html),
-  where review state changes are commits whose footers carry the state:
-  `Item: composefs-varlink-name-domain`, `Status: needs-human`,
-  `Answered: q1`. `git log --format='%(trailers)' -- items/X.md` is then
-  the item's audit log, with no extra store.
-- Front matter holds only the current state, which is what `grep`, the app
-  and the board mirror read.
-- The files hold no private data. The same rule as the board applies: an item
-  about a private repository refers to it only by URL. If that's too
-  limiting, make the repository private; the app doesn't care.
+**Rules:**
+- **Front matter is a restricted YAML subset:**
+  - exactly one `key: value` per line;
+  - values are plain or double-quoted scalars, or a flow list `[a, b]`;
+  - no comments, anchors or multi-line values.
 
-The format gets a written spec (`docs/items-format.md`) and a fixtures
-directory (input file, expected parse, and expected output after an edit).
-Both the TypeScript and the Rust implementations test against the fixtures.
+  Both sides can then edit one field by rewriting one line, and a full YAML
+  parser still reads the file.
+  - This avoids needing format-preserving YAML libraries. The TypeScript
+    `yaml` library reflows aligned trailing comments: a test with yaml 2.9.1
+    changed two lines to set one field. On the Rust side the only candidate,
+    `yaml-edit`, is young.
+- **`format: 1`** versions the schema. Unknown keys and unknown sections are
+  preserved byte-for-byte, and fixtures check it.
+- **Values:**
+  - `status`: triage, todo, in-progress, draft, needs-human, in-review or
+    done.
+  - `priority`: P0 to P3.
+  - `rank`: orders items within a priority (Projects keeps manual order;
+    files need it spelled out).
+  - `workflow`: branch, analysis, pr or manual.
+  - `kind`: work, decision, review, action or credential.
+- **Answer blocks are delimited by BEGIN/END markers, not headings.**
+  - The app writes only between the markers of one question. It records the
+    chosen letter as a first line `choice: A`, followed by free markdown.
+  - The bot never writes between the markers, so the two writers never
+    touch the same lines.
+  - Headings, lists or anything else inside an answer are just content.
+  - A literal `<!-- answer ... END -->` line typed in an answer is escaped by
+    the app.
+- **One file per item.** The slug is its identity, and done items stay in
+  place.
+- **Every commit carries trailers**, as Gerrit's NoteDb records review state
+  in commit footers (defined in
+  [ChangeNoteFooters.java](https://gerrit.googlesource.com/gerrit/+/refs/heads/master/java/com/google/gerrit/server/notedb/ChangeNoteFooters.java)).
+  - Examples: `Item: composefs-varlink-name-domain`, `Status: needs-human`,
+    `Answered: q1`.
+  - `git log --format='%(trailers)' -- items/X.md` is then the item's
+    history.
+  - Trailers are claims for humans and tools to read, not proof of anything
+    (see Trust).
+- **No private data.** Same rule as the board: an item about a private
+  repository refers to it only by URL. The repository could be private
+  instead; the app doesn't care.
 
-### Who writes what, and how
+The format gets a spec (`docs/items-format.md`) and fixtures, shared by the
+TypeScript and Rust test suites:
+- parse fixtures;
+- round-trip fixtures (unchanged bytes out);
+- edit fixtures, including "set one field → exactly one line of diff" and
+  "answer q1 → only lines between q1's markers change".
 
-- **You, through the app:** answers, and edits to `status`, `priority` and
-  `workflow`. Each is one `PUT /repos/{o}/{r}/contents/items/X.md` carrying
-  the blob sha the app read. The commit is authored as you, because a user
-  token acts as the user
-  ([GitHub](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/authenticating-with-a-github-app-on-behalf-of-a-user)).
-  On a 409 or 422 (stale sha), the app refetches, reapplies your edit (it
-  knows the section it touched) and retries. It shows a conflict only if the
-  same answer block changed underneath.
-  - The app also rewrites YAML front matter with a format-preserving parser
-    ([eemeli/yaml](https://eemeli.org/yaml/)'s Document API), so a status
-    change is a one-line diff.
-- **You, anywhere else:** editing the file in your editor, in the forge's
-  web editor, or in `jj`, is equally valid. That's the point of the design.
-- **The bot:** a small `review-items` CLI (Rust, in this repository) replaces
-  `bot-board set`. For each change it fetches, edits, commits with trailers,
-  and pushes; on a non-fast-forward push it rebases and retries. A text
-  conflict never needs a merge: the bot's edits are programmatic ("set
-  status to X"), so it resets to the new upstream and reapplies them.
-- **Trust.** The bot acts on an answer only if the commit that wrote it is
-  authored by the `cgwalters` login. It checks the author via
-  `GET /repos/{o}/{r}/commits/{sha}` (`author.login`), not the git author
-  string. Only cgwalters and cgwalters-bot get write access to the
-  repository.
-  - Contents-API commits made with a user token are not signed by GitHub
-    ([discussion](https://github.com/orgs/community/discussions/148686)), so
-    "Verified" can't be the check.
+### Who writes what
+
+- **You, through the app:** answers, triage approvals, and edits to
+  `status`, `priority`, `rank` and `workflow`.
+  - Each is one `PUT /repos/{o}/{r}/contents/items/X.md` carrying the blob
+    `sha` the app read. The precondition is per file, not per branch head.
+  - On a conflict (409 or 422), or a 5xx, the app refetches, reapplies your
+    edit and retries with backoff.
+    - The 5xx case matters on Forgejo: its contents API commits in a
+      temporary clone and pushes back, so a race with another push surfaces
+      as a 500 (`services/repository/files/temp_repo.go`,
+      `routers/api/v1/repo/file.go`).
+    - The app shows a conflict only if the same answer block changed
+      underneath.
+  - GitHub asks that contents writes be serialised, so the app sends one at
+    a time.
+- **You, anywhere else:** your editor, the forge's web editor, `jj`. All are
+  equally valid, and the trust check below covers them.
+- **The bot:** the `review-items` CLI (Rust, in this repository) replaces
+  `bot-board set`.
+  - It fetches, applies its edit, commits with trailers, and pushes.
+  - Its edits are programmatic ("set status to X"), so on a rejected push it
+    resets to the new upstream and reapplies them. It never merges or
+    rebases text. Neighbouring front-matter lines touched by both sides would
+    conflict in a rebase, so it doesn't rebase.
+
+### Trust: the bot acts only on what you pushed
+
+**The rule:** the bot acts on an answer, or on a triage → todo approval, only
+if the commit that introduced those lines was **pushed by the `cgwalters`
+login**.
+
+**Author fields are not evidence.**
+- GitHub links a commit to a user "by matching the email address", and your
+  email is public.
+- Both forges' contents and commit APIs accept arbitrary `author` and
+  `committer` fields. On Forgejo see `services/repository/files/file.go`.
+- So the bot's token, if prompt-injected, could create a commit that looks
+  like it's yours.
+- GitHub also doesn't sign contents-API commits made with a user token.
+  Only requests "authenticated as the GitHub App or bot" with no custom
+  author or committer are signed ("Signature verification for bots" in
+  [about commit signature verification](https://docs.github.com/en/authentication/managing-commit-signature-verification/about-commit-signature-verification)).
+  So "Verified" doesn't help either.
+- Trailers are claims too.
+
+**How the bot checks** (`review-items answered`):
+1. For each answer block or status line that changed since the last check,
+   `git blame` the lines. This is per line, not per file: your commit on top
+   of a bot commit doesn't vouch for the bot's lines. That gives the
+   introducing commit C.
+2. Find the push that introduced C:
+   - **GitHub:** [`GET /repos/{o}/{r}/activity`](https://docs.github.com/en/rest/repos/repos#list-repository-activities)
+     lists ref updates with `before`, `after` and `actor` (checked live on
+     this repository).
+   - **Forgejo:** `GET /repos/{o}/{r}/activities/feeds`, where a
+     `commit_repo` entry has `act_user`, `ref_name`, and the pushed range in
+     its content (`CompareURL`, and `Commits`, which is truncated to
+     `FEED_MAX_COMMIT_NUM`, so use the range).
+   - C was introduced by the push whose range contains it: reachable from
+     `after`, and not from `before`.
+3. Act only if that push's actor is `cgwalters`. Otherwise report "unverified
+   answer" to him and ignore it.
+
+This works for contents-API commits, which record a push by the token's
+user, and equally for your own `git push`.
+- Restrict the repository's write access to `cgwalters` and `cgwalters-bot`.
+- The bot runs the check on every poll, well within any activity-log
+  retention. How long that log is retained is undocumented; see the open
+  questions.
 
 ### How the bot consumes answers
 
-The coordinator loop already polls (`bot-notify`, `bot-pr inbox`,
-`bot-watch`). It gains one step:
-- `git -C ~/.cache/bot-work/workstream pull --ff-only`, then
-  `review-items answered --since <last seen commit>`.
-- That lists items with a new answer by cgwalters, from the commit trailers
-  and the diff.
-- The last-seen commit is a local ref, `refs/bot/seen`. Losing it only means
-  re-reading answers that have already been acted on. Acting on an answer
-  ends with the bot's own commit (status back to `in-progress`, trailer
-  `Acted-on: q1`), so re-reading one is harmless.
+The coordinator loop gains one step next to `bot-notify`, `bot-pr inbox` and
+`bot-watch`:
+- `git pull --ff-only` of the items clone;
+- then `review-items answered --since refs/bot/seen`, which lists items with
+  verified new answers.
+- Acting on an answer ends with the bot's own commit (e.g.
+  `Acted-on: q1`), so losing the local `refs/bot/seen` ref only means
+  re-reading answers it has already acted on.
 
-This is cheaper than today's polling: one `git fetch` instead of GraphQL
-board reads.
+This is one `git fetch` plus one activity call per poll, where today it's
+GraphQL board reads.
 
-### The board, and migration
+### The board, and what the mirror loses
 
-- **Decision: the markdown repository is authoritative, and the Projects v2
-  board becomes a derived, one-way mirror.**
-  - `review-items sync-board` updates the board from the files after each
-    push. It sets Status, Priority, Workflow, Org, Branch and Gist, puts a
-    link to the file in Why, and uses the existing `bot-board` field
-    resolution.
-  - Board edits are overwritten on the next sync, so triage moves to the
-    app, or to editing the file.
-  - Once the app covers triage (v1), the mirror is optional. Keep it only if
-    you still like the GitHub board view on the phone.
-  - Two-way sync is deliberately out of scope: it would make the board a
-    second source of truth.
-- **Migration** is one-time and scripted, `review-items import`:
-  1. Read `bot-board list --json`, plus `bot-board show` for draft bodies.
-  2. Write one file per item: Why becomes the body; Branch and Gist become
-     links; the `PVTI_` id goes in front matter as `project-item:`, so the
-     sync can find each card.
-  3. Merge in the prototype's 67 JSON items, matched by their `board_item`
-     id or added as new `kind: decision` items. Their options become
-     checkboxes.
-  4. Commit it all as one reviewable commit.
-  5. Then switch `bot-board set` callers to `review-items set`.
-  - The `bot-state:` archived items (poll state and the lease) are not work
-    items and stay on the board for now. Moving them to git is a separate
-    change: a git ref is a natural lease, since pushes are compare-and-swap.
-- **Forgejo:** the same format in a repository on your instance
-  (`cgwalters/workstream` there). The app can show several item
-  repositories in one queue.
+**Decision: the files are authoritative. The Projects board becomes a
+derived, one-way mirror** (`review-items sync-board`, using `bot-board`'s
+field resolution). What that changes:
+
+- **Board edits are overwritten.** State this in the board's description. The
+  sync reports any field that differs from the files before overwriting it,
+  so a stray edit is visible rather than silently lost. Triage moves to the
+  app or the files.
+- **Ordering.** Manual in-priority ordering on the board has no equivalent
+  in files, so `rank:` carries it and the sync orders cards by it.
+- **Live cards.** Issue and PR cards on the board show live state; a file's
+  `status` doesn't update itself. `bot-watch` already notices merges and
+  closes; it now rewrites the files (e.g. `status: done`), and the mirror
+  follows.
+- **Answer channels today:** Why-field edits, draft-body edits, and your
+  comments on fork PRs. Why and body edits become answer blocks. PR comments
+  and `/promote` stay as they are, via `bot-pr inbox`.
+- **Issue assignments.** `bot-notify` today adds issues you assign to the bot
+  to the board. It will create an item file instead, with `status: todo`,
+  since it's your action, verified by the notification's actor as now.
+- **Ownership.** The board belongs to the `cgwalters-bot` user, and the
+  pivot plan moves the bot to an org project. The mirror follows wherever the
+  board goes. Nothing in this design needs the board, so after v1 keep it
+  only if you like the board view.
+
+**Migration** is one-time and scripted (`review-items import`), and the result
+is reviewed as a single commit:
+- one file per board item: Why becomes the body; Branch and Gist become
+  links; the `PVTI_` id goes in `project-item:`;
+- the prototype's 67 items, merged by their `board_item` id, with options
+  lettered.
+
+Then the callers of `bot-board set` switch to `review-items`. The
+`bot-state:` archived items (poll state, the lease) aren't work items and
+stay put for now.
 
 ## 2. Static-site feasibility
 
 | | GitHub | Forgejo (your instance) |
 |---|---|---|
-| REST API from a browser | Yes: `api.github.com` sends `access-control-allow-origin: *` and exposes `ETag` and the rate-limit headers (checked with curl, 2026-09-25) | Yes, with `[cors] ENABLED=true` in `app.ini` ([source](https://codeberg.org/forgejo/forgejo/src/branch/forgejo/modules/setting/cors.go), [middleware](https://codeberg.org/forgejo/forgejo/src/branch/forgejo/routers/api/shared/middleware.go)) |
-| PKCE | Yes, S256 only, since [2025-07-14](https://github.blog/changelog/2025-07-14-pkce-support-for-oauth-and-github-app-authentication/) | Yes, S256 and plain. Required for public clients (`AuthorizeOAuth` in [routers/web/auth/oauth.go](https://codeberg.org/forgejo/forgejo/src/branch/forgejo/routers/web/auth/oauth.go)) |
-| Code exchange without a client secret | **No.** `client_secret` is required even with PKCE ([docs](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-user-access-token-for-a-github-app)). GitHub "does not distinguish between public and confidential clients" (changelog above). | **Yes.** The secret is checked only for `ConfidentialClient` apps (`handleAuthorizationCode`, same file) |
-| CORS on the token endpoint | **No.** `OPTIONS` and `POST` to `/login/oauth/access_token` and `/login/device/code` return no `Access-Control-*` headers (curl, 2026-09-25). Staff say it is unsupported ([discussion #15752](https://github.com/orgs/community/discussions/15752)). The fix, [roadmap#1153](https://github.com/github/roadmap/issues/1153) "Single page app support for GitHub Apps", was labelled **Paused** on 2026-08-13. | **Yes, when `[cors]` is enabled.** `/login/oauth/access_token` is wrapped by `optionsCorsHandler()` ([routers/web/web.go](https://codeberg.org/forgejo/forgejo/src/branch/forgejo/routers/web/web.go)). Codeberg answers the preflight with `access-control-allow-origin: *`. Send `client_id` in the form body, not in Basic auth: `Authorization` isn't in the allowed headers. |
-| Device flow | Needs no secret, but has no CORS either, so it's only useful for a CLI | n/a |
-| Commit rewriting | Git Data API from the browser | No API. Needs git over smart HTTP, which needs `[repository] ACCESS_CONTROL_ALLOW_ORIGIN` (off by default) |
+| REST API from a browser | Yes. `api.github.com` sends `access-control-allow-origin: *` and exposes `ETag` and the rate-limit headers (curl, 2026-09-25) | Yes, with `[cors] ENABLED=true` ([cors.go](https://codeberg.org/forgejo/forgejo/src/branch/forgejo/modules/setting/cors.go); `/api` always allows `Authorization`, per `routers/api/shared/middleware.go`) |
+| PKCE | S256 only, since [2025-07-14](https://github.blog/changelog/2025-07-14-pkce-support-for-oauth-and-github-app-authentication/) | S256 and plain, **required** for public clients (`AuthorizeOAuth` in [routers/web/auth/oauth.go](https://codeberg.org/forgejo/forgejo/src/branch/forgejo/routers/web/auth/oauth.go)) |
+| Code exchange without the secret | **No.** `client_secret` is required even with PKCE ([docs](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-user-access-token-for-a-github-app)); GitHub "does not distinguish between public and confidential clients" | **Yes** for apps not marked confidential (the secret is checked only for `ConfidentialClient`) |
+| CORS on the token endpoint | **No.** Preflight and POST to `/login/oauth/access_token` and `/login/device/code` return no `Access-Control-*` (curl). In [#15752](https://github.com/orgs/community/discussions/15752), staff said CORS on the token endpoint is not supported yet. [roadmap#1153](https://github.com/github/roadmap/issues/1153), "Single page app support for GitHub Apps [Preview]", was labelled **Paused** on 2026-08-13, and its plan caps SPA refresh tokens at possibly ~24h | **Yes**, when `[cors]` is enabled. `optionsCorsHandler()` wraps `/login/oauth/access_token` ([web.go](https://codeberg.org/forgejo/forgejo/src/branch/forgejo/routers/web/web.go)). Its allowed headers are only `[cors] HEADERS`, so send `client_id` in the body, not Basic auth |
+| Rewriting commits | Git Data API | No API: every `git/*` route is read-only except notes. Needs git smart HTTP with `[repository] ACCESS_CONTROL_ALLOW_ORIGIN` |
 
-**Verdict.**
-- **Forgejo: fully static.** It needs a public OAuth2 client with PKCE, plus
-  `[cors]` and `[repository] ACCESS_CONTROL_ALLOW_ORIGIN` set to the app's
-  origin.
-  - [Sveltia CMS](https://sveltiacms.app/en/docs/backends/gitea-forgejo) and
-    [Decap CMS](https://decapcms.org/docs/gitea-backend/) already do
-    serverless PKCE against Forgejo.
-- **GitHub: static plus a stateless relay.** Everything is static except the
-  OAuth code exchange and refresh. The relay holds the client secret and a
-  cookie-sealing key; it stores nothing.
-  - This is the pattern every browser GitHub tool uses:
-    [prose/gatekeeper](https://github.com/prose/gatekeeper),
-    [sveltia-cms-auth](https://github.com/sveltia/sveltia-cms-auth),
-    [utterances-oauth](https://github.com/utterance/utterances-oauth),
-    [Giscus](https://github.com/giscus/giscus/blob/main/SELF-HOSTING.md),
-    Decap's Netlify provider, and
-    [ReviewStack](https://github.com/facebook/sapling/blob/main/eden/contrib/reviewstack.dev/src/NetlifyLoginDialog.tsx),
-    which uses Netlify's hosted OAuth proxy, or a pasted PAT elsewhere.
-  - GitHub's own
+**Verdict:**
+- **Forgejo is fully static.** It needs a public OAuth2 client with PKCE,
+  plus the `[cors]` and git-HTTP CORS settings.
+  [Sveltia CMS](https://sveltiacms.app/en/docs/backends/gitea-forgejo) and
+  [Decap CMS](https://decapcms.org/docs/gitea-backend/) do exactly this.
+- **GitHub is static plus a stateless relay** for the code exchange and
+  refresh. It's the pattern used by
+  [prose/gatekeeper](https://github.com/prose/gatekeeper),
+  [sveltia-cms-auth](https://github.com/sveltia/sveltia-cms-auth),
+  [utterances-oauth](https://github.com/utterance/utterances-oauth),
+  [Giscus](https://github.com/giscus/giscus/blob/main/SELF-HOSTING.md) and
+  [ReviewStack](https://github.com/facebook/sapling/blob/main/eden/contrib/reviewstack.dev/src/NetlifyLoginDialog.tsx)
+  (Netlify's proxy, or a PAT).
+  - GitHub's
     [best practices](https://docs.github.com/en/apps/creating-github-apps/about-creating-github-apps/best-practices-for-creating-a-github-app)
-    concede that a public client "cannot secure your client secret" and
-    would have to ship it. We won't do that.
-- **The zero-server GitHub fallback** is a pasted fine-grained PAT. It's fine
-  for v0 read-only, and it stays available as an option. It isn't the target,
-  as you said.
+    concede a public client would have to ship its secret.
+- **Fallback with no server:** a pasted fine-grained PAT, which is fine for
+  the v0 read-only queue.
 
-**Hosting.** Serve the static bundle and the relay from one origin on
-`forge`, under HTTPS, with `tailscale serve` and the MagicDNS certificate
-(`https://forge.<tailnet>.ts.net/review/`).
-- HTTPS isn't optional. PKCE S256 uses `crypto.subtle`, which only exists
-  in [secure contexts](https://developer.mozilla.org/en-US/docs/Web/API/SubtleCrypto),
-  and `Secure` cookies need it too.
-- Plain `http://forge` would only work with `plain` PKCE on Forgejo and no
-  GitHub at all.
-- One origin means the refresh cookie is first-party, and the Content
-  Security Policy can be tight.
-- A phone reaches it through the Tailscale app. Funnel is needed only for
-  access without Tailscale.
+**Hosting: tailnet only.**
+- One origin on `forge` via `tailscale serve`, with the MagicDNS HTTPS
+  certificate: `https://forge.<tailnet>.ts.net/review/`. All your devices,
+  the phone included, are on the tailnet.
+- Public exposure (Funnel, GitHub Pages) is out of scope. If it were ever
+  wanted: Pages can't set response headers, so the CSP would go in a
+  `<meta>` tag, where `frame-ancestors` doesn't work.
+- **Why HTTPS:**
+  - service workers, `Secure` cookies and `crypto.randomUUID` need a secure
+    context;
+  - GitHub callbacks other than loopback should be HTTPS.
+  - S256 PKCE by itself could work over plain HTTP with a pure-JS SHA-256
+    and `crypto.getRandomValues`, which isn't restricted to secure contexts
+    ([MDN](https://developer.mozilla.org/en-US/docs/Web/API/SubtleCrypto)).
+- **Note:** Tailscale certificates come from Let's Encrypt, so
+  `forge.<tailnet>.ts.net` appears in public Certificate Transparency logs.
+  That reveals the name, not access.
 
 ## 3. Auth
 
-### Options on GitHub
+### GitHub: which token
 
 | | Fine-grained PAT | OAuth App token | GitHub App user token (**chosen**) |
 |---|---|---|---|
-| Reach | Selected repos in one owner | Everything you can reach, by coarse scope (`repo`, `public_repo`) | Where the app is installed and you have access ([docs](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-user-access-token-for-a-github-app)). Also "implicit permissions to read public resources" ([docs](https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app/choosing-permissions-for-a-github-app)) |
-| Permissions | Fine-grained | Coarse scopes | Fine-grained, the app's minus yours |
-| Lifetime | Up to a year, manual | Until revoked | 8h, refreshable for 6 months ([docs](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/refreshing-user-access-tokens)) |
-| Attribution | You | You | You, with the app's badge on your avatar ([docs](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/authenticating-with-a-github-app-on-behalf-of-a-user)) |
-| UX | Paste a secret | Sign in | Sign in |
+| Reach | Selected repos of one owner | All you can reach, by coarse scope | The intersection of what you can reach and where the app is installed ([docs](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-user-access-token-for-a-github-app)), plus implicit read of public resources ([docs](https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app/choosing-permissions-for-a-github-app)) |
+| Permissions | Fine-grained | Coarse | The intersection of your permissions and the app's |
+| Lifetime | Up to a year | Until revoked | 8h, refreshable for 6 months, refresh token rotated on use ([docs](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/refreshing-user-access-tokens)) |
+| Attribution | You | You | You, with the app's badge ([docs](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/authenticating-with-a-github-app-on-behalf-of-a-user)) |
 
-**Decision: a new dedicated GitHub App, `cgwalters-review`, used only for
-user-to-server tokens.**
-- It's separate from the bot's identity app (`cgwaltersbot`). Compromising
-  the bot's private key then can't act as you, and the review app has no
-  private key in use at all: it never mints installation tokens.
-- The trade-off: a user token can't write where the app isn't installed. The
-  app only acts on your forge PRs (in `cgwalters-forge`), your items
-  repository, and your own forks for take-over, so that's the right
-  boundary.
-- Promotion upstream stays with the bot (`/promote`). Take-over is a push to
-  `cgwalters/R` plus a compare link, as in the pivot plan.
+**Decision: a dedicated GitHub App, `cgwalters-review`, for user tokens only.**
+- It's separate from the bot's `cgwaltersbot`, so a compromise of the bot's
+  key can't act as you. It never uses a private key.
+- Its rate budget is your user's 5,000 requests an hour, **shared with your
+  other tokens** (`gh`, PATs, other apps acting as you)
+  ([docs](https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api)).
+  Conditional requests that return 304 are free when they're authorised
+  ([docs](https://docs.github.com/en/rest/using-the-rest-api/best-practices-for-using-the-rest-api)).
 
 ### Create the `cgwalters-review` app
 
-Under Settings → Developer settings → GitHub Apps → New GitHub App, owned by
-your user account
+Settings → Developer settings → GitHub Apps → New GitHub App, owned by your
+user account
 ([docs](https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app/registering-a-github-app)).
 
-- **Name:** `cgwalters-review`. **Homepage:**
-  `https://github.com/cgwalters-forge/review`.
-- **Callback URLs** (up to 10; `redirect_uri` must match one exactly,
+- **Callback URLs** (up to 10;
   [docs](https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app/about-the-user-authorization-callback-url)):
-  1. Relay (production):
-     `https://forge.<tailnet>.ts.net/review/auth/github/callback`.
-  2. Development: `http://127.0.0.1:8787/auth/github/callback`. The GitHub
-     App docs don't say whether loopback callbacks are allowed; if the form
-     rejects it, use a second tailnet name.
-  3. Static-only variant: none today. There's nothing to point at until
-     GitHub ships SPA callbacks (roadmap#1153, paused). Then it would be
-     `https://forge.<tailnet>.ts.net/review/` marked as an SPA.
-- **Expire user authorization tokens:** on (8h access, 6-month refresh).
-- **Request user authorization (OAuth) during installation:** off. We always
-  pass an explicit `redirect_uri`; with this on, GitHub sends users to the
-  first callback URL.
-- **Enable Device Flow:** on. It costs nothing and lets a future
-  `bot-review` CLI get the same scoped token with no secret. (The device flow
-  "does not need" the secret,
-  [docs](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/authorizing-oauth-apps).)
-- **Setup URL:** none. **Webhooks:** off (uncheck Active). The app polls with
-  conditional requests; add webhooks later only if polling proves too slow.
+  - `https://forge.<tailnet>.ts.net/review/auth/github/callback`
+  - For development, `http://127.0.0.1:8787/auth/github/callback`. Loopback
+    is documented only for OAuth apps, so if the form rejects it, use a
+    second tailnet name.
+  - A purely static variant has no callback today. That waits on
+    roadmap#1153.
+- **Wildcard matching for callback URLs:** leave it **off**. It's new
+  (August 2026) and off by default for new apps, and GitHub advises enabling
+  it only when necessary
+  ([changelog](https://github.blog/changelog/2026-08-14-multiple-redirect-uris-and-token-refresh-for-oauth-apps/)).
+- **Expire user authorization tokens:** on.
+- **Request user authorization (OAuth) during installation:** off. The relay
+  always passes `redirect_uri`, and with this on GitHub sends users to the
+  first callback.
+- **Enable Device Flow:** **off**. GitHub's best practices say "Don't enable
+  device flow without reason": it needs no redirect URI, so it can be used
+  for phishing. Revisit if a CLI ever needs it.
+- **Webhooks:** off. **Setup URL:** none.
 - **Repository permissions:**
-  - Contents: read and write. Needed for item files, `git/commits`, and ref
-    updates for sign-off.
-  - Pull requests: read and write. Needed to edit descriptions, and for
-    comments and reviews (`/promote`).
-  - Issues: read and write. Needed for comments on issue-linked items.
-  - Checks: read, and Commit statuses: read. Used to show CI.
-  - Metadata: read (mandatory).
-  - Workflows: read and write. Only needed because some forge PRs touch
-    `.github/workflows` (gh-agentic-workflows, actions), and rewriting their
-    commits pushes workflow files
-    ([docs](https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app/choosing-permissions-for-a-github-app)).
-    Leave it off if you'd rather sign those off with `dco-signoff`.
-- **Organization permissions:** Projects read and write, *only* if the board
-  mirror is written by the app. It isn't in this design (the bot syncs it),
-  so leave it off. There's no user-level Projects permission, and apps can't
-  touch user-owned projects anyway.
-- **Account permissions:** none.
-- **Where can this app be installed: Any account.**
-  - A private app owned by a user "can only be installed on the account that
-    owns the app"
+  - Contents: read and write;
+  - Pull requests: read and write;
+  - Issues: read and write;
+  - Checks: read;
+  - Commit statuses: read;
+  - Metadata: read.
+  - **Workflows: off by default.** Rewriting commits that touch
+    `.github/workflows` needs it, so sign those off with `dco-signoff`
+    instead, unless you decide otherwise.
+- **Organization and account permissions:** none. The bot syncs the board
+  mirror, not this app.
+- **Where can this app be installed:**
+  - **Any account** is needed: a private app owned by a user "can only be
+    installed on the account that owns the app"
     ([docs](https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app/making-a-github-app-public-or-private)),
-    and we need it on the `cgwalters-forge` org too.
-  - "Any account" doesn't list the app anywhere. Others installing it gain
-    nothing: their tokens only reach their own resources, and the relay is
-    tailnet-only.
-  - The alternative is for `cgwalters-forge` to own the app. Then it can't be
-    installed on your account, which rules out take-over pushes to
-    `cgwalters/*`.
-- **Install it on:**
-  - `cgwalters-forge`, all repositories. That covers the forge forks and the
-    items repo.
-  - Your account, with selected repositories: the forks you publish
-    take-overs from. Or all, if you prefer.
-  - bootc-dev and composefs only if you want the app to act upstream as you
-    (comment, or edit your upstream PRs). It isn't needed for reading them,
-    since public reads are implicit.
-- **After creating it:** generate a client secret and store it on `forge` as
-  a systemd credential for the relay. Record the client ID in the relay's
-  config. Don't generate a private key: nothing needs one.
+    and it must go on `cgwalters-forge` too.
+  - A public app gets an install page at `github.com/apps/cgwalters-review`.
+    It isn't listed in the Marketplace.
+  - Others installing it gain nothing: their tokens reach only their own
+    resources, and the relay is tailnet-only.
+- **Install with selected repositories:**
+  - On your account: only the forks you publish take-overs from.
+  - On `cgwalters-forge`: the items repository plus the forks under review.
+    New forks appear daily, so choosing "all repositories" there is the
+    pragmatic alternative. The bot can already write there; the extra power
+    a stolen token adds is acting as you (e.g. `/promote`). See the open
+    questions.
+  - bootc-dev and composefs only if you want the app to act upstream as
+    you. Reading them is implicit.
+- **Afterwards:** generate a client secret and install it on `forge` as a
+  systemd credential of the relay's user (see Deployment). Don't generate a
+  private key.
 
-**Does PKCE let a public client skip the secret? No, not on GitHub, as of
+**Does PKCE let a public client skip the secret? No, not on GitHub as of
 2026-09-25.**
-- PKCE is supported but only recommended.
-- The token endpoint still lists `client_secret` as required for the web
-  flow and for refresh.
-- There's no CORS on it (curl above; #15752).
-- The SPA work that would remove both limits (roadmap#1153) is paused.
+- The web-flow exchange and refresh both list `client_secret` as required.
+  The only exception is refreshing a device-flow token.
+- There's no CORS on the token endpoint, and the SPA feature is Paused.
+- The relay still sends S256 PKCE, as GitHub recommends.
 
-The relay should still send PKCE (S256). GitHub recommends it, and it binds
-the code to the browser that started the flow.
+### The relay: a token-mediating backend
 
-### The relay (`review-relay`)
+A single Rust binary (axum, reqwest) on the same origin as the static files.
+[RFC 10017](https://www.rfc-editor.org/rfc/rfc10017) (BCP 212, OAuth 2.0 for
+Browser-Based Applications) calls this pattern a **token-mediating backend**
+(§6.2). It is a confidential client that hands the application access tokens.
 
-A single Rust binary (axum, reqwest), same origin as the static files. It is
-a "token-mediating backend" in the terms of the IETF
-[OAuth 2.0 for Browser-Based Applications](https://datatracker.ietf.org/doc/draft-ietf-oauth-browser-based-apps/)
-BCP (in the RFC Editor queue): the browser calls the API directly, and the
-backend only obtains tokens.
+**§6.2's trade-off:** it "is less secure than a BFF". Injected script can't
+get at the refresh token or the session cookie, but it can steal the current
+access token, or "request a fresh token from the token-mediating backend"
+(§5.1.4). So the deciding defence is that no attacker-controlled script runs
+on the origin. That's why deployment and CSP below are not optional.
 
-- `GET /auth/github/start`: generates `state` and a PKCE verifier, puts them
-  in a short-lived sealed cookie, and redirects to
-  `github.com/login/oauth/authorize`.
-- `GET /auth/github/callback`: checks `state` and exchanges the code with
-  the secret and verifier. It puts the refresh token (and its expiry) in a
-  sealed cookie: AES-GCM with a key from a systemd credential, `HttpOnly;
-  Secure; SameSite=Strict; Path=/review/auth`. Then it redirects to the app.
-- `POST /auth/github/token`: the only way JavaScript gets an access token.
-  It unseals the cookie, refreshes (GitHub rotates the refresh token, so the
-  cookie is rewritten), and returns `{access_token, expires_at}`.
-  - It requires `Origin` to match and a custom header, against CSRF.
-- `POST /auth/logout`: clears the cookie. A real revocation calls
-  `DELETE /applications/{client_id}/grant`, which also needs the secret, so
-  it lives here too.
-- The same routes under `/auth/forgejo/*` act as a confidential client for
-  Forgejo, so both forges behave the same. The fully static Forgejo mode
-  stays supported (see below).
+Endpoints:
+- `GET /auth/github/start`:
+  - generates `state` and a PKCE verifier, and seals them into a cookie:
+    `HttpOnly; Secure; SameSite=Lax; Path=/review/auth/github/callback;
+    Max-Age=600`;
+  - it must be Lax: the callback is a cross-site top-level navigation from
+    github.com, which would drop a Strict cookie;
+  - then redirects to `github.com/login/oauth/authorize`.
+- `GET /auth/github/callback`: checks `state` and exchanges the code with the
+  secret and verifier. It sets the session cookie, sealed with AES-GCM under
+  a key from a systemd credential: `HttpOnly; Secure; SameSite=Strict;
+  Path=/review/auth`. The cookie holds:
+  - the refresh token and its expiry;
+  - **the current access token and its expiry.**
+- `POST /auth/github/token`:
+  - requires a matching `Origin` and a custom header (the CSRF defence
+    §6.2.3.3 asks for on this endpoint);
+  - returns the sealed access token if it has more than 10 minutes left, and
+    **only refreshes near expiry**;
+  - GitHub rotates refresh tokens on every use, so concurrent refreshes would
+    log you out. The relay single-flights refreshes per session (an
+    in-process lock keyed by a hash of the cookie; nothing persistent), and
+    the browser serialises its own calls across tabs with the Web Locks API.
+- `POST /auth/logout`:
+  - clears the cookie;
+  - revokes with `DELETE /applications/{client_id}/grant`, which takes a
+    *valid* access token in the body, so it refreshes first if needed.
 
-It has no database and no logs of tokens. Restarting it loses nothing, and
-rotating the sealing key signs everyone out.
+The relay has no database and doesn't log tokens. Rotating the sealing key
+signs everyone out. The same code handles `/auth/forgejo/*` for relay-mode
+Forgejo.
 
 ### Forgejo: the equivalent setup
 
-On your Forgejo, under Settings → Applications → Manage OAuth2 applications
+`ConfidentialClient` is a per-application setting, so relay mode and static
+mode need **two OAuth2 applications**, created under Settings → Applications
 ([docs](https://forgejo.org/docs/latest/user/oauth2-provider/)):
 
-- **Name:** `cgwalters-review`.
-- **Redirect URIs:**
-  - `https://forge.<tailnet>.ts.net/review/auth/forgejo/callback` for relay
-    mode;
-  - `https://forge.<tailnet>.ts.net/review/` for static mode.
-  - Loopback `http://127.0.0.1` redirects match on any port for public
-    clients, per RFC 8252 (`ContainsRedirectURI` in
-    [models/auth/oauth2.go](https://codeberg.org/forgejo/forgejo/src/branch/forgejo/models/auth/oauth2.go)),
-    which suits development.
-- **Confidential client:**
-  - checked for relay mode (the relay holds the secret);
-  - unchecked for static mode. PKCE is then mandatory, and the secret is
-    never needed.
-- **Scopes,** requested at authorize time:
-  `write:repository write:issue read:user`.
-  - The docs still say "Scopes are not implemented for OAuth2 tokens".
-  - But the code turns grant scopes that are valid token scopes into the
-    token's scope, falling back to `all` only when none is given
-    (`grantAdditionalScopes` in
-    [services/auth/method/oauth2.go](https://codeberg.org/forgejo/forgejo/src/branch/forgejo/services/auth/method/oauth2.go),
-    covered by `TestOAuth_GrantScopesReadRepository`).
-  - Verify on your version during v3.
-- **`app.ini`** (the `[cors]` keys are in
-  [cors.go](https://codeberg.org/forgejo/forgejo/src/branch/forgejo/modules/setting/cors.go)):
+| App | Confidential | Redirect URI |
+|---|---|---|
+| `cgwalters-review` (relay mode) | yes | `https://forge.<tailnet>.ts.net/review/auth/forgejo/callback` |
+| `cgwalters-review-static` | no (PKCE mandatory) | `https://forge.<tailnet>.ts.net/review/forgejo/` |
+
+- For development, public clients match `http://127.0.0.1` redirects on any
+  port. It must be the IP literal, not `localhost` (`ContainsRedirectURI` in
+  [models/auth/oauth2.go](https://codeberg.org/forgejo/forgejo/src/branch/forgejo/models/auth/oauth2.go)).
+- **Scopes:** request `write:repository write:issue read:user`.
+  - The docs say "Scopes are not implemented for OAuth2 tokens", but the code
+    applies grant scopes that are valid token scopes to the token
+    (`grantAdditionalScopes` in `services/auth/method/oauth2.go`, tested in
+    `tests/integration/oauth_test.go`). Verify on your version.
+  - **Changing the scopes later requires revoking the existing grant
+    first.** Otherwise authorize fails with "a grant exists with different
+    scope" (`routers/web/auth/oauth.go`).
+- **Refresh:**
+  - `INVALIDATE_REFRESH_TOKENS` defaults to **true** in code
+    (`modules/setting/oauth2.go`), although `app.example.ini` shows `false`.
+  - Reusing a refresh token fails with "token was already used", so two tabs
+    refreshing at once log you out.
+  - Same remedy as on GitHub: cache the access token (1h by default) and
+    refresh near expiry under a Web Locks single-flight.
+- **`app.ini`:**
 
   ```ini
   [cors]
   ENABLED = true
   ALLOW_DOMAIN = https://forge.<tailnet>.ts.net
-  METHODS = GET,HEAD,POST,PUT,PATCH,DELETE,OPTIONS
-  HEADERS = Content-Type,User-Agent,If-None-Match
+  ; HEADERS keeps its default (Content-Type,User-Agent). If-None-Match is
+  ; useless: Forgejo's JSON API sends no ETags (only raw and media files do).
 
   [repository]
-  ; git smart HTTP from the browser, only for rewording and sign-off (v3)
+  ; git smart HTTP from the browser, only for rewording and sign-off
   ACCESS_CONTROL_ALLOW_ORIGIN = https://forge.<tailnet>.ts.net
-
-  [oauth2]
-  ; defaults: 1h access tokens, 730h refresh tokens, rotation on refresh
   ```
-  - The `[cors]` section also covers `/login/oauth/access_token`.
-  - `Authorization` is always allowed on `/api`.
-  - Forgejo has no GitHub-App-like installations. Since v15, a PAT can be
-    limited to specific repositories
-    ([v15 release](https://forgejo.org/2026-04-release-v15-0/)), which is
-    the zero-OAuth fallback there.
 
-### Token storage and browser hygiene
+  - **Caveat:** with `[service] REQUIRE_SIGNIN_VIEW = true`, the sign-in
+    check runs before the git-HTTP CORS handler (`routers/web/githttp.go`).
+    The unauthenticated preflight then gets a 401 and browser git fails. In
+    that case, use the relay's server-side rewrite (§4).
+- **Tokens:** Forgejo has no installation-scoped app tokens. Since v15, a PAT
+  can be limited to repositories
+  ([v15 release](https://forgejo.org/2026-04-release-v15-0/)), which is the
+  no-OAuth fallback.
 
-- **Access tokens live in memory only,** obtained from the relay on load. In
-  static Forgejo mode, the refresh token has to be readable by JavaScript.
-  Keep it in `sessionStorage`, so closing the tab signs you out. Forgejo's
-  1-hour access tokens and refresh-token rotation (`INVALIDATE_REFRESH_TOKENS`)
-  limit the damage.
-- **No `localStorage` for credentials.** IndexedDB holds only caches and
-  unsent drafts.
-- **Strict CSP, from the relay or the static server:**
+### Browser hygiene
+
+- **Where tokens live:**
+  - Access tokens are kept in memory only.
+  - In static Forgejo mode the refresh token has to be readable by
+    JavaScript. It goes in `sessionStorage`, so closing the tab signs you
+    out.
+  - Nothing credential-like goes in `localStorage`. IndexedDB holds only
+    caches and unsent drafts.
+- **CSP**, sent as a header by the relay or static server:
   `default-src 'self'; script-src 'self'; style-src 'self';
-  connect-src 'self' https://api.github.com https://<forgejo-host>;
+  connect-src 'self' https://api.github.com https://<forgejo>;
   img-src 'self' data: https://avatars.githubusercontent.com;
   frame-ancestors 'none'; base-uri 'none'; form-action 'self'`, plus
-  `require-trusted-types-for 'script'` where supported. There are no
-  third-party scripts or fonts. The prototype's Google Fonts go.
-- **Untrusted text.** Everything rendered comes from the forge and is
-  untrusted: the bot's text, upstream comments, diffs. Render markdown with
-  raw HTML disabled (markdown-it `html: false`, which also rejects
-  `javascript:` links), and sanitise with DOMPurify as a second layer.
-  Diffs and commit messages are text nodes only.
-- **Least privilege at runtime.** The UI asks for the relay token only when
-  it's about to write. A read-only session (v0) can use a read-only PAT.
+  `require-trusted-types-for 'script'`. There are no third-party scripts or
+  fonts.
+- **Rendering untrusted text:** everything shown is untrusted.
+  - Markdown goes through markdown-it with `html: false`, which also refuses
+    `javascript:` and `data:text/html` links, then DOMPurify.
+  - Diffs and commit messages are rendered as text nodes.
+
+### Deployment and supply chain
+
+The relay will mint a token acting as you for any script running on its
+origin (§6.2 above). So the served code is the security boundary:
+- **Deploy only commits you approved.** `forge` deploys only tags signed by
+  your key, checked with `git verify-tag` against your key, as
+  `bin/git-verify-tag-with-key` does. It builds from the tag, with lockfile
+  installs only.
+- **The bot never deploys.** On `forge`, the served files, the relay binary
+  and its systemd credentials (client secrets, the sealing key) belong to a
+  dedicated `review` user. They're unreadable and unwritable by the bot's
+  user, and the bot has no sudo there.
+- The bot may open PRs on this repository like any other, and you review
+  them. Dependencies are pinned and few (Preact, markdown-it, DOMPurify,
+  isomorphic-git).
 
 ## 4. Architecture
 
-### Technology
+### Two thin apps, one shared library
 
-**Decision: strict TypeScript with Preact, bundled by Vite to static files,
-for the browser. Rust for the relay and the bot-side `review-items` CLI.**
-
-- **Why TypeScript here:**
-  - The browser side is DOM- and editor-heavy.
-  - The pieces it needs are JavaScript libraries with no Rust/WASM equivalent
-    of the same maturity: isomorphic-git (Forgejo sign-off), a
-    format-preserving YAML editor, markdown-it, DOMPurify, and later
-    CodeMirror 6.
-  - Strict `tsc` (`strict`, `noUncheckedIndexedAccess`,
-    `exactOptionalPropertyTypes`) plus zod-style validation at the API
-    boundary gives most of the type safety you'd want, and a phone loads a
-    much smaller bundle.
-- **Why Rust elsewhere:** the relay handles secrets, and the CLI runs in the
-  bot's loop. Both are small, long-lived and security-relevant, where Rust
-  earns its keep.
-- **Rust/WASM (Leptos or Dioxus) was considered.** It would share the item
-  parser with the CLI, but it would mean wrapping isomorphic-git through JS
-  interop and a heavier bundle, for a UI that is mostly forms and diffs.
-  - The shared fixtures give most of the benefit of a shared parser.
-  - If the core logic grows, compile the Rust `items` crate to WASM and call
-    it from TypeScript. That's a local change.
-
-### Layout
+**Decision: no general forge abstraction.** Separate GitHub and Forgejo apps
+are fine, and simpler. The layout:
 
 ```
-web/            TypeScript app (Vite, Preact)
-  src/forge/    Forge interface + github.ts, forgejo.ts
-  src/items/    item parse/edit (fixtures in spec/)
-  src/ui/       queue, item, PR review views
-relay/          review-relay (Rust)
-crates/items/   item format library + review-items CLI (Rust)
-spec/           items-format fixtures, shared by both test suites
+packages/items/   item format: parse, edit, round-trip (TypeScript)
+packages/ui/      queue + item components (Preact), fed plain item data
+apps/github/      GitHub client: REST + one GraphQL mutation, relay auth
+apps/forgejo/     Forgejo client: REST + isomorphic-git, static or relay auth
+relay/            review-relay (Rust)
+crates/items/     item format + review-items CLI (Rust)
+spec/             format spec fixtures, run by both test suites
 ```
 
-### Forge adapter
+- Each app owns its API calls and flows, with no common interface to
+  satisfy.
+- What's shared is data: the item model, plus the queue components that
+  render it.
+- The Forgejo app starts as a copy-and-adapt of the GitHub app's PR views.
+  Shared code is extracted only once it's clearly identical.
 
-```ts
-interface Forge {
-  readonly kind: "github" | "forgejo";
-  whoami(): Promise<User>;
-  // Items repository
-  head(repo: RepoRef, branch: string, etag?: string): Promise<Conditional<Sha>>;
-  tree(repo: RepoRef, sha: Sha): Promise<TreeEntry[]>;           // recursive
-  blob(repo: RepoRef, sha: Sha): Promise<string>;                // immutable, cached
-  putFile(repo: RepoRef, path: string, content: string, baseBlob: Sha,
-          message: string): Promise<CommitSha>;                  // precondition
-  // Pull requests
-  pull(pr: PrRef, etag?: string): Promise<Conditional<Pull>>;
-  pullCommits(pr: PrRef): Promise<Commit[]>;
-  diff(pr: PrRef, commit?: Sha): Promise<string>;                // unified diff
-  checks(pr: PrRef): Promise<CheckSummary>;
-  setPullBody(pr: PrRef, body: string, expected: string): Promise<void>;
-  comment(pr: PrRef, body: string): Promise<void>;
-  // History rewrite with identical trees; fails if the head moved
-  rewrite(pr: PrRef, expectedHead: Sha, commits: RewrittenCommit[]): Promise<Sha>;
-}
-```
+**Technology.**
+- **Browser: strict TypeScript + Preact, bundled by Vite.**
+- **Relay and CLI: Rust,** where secrets and the bot's loop live.
+- **Why not Rust/WASM for the browser (Leptos, Dioxus)?** Rust has mature
+  markdown (comrak, pulldown-cmark) and sanitising (ammonia). The gap is
+  elsewhere:
+  - isomorphic-git for Forgejo: gitoxide builds for wasm32 only as plumbing
+    crates, with no browser transport;
+  - an editor (CodeMirror 6);
+  - bundle size on a phone.
+- The restricted front matter removes the need for a format-preserving YAML
+  library on either side.
 
-A PR or item link is dispatched by its URL's host to the configured forge.
-The app's configuration lives in the items repository: `review.yaml` names
-the forges, your sign-off identity, and the default sort. So configuration
-is git too, and a new browser needs only the items repository's URL.
+### API use
 
-| Operation | GitHub | Forgejo |
+| Operation | GitHub app | Forgejo app |
 |---|---|---|
-| Poll the items repo | `GET /repos/{o}/{r}/commits/{branch}` with `If-None-Match`; a 304 is free ([docs](https://docs.github.com/en/rest/using-the-rest-api/best-practices-for-using-the-rest-api)) | `GET /repos/{o}/{r}/branches/{branch}`. The JSON API has no ETags (only raw files do), so compare the commit id |
-| Read items | `git/trees/{sha}?recursive=1`, then `git/blobs/{sha}` for changed entries | `git/trees/{sha}?recursive=true`, `git/blobs/{sha}` |
-| Answer or edit | `PUT contents/{path}` with `sha` | `PUT contents/{path}` with `sha` (or `POST contents` for several files) |
+| Poll items repo | `GET commits/{branch}` with `If-None-Match` (304 is free) | `GET branches/{branch}`, comparing the commit id (no ETags) |
+| Read items | `git/trees/{sha}?recursive=1`, `git/blobs/{sha}`; blobs cached forever by sha | same paths |
+| Answer or edit | `PUT contents/{path}` with `sha`; retry on 409, 422 and 5xx | same, and 5xx expected on a race |
 | PR, commits, diff | `pulls/{n}`, `pulls/{n}/commits`, `Accept: application/vnd.github.diff` | `pulls/{n}`, `pulls/{n}/commits`, `pulls/{n}.diff` |
-| Edit PR body | `PATCH pulls/{n}` (no precondition: reread and compare first) | `PATCH pulls/{n}` (same) |
-| Reword and sign-off | `POST git/commits` per commit, then GraphQL [`updateRefs`](https://docs.github.com/en/graphql/reference/mutations#updaterefs) with `beforeOid` and `force` (compare-and-swap; REST `PATCH git/refs` has no precondition). Spike it with a user token in v2 | No commit or ref-write API (only reads under `git/`). isomorphic-git in the browser: fetch the branch, rebuild the commits, and force-push. The receive-pack command carries the old value, which acts as the lease (verify isomorphic-git's behaviour in v3) |
-| `/promote` | Issue comment | Issue comment |
+| Edit PR body | `PATCH pulls/{n}` after rereading and comparing (no precondition) | same |
+| Reword and sign-off | `POST git/commits` per commit, then GraphQL [`updateRefs`](https://docs.github.com/en/graphql/reference/mutations#updaterefs) with `beforeOid` (compare-and-swap; REST `PATCH git/refs` takes only `sha` and `force`) | isomorphic-git: fetch the branch, rebuild the commits, push with `force`, and use `onPrePush` to cancel unless `remoteRef.oid === expectedHead`. `force` alone isn't a lease: the old value sent is whatever the server advertised at push time |
+| `/promote` | issue comment | issue comment |
 
-**Polling.**
-- The items repo is polled every 30 seconds while the tab is visible (Page
-  Visibility API), and not at all when hidden.
-- Linked PRs are polled every 2 minutes with conditional requests, and when
-  you open one.
-- Blobs are content-addressed, so they're cached in IndexedDB forever. That
-  is a pure cache: clearing it loses nothing.
-- **GitHub budget:** a user token has 5,000 requests an hour
-  ([docs](https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api)).
-  With 304s free, the steady state is close to zero. The app reads
-  `X-RateLimit-Remaining` (exposed through CORS) and backs off below 10%.
-  GraphQL is used only for `updateRefs`.
-- **Forgejo budget:** there's no built-in API rate limiter (Codeberg adds one
-  at its proxy), so on your instance only politeness applies.
+**Polling:**
+- The items repo is polled every 30 seconds while the tab is visible. Linked
+  PRs are polled every 2 minutes, and whenever you open one.
+- The app reads `X-RateLimit-Remaining` and backs off below 10% of the
+  shared budget.
+- Forgejo has no built-in API rate limiter.
 
 ### UI flows
 
-1. **Queue** (the home screen). It lists items needing you: `needs-human`,
-   `draft` items (a PR awaiting review), and unanswered questions. They're
-   grouped by priority, then by age. Each card shows the question and its
-   options inline, as the prototype did, with one-tap answers. Filters cover
-   org, kind and forge. Counts go in the header.
-2. **Answer:** check an option, optionally add text, and Send. That's one
-   `putFile`, with commit message `answer: <slug> q1` and trailers. The card
-   shows "sent" at once and "acted on" when the bot's `Acted-on:` commit
-   arrives. Field edits (priority, status, workflow) work the same way.
-3. **PR review:** from an item's `pr:` link.
-   - It shows the PR description (rendered, editable, with preview), the
-     commits as a stack with per-commit diffs (ReviewStack-style navigation),
-     the whole diff, and a CI summary.
-   - Every commit message is editable in place, with a 72-column ruler and a
-     trailer-aware "Sign off" toggle. The toggle appends
-     `Signed-off-by: <name> <email>` from `review.yaml`, deduplicated.
-4. **Rewrite and sign off** ("Save to forge"):
-   - The app shows a before/after of each message, and checks that each new
-     commit reuses the original tree.
-   - It creates the new commits (author unchanged, committer you), then does
-     a compare-and-swap ref update against the head you reviewed. If the bot
-     pushed in the meantime, the update fails and the app reloads, with your
-     edits kept as drafts.
-   - Per the workstream rules, once you've pushed, the bot treats the branch
-     as yours and only adds `fixup!` commits.
+1. **Queue:** items needing you (`needs-human`, `draft`, unanswered
+   questions, `triage`), grouped by priority and ordered by `rank`. Options
+   answer in one tap, as in the prototype.
+2. **Answer, or approve triage:** one `PUT` writing only inside the answer
+   markers, or the `status` line. The card shows "sent" at once, and "acted
+   on" once the bot's `Acted-on:` commit arrives.
+3. **PR review:**
+   - the rendered, editable description;
+   - the commit stack, with per-commit diffs (ReviewStack-style navigation);
+   - the CI summary;
+   - each commit message editable in place, with a "Sign off" toggle that
+     appends your `Signed-off-by` from `review.yaml` (in the items repo).
+4. **Rewrite and sign off:**
+   - the app shows each message before and after, and checks that every tree
+     is reused;
+   - it writes new commits: author unchanged, committer you;
+   - then a compare-and-swap ref update against the head you reviewed. If the
+     bot pushed meanwhile, the update fails and your edits stay as drafts.
    - GitHub doesn't sign commits with a custom committer. Projects that
-     require signed commits still go through the CLI.
-5. **Promote:** after the rewrite, comment `/promote` (optionally with
-   `/draft`) on the forge PR. `bot-pr promote` already acts on that, and
-   D6's sign-off gate checks your exact `Signed-off-by`. The app offers
-   "Sign off and promote" as one button that runs step 4 and then step 5.
-6. **Description edits:** fetch the body, edit, then refetch just before
-   `PATCH`. If the body changed since you started, show a three-way view.
-   This is the same safety as `bot-pr set-body`, from the other side.
+     require signed commits go through the CLI.
+5. **Sign off and promote:** step 4, then a `/promote` comment. `bot-pr
+   promote` and its D6 sign-off gate do the rest.
 
-Small code edits are deferred to v2.x: a blob, then a tree, then a commit on
-GitHub; contents `POST` with `signoff` on Forgejo. Anything bigger goes to
-the CLI.
+Also from issue #8, placed in the plan:
+- **Take-over** (v2.1): rewrite with your identity and the project's trailer
+  policy, drop the bot-meta section, and push to `cgwalters/R`, which needs
+  the app installed on that fork. Then open the compare link for you to
+  create the PR. The item is marked `workflow: manual`.
+- **Per-project trailer policy** (v2.1): `policy.yaml` in the items
+  repository, mapping a repo to "bot posts" or "take-over" and a trailer
+  style. It's in git, and reviewed like everything else.
+- **Small code edits** (v2.2):
+  - GitHub: blob → tree → commit;
+  - Forgejo: the contents API (which supports `signoff`).
+  - Anything larger goes to the jj-based `bot-review` CLI from the pivot
+    plan.
 
-### Offline and local-first
+### Offline
 
-- The app shell is cached by a service worker, which needs the HTTPS origin.
-- Items and diffs you've viewed are readable offline from the blob cache.
-- Answers and message edits written offline are kept as drafts in IndexedDB,
-  marked unsent. They're submitted when you're back online, with the same
-  blob-sha preconditions, so a stale draft becomes a visible conflict rather
-  than an overwrite.
-- There's deliberately no sync engine: git and the forge are the sync layer.
-- For real offline work, the answer is a clone. The files are plain markdown,
-  and the planned `bot-review` CLI (jj-based, from the pivot plan) does
-  rewording locally.
+- A service worker caches the app shell. Blobs you've viewed stay readable
+  from IndexedDB, which is a pure cache.
+- Answers written offline are kept as unsent drafts. They're submitted with
+  the same preconditions once you're back online.
+- There's no sync engine: git and the forge are the sync layer. For real
+  offline work, clone the items repo.
 
 ## 5. Prior art
 
-| Project | Model | Verdict |
+| Project | What it is | Verdict |
 |---|---|---|
-| [Backlog.md](https://github.com/MrLesk/Backlog.md) | Markdown tasks with YAML front matter in `backlog/tasks/`, with a CLI, TUI, MCP and a local web server. Active (v1.53.0, 2026-09-24). No forge sync. | **Borrow the file format.** Stay compatible where cheap, so its CLI and MCP could read our items. Not a base: its UI is a local server, and it knows nothing of PRs. |
-| [Gerrit NoteDb](https://gerrit-review.googlesource.com/Documentation/note-db.html) | Review state as commits on `refs/changes/XX/N/meta`, with state in footers (`Patch-set:`, `Label:`, `Status:`). Linear, because the server is the single writer. | **Borrow:** state changes are commits with trailers on a normal branch. |
-| [git-appraise](https://github.com/google/git-appraise) | Reviews as JSON lines in git notes (`refs/notes/devtools/*`), merged with `cat_sort_uniq`. Web UI is a Go server. Last commit 2023-08. | **Borrow** the append-only idea. Notes are invisible on both forges and not markdown. |
-| [git-bug](https://github.com/git-bug/git-bug) | Operation-based CRDT, JSON blobs under `refs/bugs/`. GraphQL web UI server. GitHub/GitLab/Jira bridges; the Gitea/Forgejo bridge is WIP ([#1628](https://github.com/git-bug/git-bug/pull/1628)). Very active (v0.11.0, 2026-09-22). | **Ignore as a base:** hidden refs, JSON, needs a server, models issues rather than PR review. Revisit if multi-writer offline merging ever matters. |
-| [Radicle](https://radicle.dev/guides/protocol) (heartwood) | Collaborative objects (issues, patches with revisions and reviews) in git under `refs/cobs/`, on its own peer-to-peer network. | **Borrow** the patch, revision and verdict vocabulary. It means leaving GitHub and Forgejo. |
-| [Sapling ReviewStack](https://github.com/facebook/sapling/tree/main/eden/contrib/reviewstack) | A static React UI over GitHub GraphQL, with per-commit stack review. MIT, maintenance only, GitHub only, read-only. Auth via Netlify's OAuth proxy or a PAT. | **Borrow** the UX and diff rendering, and it proves a serious static review UI works. Adding writes and Forgejo would be a rewrite. |
-| [Sveltia CMS](https://sveltiacms.app/en/docs/backends) | A static app committing markdown through GitHub, GitLab and Forgejo APIs. Serverless PKCE on Forgejo; a worker for GitHub OAuth. | **Borrow** the auth approach, and read its Forgejo client when writing ours. |
-| Pages CMS, Utterances, Giscus | A server with Postgres; issues or discussions as storage. | **Ignore:** a lookaside DB, or the forge as the DB. |
+| [Gerrit NoteDb](https://gerrit-review.googlesource.com/Documentation/note-db.html) | Review state as commits on `refs/changes/XX/N/meta`, with the state in footers (`Patch-set:`, `Label:`, `Status:`; [ChangeNoteFooters.java](https://gerrit.googlesource.com/gerrit/+/refs/heads/master/java/com/google/gerrit/server/notedb/ChangeNoteFooters.java)) | **Borrow:** state changes are commits with trailers, on a normal branch |
+| [Backlog.md](https://github.com/MrLesk/Backlog.md) | Markdown tasks with front matter, a CLI/TUI, and a local web server. Active (v1.53.0, 2026-09-24) | **Loosely modelled on it; not compatible with its tooling.** Its `<!-- AC:BEGIN -->` markers inspired our answer markers |
+| [git-appraise](https://github.com/google/git-appraise) | Reviews as JSON lines in git notes, merged with `cat_sort_uniq`. Dormant since 2023-08, not archived | **Borrow** the append-only idea. Notes are invisible on both forges |
+| [git-bug](https://github.com/git-bug/git-bug) | An operation-based CRDT in JSON blobs under `refs/bugs/`, with a GraphQL server UI. The Forgejo bridge is a draft ([#1628](https://github.com/git-bug/git-bug/pull/1628)). Active (v0.11.0) | **Not a base:** hidden refs, JSON, needs a server |
+| [Radicle](https://radicle.dev/guides/protocol) | Collaborative objects (issues, patches, reviews) under `refs/cobs/`, on its own peer-to-peer network | **Borrow** the patch/revision/verdict vocabulary |
+| [Sapling ReviewStack](https://github.com/facebook/sapling/tree/main/eden/contrib/reviewstack) | A static React UI over GitHub GraphQL with per-commit stack review. It writes comments, reviews and labels, but can't rewrite commits. MIT, GitHub only | **Borrow** its UX. Proof that a static review UI works |
+| [Sveltia CMS](https://sveltiacms.app/en/docs/backends) | A static app committing markdown via the GitHub and Forgejo APIs, with serverless PKCE on Forgejo | **Borrow** its auth approach |
+| Pages CMS | A Next.js app with **Postgres** | **Ignore:** it has a lookaside DB |
+| Utterances, Giscus | Issues or discussions as the store. Utterances uses a Cloudflare worker; Giscus a GitHub App, with optional caching | **Ignore:** the forge becomes the database |
 
-**Decision: build new, small.** Nothing combines a static app, GitHub plus
-Forgejo, PR rewording and sign-off, and git plus markdown as the only store.
-The borrowed pieces keep it small.
+**Decision: build new and small,** borrowing the pieces above.
 
 ## 6. Plan
 
-- **v0: static read-only queue.**
-  - Items format spec and fixtures.
-  - A migration of the board and the prototype into the items repository.
-  - The web app reading items over the GitHub API with conditional polling,
-    and rendering the queue.
-  - Auth with a read-only fine-grained PAT (no relay yet).
-  - Deployed as static files on `forge` via `tailscale serve`; GitHub Pages
-    works too.
-- **v1: answers and field edits.**
-  - The relay and the `cgwalters-review` app.
-  - Writes through `putFile` with preconditions.
-  - `review-items answered` in the coordinator loop, and
-    `review-items set`/`sync-board` replacing `bot-board set`.
+- **v0: static read-only queue (GitHub).**
+  - Format spec and fixtures.
+  - `review-items import` of the board and the prototype.
+  - The GitHub app reading the items repo with a read-only PAT.
+  - Deployed on `forge` from a tag you signed.
+- **v1: answers, triage, and Forgejo read-only.**
+  - The relay and `cgwalters-review`; writes with preconditions.
+  - `review-items answered` with the push-actor check;
+    `review-items set`/`sync-board`.
   - The board becomes a mirror.
-- **v2: PR review and sign-off.** PR view, diff, commit stack, message
-  editor, rewrite through the Git Data API plus `updateRefs`, "Sign off and
-  promote", and description edits.
-- **v3: Forgejo.** The Forgejo adapter, OAuth (static or relay mode),
-  isomorphic-git rewriting, and a second items repository on your instance.
+  - A read-only Forgejo app over an items repo on your instance, which
+    proves the shared library early.
+- **Spikes before v2:**
+  1. `updateRefs` with `beforeOid` using a user token.
+  2. Cross-fork tree reuse: a commit in `cgwalters/R` built from trees of
+     `cgwalters-forge/R`, which relies on the shared fork network.
+  3. The GitHub activity API's retention and pagination on a busy
+     repository.
+- **v2: PR review and sign-off on GitHub.** v2.1 adds take-over and trailer
+  policy; v2.2 adds small code edits.
+- **v3: Forgejo writes.** OAuth (static or relay), and rewrites with
+  isomorphic-git. **Fallback:** the relay does the rewrite server-side, with
+  a real git clone on `forge` using your token. The token is held only for
+  that request and never stored. This is needed anyway under
+  `REQUIRE_SIGNIN_VIEW`.
 
-**First PRs, in order:**
-1. `spec: Define the work item format`. Adds `docs/items-format.md` and
-   `spec/fixtures/` (input, parsed JSON, and after-edit output), including
-   the prototype's decision shape.
-2. `items: Add item parser and review-items CLI`. A Rust crate with
-   data-driven tests over the fixtures: `import`, `list`, `set`.
-3. `items: Import the Workstream board and the prototype queue`. Run once,
-   into the new items repository, after you pick its name. It's reviewed as
-   a single commit there.
-4. `web: Add read-only queue over a GitHub items repository`. Vite, Preact,
-   strict TypeScript, the `Forge` interface with a read-only GitHub adapter,
-   conditional polling, and CSP. Includes a CI workflow (typecheck, unit
-   tests, `cargo test`).
-5. `relay: Add GitHub App token relay`. axum, sealed refresh cookie, PKCE,
-   and a systemd unit plus `tailscale serve` notes. It needs the app's client
-   ID and secret.
+**First PRs:**
+1. `spec: Define the work item format`: `docs/items-format.md` and
+   `spec/fixtures/` (parse, round-trip, one-line-edit, answer-block edits).
+2. `items: Add item parser and review-items CLI`: the Rust crate with
+   data-driven fixture tests; `import`, `list`, `set`.
+3. `items: Import the Workstream board and the prototype queue`: run once
+   into the items repository, reviewed as one commit.
+4. `web: Add read-only GitHub queue`: `packages/items` (TypeScript, same
+   fixtures), `packages/ui`, `apps/github`, CSP, and CI (typecheck, tests,
+   `cargo test`).
+5. `relay: Add GitHub App token relay`: sealed cookies, PKCE,
+   single-flight refresh, the systemd unit for the `review` user, and a
+   signed-tag deploy script.
+6. `items: Verify answers by push actor`: `review-items answered`, with
+   fixtures for forged-author and rebased-on-top cases.
+
+## Later (not in scope)
+
+**Codespace-on-devspace mode:** trying a change live, browsing all of the
+code, and talking to an agent about it, on a devspace. Recorded here only as
+a direction. This design stays a lightweight client-side app.
 
 ## Open questions for cgwalters
 
-1. **The items repository.** Is `cgwalters-forge/workstream` right, and
-   public (same privacy rule as the board today) or private? And is it OK
-   for the Projects board to become a read-only mirror, with triage moving
-   to the app or the files?
-2. **The `cgwalters-review` app.** It's owned by your account and set to
-   "Any account", so it can be installed on `cgwalters-forge` as well as on
-   your account. Is that acceptable, versus an org-owned app that can't
-   reach `cgwalters/*`? Also:
-   - Include Workflows RW?
+1. **The items repository.**
+   - Is `cgwalters-forge/workstream` right, and public or private?
+   - Is it OK for the board to become a read-only mirror, with edits there
+     overwritten?
+2. **Installs of `cgwalters-review`.**
+   - Is "Any account" acceptable? It gives the app a public install page,
+     but it's unlisted in the Marketplace.
+   - On `cgwalters-forge`: selected repositories (you add each new fork), or
+     all repositories?
+   - Workflows stays off unless you want it.
    - Install on bootc-dev and composefs?
-3. **What I need about your existing app `cgwaltersbot`.** Confirm it stays
-   the bot's identity and is never used for review.
-   - Its owner (your user or an org) and its install setting (only this
-     account, or any account).
-   - Whether "Expire user authorization tokens" is on.
+3. **Your existing app, `cgwaltersbot`.**
+   - Confirm it stays the bot's identity only, never used for review.
+   - Who owns it (your user or an org), and what's its install setting?
+   - Are expiring user tokens on?
 
-   None of this blocks the review app. It matters for the pivot plan's D1/D2,
-   and it makes sure the two apps don't overlap in permissions or
-   installations. For `cgwalters-review` I need its client ID, and the
-   client secret delivered to `forge` as a systemd credential (not through
-   the bot).
-4. **The `forge` host.** What's its MagicDNS name? Is HTTPS through
-   `tailscale serve` fine? Phone access through the Tailscale app, or also
-   Funnel?
-5. **Sign-off identity.** The exact `Signed-off-by` name and email, per
-   forge. It goes in `review.yaml`.
-6. **Your Forgejo instance.** Which version (v15 LTS or v16)? Are the
-   `[cors]` and `[repository] ACCESS_CONTROL_ALLOW_ORIGIN` changes OK? Static
-   public-client mode, or the same relay for both forges (my default)?
-7. **Stack.** TypeScript for the browser, Rust for the relay and CLI. Or
-   would you rather pay the cost of Rust/WASM (Leptos) for the UI too?
+   This doesn't block the review app, but it matters for D1/D2 of the pivot
+   plan. For `cgwalters-review` I need its client ID, and the secret
+   installed by you on `forge` as the `review` user's credential, never
+   through the bot.
+4. **`forge`.**
+   - Its MagicDNS name.
+   - Is the name appearing in Certificate Transparency logs acceptable?
+   - Can a dedicated `review` user own the deployment, with the bot's user
+     unable to read or write it?
+   - Which key signs deploy tags?
+5. **Sign-off identity:** the exact `Signed-off-by` name and email.
+6. **Your Forgejo.**
+   - Its version, and whether `REQUIRE_SIGNIN_VIEW` is on.
+   - Are the `[cors]` and git-HTTP CORS settings acceptable?
+   - Static mode, or relay mode (the default)?
+7. **Trust check.** Is "pushed by `cgwalters`, per the forge's push log" the
+   rule you want for answers and triage approvals, including edits you make
+   outside the app?
