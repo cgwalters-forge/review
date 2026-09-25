@@ -1,0 +1,97 @@
+[
+  {
+    "id": 9001,
+    "node_id": "PVTI_synthetic_upstream_pr",
+    "content_type": "PullRequest",
+    "content": {
+      "node_id": "PR_synthetic1",
+      "title": "widget: Fix the <script>alert(1)</script> frobnicator",
+      "body": "Fixes the frobnicator.\n\n<img src=x onerror=alert(1)>\n\n[click](javascript:alert(1))",
+      "html_url": "https://github.com/example-upstream/widget/pull/42",
+      "state": "open",
+      "merged_at": null,
+      "updated_at": "2026-01-02T03:04:05Z",
+      "user": {"login": "someone"},
+      "base": {"repo": {"private": false}}
+    },
+    "fields": [
+      {"id": 102, "name": "Status", "data_type": "single_select", "value": {"id": "x1", "name": {"raw": "Needs human", "html": "Needs human"}}},
+      {"id": 103, "name": "Why", "data_type": "text", "value": {"raw": "CI is red on an infra flake. Q: rerun or rebase? Options: A) Rerun the job B) Rebase onto main. Recommend A because it is cheaper", "html": "ignored"}},
+      {"id": 104, "name": "Priority", "data_type": "single_select", "value": {"id": "p1", "name": {"raw": "P1", "html": "P1"}}},
+      {"id": 105, "name": "Org", "data_type": "single_select", "value": {"id": "o1", "name": {"raw": "other", "html": "other"}}},
+      {"id": 106, "name": "Branch", "data_type": "text", "value": {"raw": "https://github.com/example-forge/widget/pull/3 javascript:alert(1)", "html": "ignored"}},
+      {"id": 107, "name": "Gist", "data_type": "text", "value": null}
+    ],
+    "updated_at": "2026-01-02T03:04:05Z",
+    "archived_at": null
+  },
+  {
+    "id": 9002,
+    "node_id": "PVTI_synthetic_draft",
+    "content_type": "DraftIssue",
+    "content": {
+      "node_id": "DI_synthetic_draft",
+      "title": "Decide the widget naming scheme",
+      "body": "Q: which prefix?\n\n- A) org.example\n- B) io.example\n",
+      "updated_at": "2026-01-03T00:00:00Z",
+      "user": {"login": "cgwalters-bot"}
+    },
+    "fields": [
+      {"id": 102, "name": "Status", "data_type": "single_select", "value": {"id": "x1", "name": {"raw": "Needs human"}}},
+      {"id": 103, "name": "Why", "data_type": "text", "value": {"raw": "Naming decision before v1."}},
+      {"id": 104, "name": "Priority", "data_type": "single_select", "value": {"id": "p0", "name": {"raw": "P0"}}},
+      {"id": 107, "name": "Gist", "data_type": "text", "value": {"raw": "https://gist.github.com/cgwalters-bot/0123abcd"}}
+    ],
+    "archived_at": null
+  },
+  {
+    "id": 9003,
+    "node_id": "PVTI_synthetic_home_issue",
+    "content_type": "Issue",
+    "content": {
+      "node_id": "I_synthetic3",
+      "title": "Tooling question",
+      "body": "",
+      "html_url": "https://github.com/cgwalters-bot/example-tool/issues/7",
+      "state": "open",
+      "updated_at": "2026-01-04T00:00:00Z",
+      "user": {"login": "cgwalters-bot"}
+    },
+    "fields": [
+      {"id": 102, "name": "Status", "data_type": "single_select", "value": {"id": "x1", "name": {"raw": "Needs human"}}},
+      {"id": 103, "name": "Why", "data_type": "text", "value": {"raw": "Which way?"}}
+    ],
+    "archived_at": null
+  },
+  {
+    "id": 9004,
+    "node_id": "PVTI_synthetic_todo",
+    "content_type": "Issue",
+    "content": {"title": "Not in the queue", "html_url": "https://github.com/example-upstream/widget/issues/1"},
+    "fields": [
+      {"id": 102, "name": "Status", "data_type": "single_select", "value": {"id": "x2", "name": {"raw": "Todo"}}}
+    ],
+    "archived_at": null
+  },
+  {
+    "id": 9005,
+    "node_id": "PVTI_synthetic_archived",
+    "content_type": "Issue",
+    "content": {"title": "Archived", "html_url": "https://github.com/example-upstream/widget/issues/2"},
+    "fields": [
+      {"id": 102, "name": "Status", "data_type": "single_select", "value": {"id": "x1", "name": {"raw": "Needs human"}}}
+    ],
+    "archived_at": "2026-01-01T00:00:00Z"
+  },
+  {
+    "id": 9006,
+    "node_id": "PVTI_synthetic_redacted",
+    "content_type": "RedactedItem",
+    "content": null,
+    "fields": [
+      {"id": 102, "name": "Status", "data_type": "single_select", "value": {"id": "x1", "name": {"raw": "Needs human"}}},
+      {"id": 104, "name": "Priority", "data_type": "single_select", "value": {"id": "p2", "name": {"raw": "P2"}}}
+    ],
+    "archived_at": null
+  }
+]

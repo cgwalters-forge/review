@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<!-- The relay sends the full policy as a header (frame-ancestors only
+     works there); this copy also covers development mode. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self' https://api.github.com; img-src 'self'; base-uri 'none'; form-action 'self'; require-trusted-types-for 'script'; trusted-types dompurify">
+<meta name="referrer" content="no-referrer">
+<title>Review queue</title>
+<link rel="stylesheet" href="style.css">
+<script type="module" src="app.js"></script>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <h1><a href="#">Needs you</a></h1>
+    <span class="meta" id="meta">Starting…</span>
+    <button type="button" id="signout" hidden>Sign out</button>
+  </header>
+  <p class="notice" id="notice" role="alert" hidden></p>
+  <div id="view"></div>
+</div>
+</body>
+</html>
