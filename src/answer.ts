@@ -153,9 +153,16 @@ const RECOMMENDED_RE = /^Recommended:[ \t]*(\(?([A-Z])\b.*)$/;
 // Stands in for a line inside a fenced code block: never blank, never
 // matches anything, so it also ends an option list.
 const FENCED = "\u0000";
-const FENCE_RE = /^(```|~~~)/;
+// A fence: a run of three or more backticks or tildes, then an optional
+// info string.
+const FENCE_RE = /^(`{3,}|~{3,})(.*)$/;
 
-/** Trimmed lines, with fenced code blocks (fences included) blanked out. */
+/**
+ * Trimmed lines, with fenced code blocks (fences included) blanked out.
+ * As in CommonMark, a block closes only on a fence of the same character,
+ * at least as long as the opening one, with nothing after it; an
+ * unclosed block runs to the end.
+ */
 function unfencedLines(body: string): string[] {
   let fence: string | undefined;
   return body
@@ -165,7 +172,8 @@ function unfencedLines(body: string): string[] {
       const line = raw.trim();
       const m = FENCE_RE.exec(line);
       if (fence !== undefined) {
-        if (m?.[1] === fence) fence = undefined;
+        const run = m?.[1];
+        if (run && run[0] === fence[0] && run.length >= fence.length && m?.[2]?.trim() === "") fence = undefined;
         return FENCED;
       }
       if (m) {
