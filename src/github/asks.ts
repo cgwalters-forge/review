@@ -167,15 +167,17 @@ export function rerunComment(run: RunRef): string {
  * What the app comments on the review ask after he reviewed its PR, so
  * the bot sees it; undefined for a plain comment review, which settles
  * nothing. It names the head he reviewed, which may not be the one asked
- * about if the PR moved and he confirmed reviewing the new head.
+ * about if the PR moved and he confirmed reviewing the new head. The PR
+ * and the review's URL go in code spans: bare in a public tracker issue,
+ * either would put a "mentioned this" entry on the upstream PR.
  */
 export function reviewComment(verb: ReviewAction, pr: IssueRef, head: string, reviewUrl: string): string | undefined {
-  const what = `${pr.owner}/${pr.repo}#${pr.number} at ${head}`;
+  const what = `\`${pr.owner}/${pr.repo}#${pr.number}\` at \`${head}\`: \`${reviewUrl}\``;
   switch (verb) {
     case "approve":
-      return `Approved ${what}: ${reviewUrl}\n`;
+      return `Approved ${what}\n`;
     case "request-changes":
-      return `Requested changes on ${what}: ${reviewUrl}\n`;
+      return `Requested changes on ${what}\n`;
     case "comment":
       return undefined;
   }
