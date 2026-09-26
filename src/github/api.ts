@@ -92,6 +92,9 @@ export class GitHub {
   }
 
   #noteRate(res: Response): void {
+    // Search and GraphQL have budgets of their own; track the core one.
+    const resource = res.headers.get("x-ratelimit-resource");
+    if (resource !== null && resource !== "core") return;
     const limit = Number(res.headers.get("x-ratelimit-limit"));
     const remaining = Number(res.headers.get("x-ratelimit-remaining"));
     const reset = Number(res.headers.get("x-ratelimit-reset"));
