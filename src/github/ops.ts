@@ -5,7 +5,7 @@
 // derivation here, plus the reads: conditional (ETags), and a finished
 // run's job is read once.
 
-import { GitHubError, type GitHub } from "./api.ts";
+import { CacheMiss, GitHubError, type GitHub } from "./api.ts";
 import { loadBoard } from "./backend.ts";
 import { type Item, NO_PRIORITY, PRIORITY_ORDER } from "./board.ts";
 import {
@@ -65,7 +65,13 @@ export interface RawJob {
   status?: string;
   started_at?: string | null;
   completed_at?: string | null;
+  run_attempt?: number;
   steps?: RawStep[];
+}
+
+/** Whether a run's jobs, as read, are final: every job of `attempt` completed. */
+export function jobsFinal(jobs: readonly RawJob[] | undefined, attempt: number): boolean {
+  return !!jobs?.length && jobs.every((j) => !!j.completed_at && (j.run_attempt ?? attempt) === attempt);
 }
 
 /** What a run's job adds to it: the runner's size and the phase timestamps. */
@@ -461,6 +467,8 @@ export interface Ops {
   events?: BotEvent[];
   warnings: string[];
   at: number;
+  /** Read from the cache only (a first render before GitHub answers): sections not cached are undefined, without a warning. */
+  fromCache?: boolean;
 }
 
 const runsPath = (workflow: string) => `/repos/${DEVSPACE_REPO}/actions/workflows/${workflow}/runs?per_page=${OPS_RUNS_PER_PAGE}`;
@@ -479,7 +487,13 @@ async function loadDevspaces(gh: GitHub, cache: JobCache, now: number): Promise<
       return;
     }
     try {
-      const res = await gh.get<{ jobs?: RawJob[] }>(`/repos/${DEVSPACE_REPO}/actions/runs/${r.id}/jobs?filter=latest&per_page=10`);
+      // A finished run's jobs never change: a copy whose jobs had all
+      // completed, read in this tab or an earlier one, is final.
+      const path = `/repos/${DEVSPACE_REPO}/actions/runs/${r.id}/jobs?filter=latest&per_page=10`;
+      const attempt = r.run_attempt ?? 1;
+      const res = await (isActiveRun(r)
+        ? gh.get<{ jobs?: RawJob[] }>(path)
+        : gh.getSettled<{ jobs?: RawJob[] }>(path, (d) => jobsFinal(d.jobs, attempt)));
       const info = parseJobs(res.data.jobs ?? []);
       jobs.set(r.id, info);
       if (!isActiveRun(r)) cache.set(key(r), info);
@@ -520,7 +534,7 @@ export async function loadOps(gh: GitHub, cache: JobCache, now: number = Date.no
     try {
       return await p;
     } catch (e) {
-      warnings.push(`Couldn't read ${what}: ${message(e)}`);
+      if (!(e instanceof CacheMiss)) warnings.push(`Couldn't read ${what}: ${message(e)}`);
       return undefined;
     }
   };

@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { IDBFactory } from "fake-indexeddb";
 import { GitHub } from "../src/github/api.ts";
+import { ResponseCache } from "../src/github/cache.ts";
+import { IdbStore } from "../src/github/idbstore.ts";
 import type { Item } from "../src/github/board.ts";
 import {
   agentRuns,
@@ -11,6 +14,7 @@ import {
   devspaceOf,
   history,
   type JobCache,
+  jobsFinal,
   loadOps,
   outcomeOf,
   parseDevspaceTitle,
@@ -322,6 +326,67 @@ describe("loadOps", () => {
     await loadOps(gh, cache, NOW);
     const jobReads = calls.slice(before).filter((c) => c.url.includes("/jobs"));
     assert.deepEqual(jobReads.map((c) => new URL(c.url).pathname), [`${new URL(REPO).pathname}/actions/runs/36439387350/jobs`]);
+  });
+
+  it("reads finished runs' jobs from the persistent cache, and renders from it alone", async () => {
+    const factory = new IDBFactory();
+    const page = async () => {
+      const store = await IdbStore.open(factory);
+      assert.ok(store);
+      const cache = new ResponseCache({ now: () => NOW });
+      assert.ok(await cache.attach(store, "cgwalters", "h"));
+      const { fetchImpl, calls } = script("missing");
+      return { gh: new GitHub(async () => "t", fetchImpl, cache), cache, calls };
+    };
+    const first = await page();
+    await loadOps(first.gh, new Map(), NOW);
+    await first.cache.flushed();
+
+    // A reload: the in-memory job map is gone, the persistent cache isn't.
+    const second = await page();
+    const cached = await loadOps(second.gh.cacheOnly(), new Map(), NOW);
+    assert.equal(second.calls.length, 0, "a cache-only read never touches the network");
+    // The agent workflow's 404 isn't cached: that section is just missing, without a warning.
+    assert.deepEqual(cached.warnings, []);
+    assert.equal(cached.agents, undefined);
+    assert.deepEqual(cached.devspaces?.devspaces.map((d) => [d.name, d.cores]), [
+      ["selinux-finalize", 16],
+      ["selinux-3327", 16],
+      ["bootc-2504", 16],
+      ["praxis-opencode", 16],
+    ]);
+    await loadOps(second.gh, new Map(), NOW);
+    const jobReads = second.calls.filter((c) => c.url.includes("/jobs"));
+    assert.deepEqual(jobReads.map((c) => new URL(c.url).pathname), [`${new URL(REPO).pathname}/actions/runs/36439387350/jobs`], "only the live run's jobs");
+  });
+
+  it("takes a cached jobs copy as final only if its jobs of this attempt completed", async () => {
+    const done = (attempt?: number) => ({ status: "completed", completed_at: "2026-09-28T15:04:10Z", ...(attempt ? { run_attempt: attempt } : {}) });
+    const cases: [string, RawJob[], number, boolean][] = [
+      ["completed", [done()], 1, true],
+      ["completed, same attempt", [done(2)], 2, true],
+      ["an earlier attempt's", [done(1)], 2, false],
+      ["still running", [{ status: "in_progress", completed_at: null }], 1, false],
+      ["one of two running", [done(), { status: "in_progress" }], 1, false],
+      ["no jobs", [], 1, false],
+    ];
+    for (const [name, jobList, attempt, final] of cases) assert.equal(jobsFinal(jobList, attempt), final, name);
+
+    // A copy cached while the run was going is read again, whatever the clocks say.
+    let n = 0;
+    const { fetchImpl, calls } = scriptedFetch(() => ({ body: { jobs: n++ === 0 ? [{ status: "in_progress", completed_at: null }] : [done()] }, headers: { etag: `"${n}"` } }));
+    const gh = new GitHub(async () => "t", fetchImpl, new ResponseCache());
+    const isFinal = (d: { jobs?: RawJob[] }) => jobsFinal(d.jobs, 1);
+    await gh.get("/jobs");
+    await assert.rejects(gh.cacheOnly().getSettled("/jobs", isFinal), /not cached in its final state/);
+    assert.equal(jobsFinal((await gh.getSettled("/jobs", isFinal)).data.jobs, 1), true);
+    const before = calls.length;
+    await gh.getSettled("/jobs", isFinal);
+    assert.equal(calls.length, before, "a final copy is used without asking GitHub");
+    // A final copy doesn't make a cache-only read look old.
+    const cached = gh.cacheOnly();
+    await cached.getSettled("/jobs", isFinal);
+    assert.equal(cached.oldest, undefined);
   });
 
   it("keeps the other sections when one fails", async () => {

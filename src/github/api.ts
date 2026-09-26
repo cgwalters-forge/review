@@ -186,6 +186,21 @@ export class GitHub {
   }
 
   /**
+   * GET a resource that stops changing once final, such as a finished
+   * run's jobs: a cached copy that `isFinal` accepts (by its content,
+   * not by comparing clocks) is used as is, without asking GitHub again.
+   * A final copy is current, so it doesn't count toward `oldest`.
+   */
+  async getSettled<T>(path: string, isFinal: (data: T) => boolean): Promise<Fetched<T>> {
+    const url = this.#url(path);
+    const cached = await this.cache.get(url);
+    if (cached && isFinal(cached.data as T)) return { data: cached.data as T, changed: false };
+    // A copy from before it was final is no answer, not even a stale one.
+    if (this.#cacheOnly) throw new CacheMiss(`not cached in its final state: GET ${url}`);
+    return this.get<T>(path);
+  }
+
+  /**
    * GET every page of a list. Changed if any page changed, or the number
    * of pages did.
    */

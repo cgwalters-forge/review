@@ -8,8 +8,10 @@ import { missingScopes, type Persistence, savedToken, type TokenSource, useToken
 import { itemAction, reviewAskFor, reviewComment } from "./asks.ts";
 import type { Item } from "./board.ts";
 import { type Context, loadAnswered, loadContext, loadQueue, postAnswer, postAskComment, rerunFailedJobs, submitAskedReview, viewer } from "./backend.ts";
+import { cachedLabel, type CacheSession, forgetCache, openCache } from "./cache.ts";
 import {
   CLASSIC_SCOPES,
+  FETCH_CONCURRENCY,
   FORGE_MIN_INTERVAL_MS,
   FORGE_POLL_INTERVAL_MS,
   NEWS_LIMIT,
@@ -25,9 +27,10 @@ import type { QueueFilter } from "./filter.ts";
 import { type Command, HELP, keyCommand, parseRoute, type Route, type RouteInfo } from "./keys.ts";
 import { type HarnessCache, loadNews, type News } from "./news.ts";
 import { newsView } from "./newsview.ts";
+import { deleteCacheDatabase, IdbStore } from "./idbstore.ts";
 import { type JobCache, loadOps, type Ops } from "./ops.ts";
 import { opsView, tickOps } from "./opsview.ts";
-import { loadFileLines, loadForgePrs, loadPrDetail, loadRangeFiles, type PrDetail, refreshVerdicts, submitReview, type VerdictEntry } from "./prs.ts";
+import { loadFileLines, loadForgePrs, loadPrDetail, loadRangeFiles, mapLimit, type PrDetail, refreshVerdicts, submitReview, type VerdictEntry } from "./prs.ts";
 import { APPROVE_ACTION, canReview, type PrPane, prView, REVIEW_FORM_CLASS, type ReviewAskInfo } from "./prview.ts";
 import { buildEntries, type Entry, itemHref } from "./queue.ts";
 import { loadFilter, saveFilter } from "./store.ts";
@@ -38,6 +41,11 @@ const render = createRenderer(window);
 interface State {
   gh: GitHub;
   source: TokenSource;
+  session: CacheSession;
+  /** Set once signed out: nothing renders any more. */
+  closed: boolean;
+  /** Set once GitHub rejected the token; see rejected(). */
+  rejecting?: Promise<void>;
   login?: string;
   items: Item[];
   loaded: boolean;
@@ -94,6 +102,12 @@ interface State {
   pane?: PrPane;
   help: boolean;
   lastPoll?: Date;
+  /** The queue shows cached data fetched at this time (epoch ms), until the board is revalidated. */
+  cachedAt?: number;
+  /** PR details shown from the cache, by refKey: when they were fetched. */
+  prCachedAt: Map<string, number>;
+  /** The news pane shows cached data fetched at this time. */
+  newsCachedAt?: number;
   error?: string;
   forgeError?: string;
   /** What the token lacks, e.g. classic scopes. */
@@ -107,7 +121,11 @@ function byId<T extends HTMLElement>(id: string): T {
   return el as T;
 }
 
+/** Set once GitHub rejected the token: late loads mustn't draw over the sign-in page. */
+let viewClosed = false;
+
 function showMain(node: Node): void {
+  if (viewClosed) return;
   byId("view").replaceChildren(node);
 }
 
@@ -133,15 +151,28 @@ function message(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
+/** When what the current view shows was fetched, if it is a cached copy not yet revalidated. */
+function cachedSince(state: State): number | undefined {
+  const r = route();
+  if (r.route === "pr") return state.prCachedAt.get(refKey(r.ref));
+  if (r.route === "news") return state.newsCachedAt;
+  if (r.route === "ops") return state.ops?.fromCache ? state.ops.at : undefined;
+  return state.cachedAt;
+}
+
 function renderMeta(state: State): void {
-  const parts = [state.login ? `signed in as ${state.login}` : ""];
-  if (state.lastPoll) parts.push(`checked ${state.lastPoll.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`);
+  const parts: (string | Node)[] = [];
+  if (state.login) parts.push(`signed in as ${state.login}`);
+  const since = cachedSince(state);
+  if (since !== undefined) parts.push(h("span", { class: "cached", title: "Shown from this browser's cache; checking GitHub for changes" }, cachedLabel(since, Date.now())));
+  else if (state.lastPoll) parts.push(`checked ${state.lastPoll.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`);
   if (state.gh.rate) parts.push(`API ${state.gh.rate.remaining}/${state.gh.rate.limit}`);
-  byId("meta").textContent = parts.filter(Boolean).join(" · ");
+  byId("meta").replaceChildren(...parts.flatMap((p, i) => (i ? [" · ", p] : [p])));
 }
 
 /** Meta line and notices only: never touches the view, or a half-typed answer. */
 function renderChrome(state: State): void {
+  if (state.closed) return;
   renderMeta(state);
   const r = route().route;
   byId("nav-queue").classList.toggle("on", r !== "news" && r !== "ops");
@@ -211,6 +242,7 @@ function renderQueue(state: State): void {
 
 /** Rebuild the whole view for the current route. */
 function renderRoute(state: State): void {
+  if (state.closed) return;
   delete state.shown;
   delete state.shownPr;
   delete state.itemNote;
@@ -310,13 +342,14 @@ function renderPr(state: State, ref: { owner: string; repo: string; number: numb
   const detail = state.details.get(key);
   if (!detail) {
     showMain(h("main", { class: "item" }, h("a", { href: "#", class: "back" }, "← Queue (u)"), h("p", { class: "empty" }, `Loading ${key}…`)));
-    void loadPr(state, ref);
+    void loadPr(state, ref, true);
     return;
   }
   // Opening a PR the forge says changed since we read it reads it again,
-  // once per search result, in case the two timestamps never agree.
+  // once per search result, in case the two timestamps never agree. (A
+  // cached copy is being re-read already.)
   const searched = state.prs.find((p) => refKey(p.ref) === key)?.updatedAt;
-  if (searched && detail.updatedAt && searched > detail.updatedAt && state.reloadedFor.get(key) !== searched) {
+  if (searched && detail.updatedAt && searched > detail.updatedAt && !state.prCachedAt.has(key) && state.reloadedFor.get(key) !== searched) {
     state.reloadedFor.set(key, searched);
     state.details.delete(key);
     renderPr(state, ref);
@@ -374,27 +407,58 @@ function renderPr(state: State, ref: { owner: string; repo: string; number: numb
   showMain(pane.el);
 }
 
-/** Load (or reload) a PR's details, then show them if it is still open. */
-async function loadPr(state: State, ref: { owner: string; repo: string; number: number }): Promise<void> {
+/**
+ * Load (or reload) a PR's details, then show them if it is still open.
+ * With `cacheFirst`, a cached copy is shown first, marked as such, and
+ * replaced only if the fresh one differs. Approving from it is safe:
+ * submitReview checks the head against GitHub, never the cache.
+ */
+async function loadPr(state: State, ref: { owner: string; repo: string; number: number }, cacheFirst = false): Promise<void> {
   const key = refKey(ref);
-  try {
-    state.details.set(key, await loadPrDetail(state.gh, ref));
-  } catch (e) {
+  const isOpen = () => {
     const r = route();
-    if (r.route === "pr" && refKey(r.ref) === key) {
-      showMain(
-        h(
-          "main",
-          { class: "item" },
-          h("a", { href: "#", class: "back" }, "← Queue (u)"),
-          h("p", { class: "warn" }, `Couldn't load ${key}: ${message(e)}. Press r to retry.`),
-        ),
-      );
+    return !state.closed && r.route === "pr" && refKey(r.ref) === key;
+  };
+  if (cacheFirst && !state.details.has(key)) {
+    const cached = state.gh.cacheOnly();
+    try {
+      const detail = await loadPrDetail(cached, ref);
+      if (!state.details.has(key)) {
+        state.details.set(key, detail);
+        state.prCachedAt.set(key, cached.oldest ?? Date.now());
+        if (isOpen()) renderRoute(state);
+      }
+    } catch {
+      // Not (all) cached: wait for GitHub.
     }
+  }
+  let fresh: PrDetail;
+  try {
+    fresh = await loadPrDetail(state.gh, ref);
+  } catch (e) {
+    if (!isOpen()) return;
+    if (state.prCachedAt.has(key)) {
+      state.itemNote = `Couldn't refresh ${key}: ${message(e)}. This is the cached copy; press r to retry.`;
+      renderChrome(state);
+      return;
+    }
+    showMain(
+      h(
+        "main",
+        { class: "item" },
+        h("a", { href: "#", class: "back" }, "← Queue (u)"),
+        h("p", { class: "warn" }, `Couldn't load ${key}: ${message(e)}. Press r to retry.`),
+      ),
+    );
     return;
   }
-  const r = route();
-  if (r.route === "pr" && refKey(r.ref) === key) renderRoute(state);
+  const shown = state.details.get(key);
+  const wasCached = state.prCachedAt.delete(key);
+  state.details.set(key, fresh);
+  if (!isOpen()) return;
+  // The cached copy was right: keep the pane (and where he scrolled to).
+  if (wasCached && shown && JSON.stringify(shown) === JSON.stringify(fresh)) renderChrome(state);
+  else renderRoute(state);
 }
 
 /** (Re)load an item's context and update only that part of its view. */
@@ -406,13 +470,31 @@ async function refreshContext(state: State, item: Item): Promise<void> {
   container?.replaceChildren(contextView(item, ctx, render, contextHooks(state, item)));
 }
 
-/** Re-read the news (conditionally), and show it if the pane is open and it changed. */
+/**
+ * Re-read the news (conditionally), and show it if the pane is open and
+ * it changed. The first time, a complete cached copy shows first.
+ */
 async function refreshNews(state: State): Promise<void> {
+  if (!state.news) {
+    const cached = state.gh.cacheOnly();
+    const news = await loadNews(cached, state.harness, NEWS_LIMIT).catch(() => undefined);
+    // Only a complete copy: a repository missing from the cache would read as an error.
+    if (news && !news.warnings.length && !state.news) {
+      state.news = news;
+      state.newsCachedAt = cached.oldest ?? Date.now();
+      if (route().route === "news") {
+        showMain(newsView(news, render));
+        renderChrome(state);
+      }
+    }
+  }
   try {
     const news = await loadNews(state.gh, state.harness, NEWS_LIMIT);
     const first = !state.news;
+    delete state.newsCachedAt;
     state.news = news;
     if ((news.changed || first) && route().route === "news") showMain(newsView(news, render));
+    renderChrome(state);
   } catch (e) {
     state.error = `Couldn't read the news: ${message(e)}`;
     renderChrome(state);
@@ -432,14 +514,34 @@ function opsDue(state: State): boolean {
   return !state.opsRunning && Date.now() - state.opsStarted >= OPS_POLL_INTERVAL_MS;
 }
 
-/** Re-read the ops view's data, and show it if the view is still open. */
+/**
+ * Re-read the ops view's data, and show it if the view is still open.
+ * The first time, what the cache has shows first, marked as cached:
+ * sections it lacks say so rather than warn.
+ */
 async function refreshOps(state: State): Promise<void> {
   if (state.opsRunning) return;
   state.opsRunning = true;
   state.opsStarted = Date.now();
   try {
+    if (!state.ops) {
+      const cached = state.gh.cacheOnly();
+      const ops = await loadOps(cached, state.jobs);
+      if (!state.ops && (ops.devspaces || ops.work || ops.events)) {
+        ops.at = cached.oldest ?? ops.at;
+        ops.fromCache = true;
+        state.ops = ops;
+        if (route().route === "ops") {
+          showOps(state);
+          renderChrome(state);
+        }
+      }
+    }
     state.ops = await loadOps(state.gh, state.jobs);
-    if (route().route === "ops") showOps(state);
+    if (route().route === "ops") {
+      showOps(state);
+      renderChrome(state);
+    }
   } finally {
     state.opsRunning = false;
   }
@@ -486,6 +588,43 @@ async function pollVerdicts(state: State): Promise<void> {
 }
 
 /**
+ * Show the queue as the cache last saw it, before GitHub answers: the
+ * board, the forge's PRs and their verdicts, and which questions are
+ * answered, all read by the same loaders from a cache-only client, so
+ * the first render already has its labels and nothing shifts when the
+ * fresh answer replaces it. Does nothing if the board isn't cached or
+ * the network was faster.
+ */
+async function showCached(state: State): Promise<void> {
+  // The label's age is the board's and the search's: verdicts of PRs
+  // that haven't changed are reused without re-reading them.
+  const queueReads = state.gh.cacheOnly();
+  const otherReads = state.gh.cacheOnly();
+  let items: Item[];
+  try {
+    items = (await loadQueue(queueReads)).items;
+  } catch {
+    return;
+  }
+  const prs = await loadForgePrs(queueReads).catch(() => undefined);
+  const verdicts = new Map<string, VerdictEntry>();
+  const parts = await mapLimit(prs ?? [], FETCH_CONCURRENCY, (p) => refreshVerdicts(otherReads, [p], new Map()).catch(() => new Map<string, VerdictEntry>()));
+  for (const part of parts) for (const [k, v] of part) verdicts.set(k, v);
+  const answered = await loadAnswered(otherReads, items);
+  if (state.loaded || state.closed) return;
+  state.items = items;
+  if (prs) {
+    state.prs = prs;
+    state.forgeKnown = true;
+  }
+  state.verdicts = verdicts;
+  state.answered = answered;
+  state.loaded = true;
+  state.cachedAt = queueReads.oldest ?? Date.now();
+  update(state, true, true);
+}
+
+/**
  * Re-read which questions he answered, after the queue is on screen (one
  * request per open question with comments, so it shouldn't hold up the
  * first render), and update the view if that changed.
@@ -510,6 +649,7 @@ function rebuildEntries(state: State): void {
  * item or PR just gets a note if it changed underneath.
  */
 function update(state: State, boardChanged: boolean, first: boolean): void {
+  if (state.closed) return;
   rebuildEntries(state);
   const r = route();
   if (r.route === "news" || r.route === "ops") {
@@ -536,7 +676,7 @@ function update(state: State, boardChanged: boolean, first: boolean): void {
 
 async function poll(state: State): Promise<void> {
   // One poll at a time; the running one schedules the next.
-  if (state.polling) return;
+  if (state.polling || state.closed) return;
   state.polling = true;
   clearTimeout(state.timer);
   if (route().route === "news") void refreshNews(state);
@@ -548,7 +688,11 @@ async function poll(state: State): Promise<void> {
     state.lastPoll = new Date();
     delete state.error;
     const first = !state.loaded;
-    if (q.changed || first) {
+    // The first answer after showing the cached queue: re-read what the
+    // cache decided (which questions are answered) even if the board is unchanged.
+    const revalidated = state.cachedAt !== undefined;
+    delete state.cachedAt;
+    if (q.changed || first || revalidated) {
       state.items = q.items;
       // Keep "sent" only for items still waiting on the bot.
       const ids = new Set(q.items.map((i) => i.nodeId));
@@ -578,7 +722,7 @@ async function poll(state: State): Promise<void> {
 }
 
 function schedule(state: State): void {
-  if (document.hidden) return;
+  if (document.hidden || state.closed) return;
   const slow = state.gh.rateLow(RATE_LOW_FRACTION) ? POLL_BACKOFF_FACTOR : 1;
   state.timer = setTimeout(() => void poll(state), POLL_INTERVAL_MS * slow);
 }
@@ -701,10 +845,31 @@ function installTheme(): void {
 /** Which token problem to explain on the sign-in page. */
 type SignInReason = "none" | "rejected";
 
+/**
+ * GitHub rejected the token, at load or any time later (revoked or
+ * expired mid-session): stop, forget the token and everything read with
+ * it, and ask for a new one. Once only, whichever read saw the 401.
+ */
+function rejected(state: State): Promise<void> {
+  if (!state.rejecting) {
+    state.closed = true;
+    viewClosed = true;
+    clearTimeout(state.timer);
+    clearInterval(state.ticker);
+    state.pane?.dispose();
+    state.rejecting = Promise.allSettled([forgetCache(state.session, () => deleteCacheDatabase()), state.source.signOut()]).then(() => showSignIn("rejected"));
+  }
+  return state.rejecting;
+}
+
 async function start(source: TokenSource): Promise<void> {
+  const session = await openCache(await source.get(), source.persistence === "local", () => IdbStore.open(), () => deleteCacheDatabase());
   const state: State = {
-    gh: new GitHub(() => source.get()),
+    gh: new GitHub(() => source.get(), undefined, session.cache),
     source,
+    session,
+    closed: false,
+    prCachedAt: new Map(),
     items: [],
     loaded: false,
     prs: [],
@@ -731,17 +896,23 @@ async function start(source: TokenSource): Promise<void> {
     opsRunning: false,
     jobs: new Map(),
   };
+  state.gh.onUnauthorized = () => void rejected(state);
   byId("meta").textContent = "Checking the token…";
+  // This token was used here before: show what it saw last time while
+  // GitHub confirms it.
+  const cached = session.knownLogin ? showCached(state) : Promise.resolve();
   try {
     state.login = await viewer(state.gh);
   } catch (e) {
     if (e instanceof GitHubError && e.status === 401) {
-      await source.signOut();
-      showSignIn("rejected");
+      await cached;
+      await rejected(state);
       return;
     }
     // Anything else (offline, rate limited) the poll reports too.
   }
+  // Persist from now on, as this login's; a store another login filled is wiped.
+  if (state.login && session.store) await session.cache.attach(session.store, state.login, session.tokenHash);
   const lacking = missingScopes(state.gh.scopes, CLASSIC_SCOPES);
   if (lacking.length) {
     state.tokenWarning = `This token lacks the ${lacking.map((n) => n.any.join(" or ")).join(", ")} scope${lacking.length > 1 ? "s" : ""}; some reads or answers will fail.`;
@@ -749,7 +920,8 @@ async function start(source: TokenSource): Promise<void> {
   byId("signout").hidden = false;
   byId("nav").hidden = false;
   byId("signout").onclick = () => {
-    void source.signOut().finally(() => window.location.reload());
+    state.closed = true;
+    void Promise.allSettled([forgetCache(session, () => deleteCacheDatabase()), source.signOut()]).then(() => window.location.reload());
   };
   window.addEventListener("hashchange", () => {
     renderRoute(state);
@@ -761,7 +933,9 @@ async function start(source: TokenSource): Promise<void> {
     if (!document.hidden) void poll(state);
     else clearTimeout(state.timer);
   });
-  renderRoute(state);
+  await cached;
+  if (state.loaded) renderChrome(state);
+  else renderRoute(state);
   await poll(state);
 }
 
@@ -798,7 +972,7 @@ function signInView(reason: SignInReason): HTMLElement {
       "Paste a GitHub personal access token. It stays in this browser and is sent only to api.github.com; this page has no server. Everything you see is read with it, so the page shows nothing your token can't read.",
     ),
     input,
-    h("label", { class: "check", for: "remember" }, remember, " Remember on this device (localStorage). Otherwise it is forgotten when you close the tab."),
+    h("label", { class: "check", for: "remember" }, remember, " Remember on this device: the token in localStorage, and what the app read in IndexedDB so it starts at once. Otherwise both are forgotten when you close the tab."),
     h("div", { class: "actions" }, h("button", { type: "submit", class: "primary" }, "Use token")),
     status,
     h(
@@ -836,7 +1010,9 @@ function signInView(reason: SignInReason): HTMLElement {
 function showSignIn(reason: SignInReason): void {
   byId("meta").textContent = "";
   byId("signout").hidden = true;
-  showMain(signInView(reason));
+  byId("nav").hidden = true;
+  setNotice(undefined);
+  byId("view").replaceChildren(signInView(reason));
 }
 
 /** Keep --header-h at the sticky header's height, for the sticky file names below it. */
