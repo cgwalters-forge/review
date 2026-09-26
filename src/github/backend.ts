@@ -13,7 +13,7 @@ import {
   type RawItem,
   queueItems,
 } from "./board.ts";
-import { BOARD_NUMBER, BOARD_OWNER, NEEDS_HUMAN, OPERATOR, PAGE_SIZE, RECENT_COMMENTS } from "./config.ts";
+import { BOARD_NUMBER, BOARD_OWNER, OPERATOR, PAGE_SIZE, QUEUE_STATUSES, RECENT_COMMENTS } from "./config.ts";
 import { checkReceipt, RECEIPT_FILE, type RawReceiptGist, type ReceiptCheck } from "./receipt.ts";
 
 const PROJECT = `/users/${BOARD_OWNER}/projectsV2/${BOARD_NUMBER}`;
@@ -25,14 +25,14 @@ export interface Queue {
   changed: boolean;
 }
 
-/** Read the items needing a human, conditionally: 304s cost nothing. */
+/** Read the items needing a human or ready for review, conditionally: 304s cost nothing. */
 export async function loadQueue(gh: GitHub): Promise<Queue> {
   const project = await gh.get<{ public?: boolean }>(PROJECT);
   const fields = await gh.getAll<RawField>(`${PROJECT}/fields?per_page=${PAGE_SIZE}`);
   const ids = fieldIds(fields.data).join(",");
   // The server-side filter keeps the poll to one page; queueItems filters
   // again, in case the filter syntax ever stops matching.
-  const q = encodeURIComponent(`status:"${NEEDS_HUMAN}"`);
+  const q = encodeURIComponent(`status:${QUEUE_STATUSES.map((s) => `"${s}"`).join(",")}`);
   const items = await gh.getAll<RawItem>(`${PROJECT}/items?per_page=${PAGE_SIZE}&fields=${ids}&q=${q}`);
   return {
     items: queueItems(items.data),

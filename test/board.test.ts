@@ -29,7 +29,7 @@ describe("queueItems", () => {
   const items = queueItems(rawItems());
   const byId = new Map(items.map((i) => [i.nodeId, i]));
 
-  it("keeps unarchived Needs human items only, in board order", () => {
+  it("keeps unarchived Needs human and Draft items only, in board order", () => {
     assert.deepEqual(
       items.map((i) => i.nodeId),
       ["PVTI_synthetic_upstream_pr", "PVTI_synthetic_draft", "PVTI_synthetic_home_issue", "PVTI_synthetic_redacted"],
