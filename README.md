@@ -41,6 +41,12 @@ and other actions) and Draft items (gists to read). P0 comes first
   marked section in the draft body, both readable by anyone while the
   board is public.
 
+The **news** pane (`n`) lists recently merged PRs in the bot
+(cgwalters-bot/homegit), its runner (cgwalters-devspace-sandbox, both
+copies) and this app, newest first, with the first paragraph of each
+description. Harness changes stand out: PRs labeled `harness`, or
+touching `agent.yml`, `bot-harness` or a `harness/` tree.
+
 Keys: `j`/`k` move, `o` opens, `u` goes back, `r` reloads; in a PR,
 `j`/`k` step through files, `x` folds one, `a` approves (after a
 confirmation) and `c` jumps to the review text; `?` lists them. Your
