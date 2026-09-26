@@ -129,8 +129,12 @@ describe("rerunProblem", () => {
 describe("comments the app writes", () => {
   const pr = { owner: "bootc-dev", repo: "bootc", number: 2500 };
   it("says what it reviewed, with the head", () => {
-    assert.equal(reviewComment("approve", pr, SHA, "https://r"), `Approved bootc-dev/bootc#2500 at ${SHA}: https://r\n`);
-    assert.equal(reviewComment("request-changes", pr, SHA, "https://r"), `Requested changes on bootc-dev/bootc#2500 at ${SHA}: https://r\n`);
+    const url = "https://github.com/bootc-dev/bootc/pull/2500#pullrequestreview-1";
+    assert.equal(reviewComment("approve", pr, SHA, url), `Approved \`bootc-dev/bootc#2500\` at \`${SHA}\`: \`${url}\`\n`);
+    assert.equal(reviewComment("request-changes", pr, SHA, url), `Requested changes on \`bootc-dev/bootc#2500\` at \`${SHA}\`: \`${url}\`\n`);
+    // Nothing that would mention the upstream PR is outside a code span.
+    const outside = (reviewComment("approve", pr, SHA, url) ?? "").split("`").filter((_, i) => i % 2 === 0).join("");
+    assert.doesNotMatch(outside, /#\d|https?:/);
     assert.equal(reviewComment("comment", pr, SHA, "https://r"), undefined);
   });
   it("says which run it reran", () => {
