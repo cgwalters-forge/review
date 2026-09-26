@@ -14,9 +14,14 @@
 //     B) io.example
 //     Recommended: A, because it is already registered
 //
-// The first line always names the board item it blocks. Options and the
-// recommendation may be absent (an action, or an open question); when
-// there is a recommendation, it is option A.
+// The first line always names the board item it blocks. `Q:`, `Options:`
+// and `Recommended:` count only after the context, outside fenced code
+// blocks: `Options:` and `Recommended:` only after the `Q:` line. Each
+// option is exactly one line, `A) text`, lettered from A without gaps,
+// at least two; an option wrapped onto a second line, or a lone option,
+// makes the list unreadable, and the app says so rather than guess.
+// Options and the recommendation may be absent (an action, or an open
+// question); when there is a recommendation, it is option A.
 //
 // He answers with a plain comment on that issue: GitHub records who wrote
 // it, so nothing else vouches for it. A picked option is the comment's
@@ -126,6 +131,8 @@ export interface Question {
   options: Option[];
   /** The `Recommended:` line, without its prefix, e.g. "A, because ...". */
   recommendation?: string;
+  /** Why an `Options:` list was there but couldn't be read. */
+  optionsProblem?: string;
 }
 
 const BLOCKS_RE = /^Blocks:[ \t]*(https:\/\/\S+)[ \t]*$/;
@@ -135,37 +142,86 @@ const OPTIONS_RE = /^Options:[ \t]*$/;
 const OPTION_RE = /^(?:[-*][ \t]+)?\(?([A-Z])\)[ \t]+(.+)$/;
 const RECOMMENDED_RE = /^Recommended:[ \t]*(\(?([A-Z])\b.*)$/;
 
+// Stands in for a line inside a fenced code block: never blank, never
+// matches anything, so it also ends an option list.
+const FENCED = "\u0000";
+const FENCE_RE = /^(```|~~~)/;
+
+/** Trimmed lines, with fenced code blocks (fences included) blanked out. */
+function unfencedLines(body: string): string[] {
+  let fence: string | undefined;
+  return body
+    .replace(/\r\n?/g, "\n")
+    .split("\n")
+    .map((raw) => {
+      const line = raw.trim();
+      const m = FENCE_RE.exec(line);
+      if (fence !== undefined) {
+        if (m?.[1] === fence) fence = undefined;
+        return FENCED;
+      }
+      if (m) {
+        fence = m[1];
+        return FENCED;
+      }
+      return line;
+    });
+}
+
+type ParsedOptions = { options: Option[]; problem?: string };
+
 /**
  * Parse the options: one per line after a line `Options:`, blank lines
  * allowed between them, up to the first other line. They must be
  * consecutive letters from A, and at least two; anything else is not a
- * choice and yields none.
+ * choice, and yields none with the reason.
  */
-function parseOptions(lines: readonly string[], recommended: string | undefined): Option[] {
+function parseOptions(lines: readonly string[], recommended: string | undefined): ParsedOptions {
   const start = lines.findIndex((l) => OPTIONS_RE.test(l));
-  if (start < 0) return [];
+  if (start < 0) return { options: [] };
   const options: Option[] = [];
+  // The line that ended the list, when it came right after an option.
+  let stop: string | undefined;
+  let blank = false;
   for (const line of lines.slice(start + 1)) {
-    if (line === "") continue;
+    if (line === "") {
+      blank = true;
+      continue;
+    }
     const m = OPTION_RE.exec(line);
-    if (!m) break;
+    if (!m) {
+      if (!blank) stop = line;
+      break;
+    }
+    blank = false;
     const letter = m[1] as string;
-    if (letter !== String.fromCharCode("A".charCodeAt(0) + options.length)) return [];
+    const want = String.fromCharCode("A".charCodeAt(0) + options.length);
+    if (letter !== want) return { options: [], problem: `option ${letter}) comes where ${want}) should` };
     options.push({ letter, text: (m[2] as string).trim(), recommended: letter === recommended });
   }
-  return options.length >= 2 ? options : [];
+  if (options.length >= 2) {
+    // A wrapped option reads as prose right under the last one; say so,
+    // but keep the options, whose letters are still right.
+    const wrapped = stop !== undefined && stop !== FENCED && !RECOMMENDED_RE.test(stop);
+    return wrapped ? { options, problem: `the line after the options (${JSON.stringify(stop)}) may be a wrapped option` } : { options };
+  }
+  return { options: [], problem: options.length === 1 ? "it has only one option" : "no option follows it" };
 }
 
 /** Parse a question issue's body (see the format at the top). */
 export function parseQuestion(body: string): Question {
-  const lines = body.replace(/\r\n?/g, "\n").split("\n").map((l) => l.trim());
+  const lines = unfencedLines(body);
   const q: Question = { options: [] };
   const blocks = BLOCKS_RE.exec(lines[0] ?? "");
   if (blocks) q.blocks = blocks[1] as string;
-  const ask = lines.map((l) => ASK_RE.exec(l)).find((m) => m);
-  if (ask) q.ask = (ask[1] as string).trim();
-  const rec = lines.map((l) => RECOMMENDED_RE.exec(l)).find((m) => m);
+  const askAt = lines.findIndex((l) => ASK_RE.test(l));
+  if (askAt < 0) return q;
+  q.ask = (ASK_RE.exec(lines[askAt] as string)?.[1] as string).trim();
+  const after = lines.slice(askAt + 1);
+  const rec = after.map((l) => RECOMMENDED_RE.exec(l)).find((m) => m);
   if (rec) q.recommendation = (rec[1] as string).trim();
-  q.options = parseOptions(lines, rec?.[2]);
+  const parsed = parseOptions(after, rec?.[2]);
+  q.options = parsed.options;
+  if (parsed.problem) q.optionsProblem = `its Options: list doesn't read as one option per line: ${parsed.problem}`;
   return q;
 }

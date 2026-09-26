@@ -347,6 +347,9 @@ export function itemView(item: Item, data: ItemViewData, render: Renderer, handl
     h("section", {}, h("h3", {}, "Why"), h("div", { class: "md" }, render(item.why || "(empty)"))),
     questions,
     state ? h("p", { class: "note" }, STATE_NOTE[state]) : null,
+    onQuestion && question.optionsProblem
+      ? h("p", { class: "warn" }, `The question's options can't all be offered: ${question.optionsProblem}. Read the question below, and answer in your own words if an option is missing.`)
+      : null,
     target.kind === "question"
       ? answerForm(target, question, state === "answered", handlers)
       : h("p", { class: "target" }, describeTarget(target)),

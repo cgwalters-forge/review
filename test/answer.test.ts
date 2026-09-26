@@ -69,7 +69,11 @@ describe("parseQuestion", () => {
     ask: q.ask,
     options: q.options.map((o) => `${o.letter}:${o.text}${o.recommended ? "*" : ""}`),
     recommendation: q.recommendation,
+    problem: q.optionsProblem,
   });
+  type Want = Partial<ReturnType<typeof summary>>;
+  const none = { blocks: undefined, ask: undefined, options: [], recommendation: undefined, problem: undefined };
+  const B = "Blocks: https://github.com/o/r/issues/1";
   const full = [
     "Blocks: https://github.com/cgwalters-forge/tracker/issues/12",
     "The stable format needs a name.",
@@ -80,7 +84,7 @@ describe("parseQuestion", () => {
     "B) io.example (see below)",
     "Recommended: A, because it is registered",
   ].join("\n");
-  const cases: [string, string, ReturnType<typeof summary>][] = [
+  const cases: [string, string, Want][] = [
     [
       "the full format, recommendation first",
       full,
@@ -93,40 +97,44 @@ describe("parseQuestion", () => {
     ],
     [
       "CRLF, list items, blank lines between options",
-      "Blocks: https://github.com/o/r/pull/3\r\nQ: go?\r\nOptions:\r\n\r\n- A) yes\r\n\r\n- (B) no\r\nC) trailing prose stops nothing\r\n",
-      { blocks: "https://github.com/o/r/pull/3", ask: "go?", options: ["A:yes", "B:no", "C:trailing prose stops nothing"], recommendation: undefined },
+      "Blocks: https://github.com/o/r/pull/3\r\nQ: go?\r\nOptions:\r\n\r\n- A) yes\r\n\r\n- (B) no\r\nC) third\r\n",
+      { blocks: "https://github.com/o/r/pull/3", ask: "go?", options: ["A:yes", "B:no", "C:third"] },
+    ],
+    ["a paragraph after the options", `${B}\nQ: x?\nOptions:\nA) one\nB) two\n\nMore context.`, { blocks: `https://github.com/o/r/issues/1`, ask: "x?", options: ["A:one", "B:two"] }],
+    [
+      "a wrapped option keeps the options, with a note",
+      `${B}\nQ: x?\nOptions:\nA) one\nB) two, which goes on\nand on\nRecommended: A`,
+      {
+        blocks: "https://github.com/o/r/issues/1",
+        ask: "x?",
+        options: ["A:one*", "B:two, which goes on"],
+        recommendation: "A",
+        problem: `its Options: list doesn't read as one option per line: the line after the options ("and on") may be a wrapped option`,
+      },
+    ],
+    ["an action, no options", `${B}\nQ: Please approve the key.`, { blocks: "https://github.com/o/r/issues/1", ask: "Please approve the key." }],
+    ["Blocks only on the first line", "Context first\nBlocks: https://github.com/o/r/issues/1\nQ: x?", { ask: "x?" }],
+    ["a non-https Blocks", "Blocks: javascript:alert(1)\nQ: x?", { ask: "x?" }],
+    ["inline options are not options", "Q: go? Options: A) yes B) no", { ask: "go? Options: A) yes B) no" }],
+    ["options before the Q: line don't count", "Options:\nA) x\nB) y\nQ: which?", { ask: "which?" }],
+    ["no Q: line, no options", "Options:\nA) x\nB) y", {}],
+    [
+      "fenced blocks are skipped",
+      [B, "```", "Q: not this", "Options:", "A) fake", "B) fake", "```", "Q: real?", "~~~", "Options:", "A) fake", "B) fake", "~~~", "Options:", "A) yes", "B) no"].join("\n"),
+      { blocks: "https://github.com/o/r/issues/1", ask: "real?", options: ["A:yes", "B:no"] },
     ],
     [
-      "options end at the first other line",
-      "Blocks: https://github.com/o/r/issues/1\nOptions:\nA) one\nB) two\nMore context.\nC) not an option",
-      { blocks: "https://github.com/o/r/issues/1", ask: undefined, options: ["A:one", "B:two"], recommendation: undefined },
+      "an unterminated fence swallows the rest",
+      `Q: x?\n\`\`\`\nOptions:\nA) fake\nB) fake`,
+      { ask: "x?" },
     ],
-    [
-      "an action, no options",
-      "Blocks: https://github.com/o/r/issues/1\nQ: Please log in to the console and approve the key.",
-      { blocks: "https://github.com/o/r/issues/1", ask: "Please log in to the console and approve the key.", options: [], recommendation: undefined },
-    ],
-    [
-      "Blocks only on the first line",
-      "Context first\nBlocks: https://github.com/o/r/issues/1\nOptions:\nA) x\nB) y",
-      { blocks: undefined, ask: undefined, options: ["A:x", "B:y"], recommendation: undefined },
-    ],
-    [
-      "a non-https Blocks",
-      "Blocks: javascript:alert(1)\nQ: x?",
-      { blocks: undefined, ask: "x?", options: [], recommendation: undefined },
-    ],
-    ["inline options are not options", "Q: go? Options: A) yes B) no", { blocks: undefined, ask: "go? Options: A) yes B) no", options: [], recommendation: undefined }],
-    ["a single option is not a choice", "Options:\nA) only this", { blocks: undefined, ask: undefined, options: [], recommendation: undefined }],
-    ["out of order", "Options:\nA) one\nC) three", { blocks: undefined, ask: undefined, options: [], recommendation: undefined }],
-    ["not starting at A", "Options:\nB) two\nC) three", { blocks: undefined, ask: undefined, options: [], recommendation: undefined }],
-    [
-      "a recommendation naming B marks B",
-      "Options:\nA) one\nB) two\nRecommended: B",
-      { blocks: undefined, ask: undefined, options: ["A:one", "B:two*"], recommendation: "B" },
-    ],
+    ["a single option is not a choice", "Q: x?\nOptions:\nA) only this", { ask: "x?", problem: "its Options: list doesn't read as one option per line: it has only one option" }],
+    ["an empty list", "Q: x?\nOptions:\nSee above.", { ask: "x?", problem: "its Options: list doesn't read as one option per line: no option follows it" }],
+    ["out of order", "Q: x?\nOptions:\nA) one\nC) three", { ask: "x?", problem: "its Options: list doesn't read as one option per line: option C) comes where B) should" }],
+    ["not starting at A", "Q: x?\nOptions:\nB) two\nC) three", { ask: "x?", problem: "its Options: list doesn't read as one option per line: option B) comes where A) should" }],
+    ["a recommendation naming B marks B", "Q: x?\nOptions:\nA) one\nB) two\nRecommended: B", { ask: "x?", options: ["A:one", "B:two*"], recommendation: "B" }],
   ];
   for (const [name, body, want] of cases) {
-    it(name, () => assert.deepEqual(summary(parseQuestion(body)), want));
+    it(name, () => assert.deepEqual(summary(parseQuestion(body)), { ...none, ...want }));
   }
 });

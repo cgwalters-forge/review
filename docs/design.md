@@ -64,7 +64,11 @@ authorship. It is gone. Instead:
   The first line always names the blocked board item (a tracker issue, or
   an upstream issue or PR, which can't have sub-issues). Options and the
   recommendation may be absent (an action, or an open question); when
-  there is a recommendation, it is always option A.
+  there is a recommendation, it is always option A. `Options:` and
+  `Recommended:` count only after the `Q:` line and outside fenced code
+  blocks, and each option is exactly one line, lettered from A, at least
+  two; the app says so when a list doesn't read that way rather than
+  guess at a wrapped option.
 - **He answers with a normal comment on it**, and his login is what
   authenticates it. If he picks an option, the comment's first line is
   exactly that letter, optionally followed by his own text; otherwise it
