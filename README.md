@@ -20,14 +20,36 @@ claude.ai-hosted prototype, and why it is being replaced, is described in
 
 ## What v0 does
 
-It lists the Workstream board's "Needs human" items by priority. An item
-shows its Why, links, description, gist and latest comments, rendered
-from markdown and sanitized. You answer with a tap on one of the options
-the bot offered (parsed from Why), free text, or both. On an issue or PR
-the answer is a comment by you starting with `/answer` (or `/answer B`);
-on a draft item it is a receipt gist plus a marked section in the draft
-body, both readable by anyone while the board is public. The queue is polled every 30 seconds with ETags while the tab
-is visible.
+One ranked queue of everything waiting on you: the bot's open draft PRs
+in cgwalters-forge that you haven't approved or sent back at their
+current head, and the Workstream board's "Needs human" items (questions,
+and other actions) and Draft items (gists to read). P0 comes first
+(the board's Priority; a PR takes its board item's), then the oldest.
+
+- **A forge PR** opens a review pane: the description (without bot-pr's
+  meta section), CI checks, every commit with its full message, and the
+  diff per file, foldable. **Approve** submits an approving review of the
+  head you were shown, which is what `bot-pr promote` acts on; if the
+  head moved meanwhile, nothing is sent. A checkbox adds the `/draft`
+  line that asks promote for a draft upstream PR. **Request changes** and
+  **Comment** submit reviews with your text.
+- **A board item** shows its Why, links, description, gist and latest
+  comments, rendered from markdown and sanitized. You answer with a tap
+  on one of the options the bot offered (parsed from Why), free text, or
+  both. On an issue or PR the answer is a comment by you starting with
+  `/answer` (or `/answer B`); on a draft item it is a receipt gist plus a
+  marked section in the draft body, both readable by anyone while the
+  board is public.
+
+Keys: `j`/`k` move, `o` opens, `u` goes back, `r` reloads; in a PR,
+`j`/`k` step through files, `x` folds one, `a` approves (after a
+confirmation) and `c` jumps to the review text; `?` lists them. Your
+text never goes out with a line the bot would read as a command
+(`/promote`, `/draft`, `/ready`, `/answer`).
+
+The board is polled every 30 seconds with ETags while the tab is
+visible, the forge's PR search every minute, and a PR's reviews only
+when it changed.
 
 The app contains no data: everything is fetched in your browser with your
 token, from `api.github.com` only.

@@ -4,28 +4,25 @@
 import { type Answer, getDraftSection, parseAnswer } from "../answer.ts";
 import { h, link } from "../dom.ts";
 import type { Renderer } from "../markdown.ts";
-import { type AnswerTarget, groupByPriority, type Item, type Question } from "./board.ts";
+import type { AnswerTarget, Item, Question } from "./board.ts";
 import type { Context, ReceiptStatus } from "./backend.ts";
 import { BOARD_URL, OPERATOR } from "./config.ts";
+import { type Entry, type EntryKind, groupRanked } from "./queue.ts";
 
-/** Characters of Why shown on a queue card. */
-const WHY_EXCERPT = 240;
-
-export function itemHash(item: Item): string {
-  return `#item/${item.nodeId}`;
-}
+/** Characters of Why shown on a queue row. */
+const WHY_EXCERPT = 160;
 
 function refLabel(item: Item): string {
   if (item.ref) return `${item.ref.owner}/${item.ref.repo}#${item.ref.number}`;
   return item.kind === "draft" ? "draft item" : "item";
 }
 
-function excerpt(text: string, max: number): string {
+export function excerpt(text: string, max: number): string {
   const flat = text.replace(/\s+/g, " ").trim();
   return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
 }
 
-function time(iso: string | undefined): string {
+export function time(iso: string | undefined): string {
   if (!iso) return "";
   const d = new Date(iso);
   return Number.isNaN(d.getTime())
@@ -33,7 +30,23 @@ function time(iso: string | undefined): string {
     : d.toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
-function pill(priority: string | undefined): HTMLElement {
+const AGE_UNITS: [number, string][] = [
+  [7 * 24 * 3600_000, "w"],
+  [24 * 3600_000, "d"],
+  [3600_000, "h"],
+  [60_000, "m"],
+];
+
+/** A compact age, e.g. "3d", or "" for no or a bad date. */
+export function age(iso: string | undefined, now: number): string {
+  const t = iso ? Date.parse(iso) : Number.NaN;
+  if (Number.isNaN(t)) return "";
+  const ms = Math.max(0, now - t);
+  for (const [unit, suffix] of AGE_UNITS) if (ms >= unit) return `${Math.floor(ms / unit)}${suffix}`;
+  return "now";
+}
+
+export function pill(priority: string | undefined): HTMLElement {
   const p = priority ?? "–";
   return h("span", { class: `pill ${/^P[0-3]$/.test(p) ? p.toLowerCase() : "pn"}` }, p);
 }
@@ -55,38 +68,63 @@ export function answerState(
   return receipts.get(item.nodeId)?.check.ok ? "answered" : "claimed";
 }
 
-const STATE_LABEL: Record<NonNullable<AnswerState>, string> = {
+export const STATE_LABEL: Record<NonNullable<AnswerState>, string> = {
   answered: "answered",
   claimed: "body claims an answer (unverified)",
 };
 
+/** A short status shown on a queue row, e.g. "answered". */
+export interface RowLabel {
+  text: string;
+  cls: string;
+}
+
+const KIND_LABEL: Record<EntryKind, string> = { pr: "PR", question: "Q", chore: "act" };
+const KIND_TITLE: Record<EntryKind, string> = { pr: "forge PR to review", question: "question for you", chore: "action for you" };
+
+/** The class queue rows carry, and the attribute holding their key. */
+export const ROW_CLASS = "row";
+export const ROW_KEY_ATTR = "data-key";
+
 export function queueView(
-  items: readonly Item[],
-  sent: ReadonlySet<string>,
-  receipts: ReadonlyMap<string, ReceiptStatus>,
+  entries: readonly Entry[],
+  labelOf: (e: Entry) => RowLabel | undefined,
+  now: number = Date.now(),
 ): HTMLElement {
   const root = h("main", { class: "queue" });
-  if (items.length === 0) {
+  if (entries.length === 0) {
     root.append(h("p", { class: "empty" }, "Nothing needs you right now."));
     return root;
   }
-  for (const group of groupByPriority(items)) {
-    const section = h("section", { class: "group" }, h("h2", { class: "group-h" }, `${group.priority} · ${group.items.length}`));
-    for (const item of group.items) {
-      const state = answerState(item, sent, receipts);
+  const counts = { pr: 0, question: 0, chore: 0 };
+  for (const e of entries) counts[e.kind]++;
+  root.append(
+    h("p", { class: "summary" }, `${counts.pr} PRs to review · ${counts.question} questions · ${counts.chore} other · j/k to move, o to open, ? for keys`),
+  );
+  for (const group of groupRanked(entries)) {
+    const section = h("section", { class: "group" }, h("h2", { class: "group-h" }, `${group.priority} · ${group.entries.length}`));
+    for (const e of group.entries) {
+      const label = labelOf(e);
+      const why = e.item?.why ? excerpt(e.item.why, WHY_EXCERPT) : "";
       section.append(
         h(
           "a",
-          { class: `card${state ? ` ${state}` : ""}`, href: itemHash(item) },
+          { class: `${ROW_CLASS} k-${e.kind}${label ? ` ${label.cls}` : ""}`, href: e.href, [ROW_KEY_ATTR]: e.key },
+          h("span", { class: `kind k-${e.kind}`, title: KIND_TITLE[e.kind] }, KIND_LABEL[e.kind]),
           h(
-            "div",
-            { class: "hdr" },
-            pill(item.priority),
-            h("span", { class: "tag" }, [item.org, refLabel(item)].filter(Boolean).join(" · ")),
-            state ? h("span", { class: `state ${state}` }, STATE_LABEL[state]) : null,
+            "span",
+            { class: "main" },
+            h("span", { class: "title" }, e.title),
+            h(
+              "span",
+              { class: "sub" },
+              pill(e.priority),
+              h("span", { class: "tag" }, [e.item?.org, e.where].filter(Boolean).join(" · ")),
+              label ? h("span", { class: `state ${label.cls}` }, label.text) : null,
+            ),
+            why ? h("span", { class: "why" }, why) : null,
           ),
-          h("h3", {}, item.title),
-          item.why ? h("p", { class: "why" }, excerpt(item.why, WHY_EXCERPT)) : null,
+          h("span", { class: "age", title: e.since ? `waiting since ${time(e.since)}` : "" }, age(e.since, now)),
         ),
       );
     }
@@ -282,7 +320,7 @@ export function itemView(
   return h(
     "main",
     { class: "item" },
-    h("a", { href: "#", class: "back" }, "← Queue"),
+    h("a", { href: "#", class: "back" }, "← Queue (u)"),
     h(
       "div",
       { class: "hdr" },

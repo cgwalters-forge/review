@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { setDraftSection } from "../src/answer.ts";
-import { answerTarget, fieldIds, groupByPriority, type Item, parseIssueUrl, questionOf, queueItems } from "../src/github/board.ts";
+import { answerTarget, fieldIds, type Item, parseIssueUrl, questionOf, queueItems } from "../src/github/board.ts";
 import { HOME_OWNERS } from "../src/github/config.ts";
 import { fields, rawItems } from "./helpers.ts";
 
@@ -64,20 +64,6 @@ describe("queueItems", () => {
     assert.equal(r?.kind, "unknown");
     assert.equal(r?.title, "(no title or no access)");
     assert.equal(r?.ref, undefined);
-  });
-});
-
-describe("groupByPriority", () => {
-  it("orders P0 first and unprioritised last, keeping board order", () => {
-    const mk = (nodeId: string, priority?: string): Item => ({
-      id: 0, nodeId, kind: "issue", title: nodeId, body: "", why: "", branch: [], gist: [],
-      ...(priority ? { priority } : {}),
-    });
-    const groups = groupByPriority([mk("a", "P2"), mk("b"), mk("c", "P0"), mk("d", "P2"), mk("e", "P9")]);
-    assert.deepEqual(
-      groups.map((g) => [g.priority, g.items.map((i) => i.nodeId)]),
-      [["P0", ["c"]], ["P2", ["a", "d"]], ["P9", ["e"]], ["No priority", ["b"]]],
-    );
   });
 });
 
