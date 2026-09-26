@@ -4,9 +4,9 @@
 import { type Answer, parseAnswer, type Question } from "../answer.ts";
 import { h, link } from "../dom.ts";
 import type { Renderer } from "../markdown.ts";
-import { type AnswerTarget, isQuestion, type Item, questionOf } from "./board.ts";
-import type { Context } from "./backend.ts";
-import { BOARD_URL, OPERATOR } from "./config.ts";
+import { type AnswerTarget, type IssueRef, isQuestion, type Item, questionOf, type SubIssueSummary } from "./board.ts";
+import type { Context, SubIssue } from "./backend.ts";
+import { BOARD_URL, OPERATOR, QUESTION_LABEL } from "./config.ts";
 import { type Entry, type EntryKind, groupRanked } from "./queue.ts";
 
 /** Characters of Why shown on a queue row. */
@@ -70,6 +70,11 @@ export const STATE_LABEL: Record<NonNullable<AnswerState>, string> = {
   done: "closed by the bot",
 };
 
+/** Sub-issue progress, e.g. "1/3 sub-issues done". */
+export function progressText(p: SubIssueSummary): string {
+  return `${p.completed}/${p.total} sub-issues done`;
+}
+
 /** A short status shown on a queue row, e.g. "answered". */
 export interface RowLabel {
   text: string;
@@ -92,7 +97,8 @@ function rowText(e: Entry): string {
 function row(e: Entry, labelOf: (e: Entry) => RowLabel | undefined, now: number, child: boolean): HTMLElement {
   const label = labelOf(e);
   const why = rowText(e);
-  const where = [e.item?.org, e.where, e.blocks ? `blocks ${e.blocks}` : undefined].filter(Boolean).join(" · ");
+  const progress = e.item?.subIssues ? progressText(e.item.subIssues) : undefined;
+  const where = [e.item?.org, e.where, e.blocks ? `blocks ${e.blocks}` : undefined, progress].filter(Boolean).join(" · ");
   return h(
     "a",
     { class: `${ROW_CLASS} k-${e.kind}${child ? " child" : ""}${label ? ` ${label.cls}` : ""}`, href: e.href, [ROW_KEY_ATTR]: e.key },
@@ -231,14 +237,38 @@ function commentView(c: Context["comments"][number], render: Renderer, onQuestio
   );
 }
 
+/** The app route of an issue that is on the board, if it is. */
+export type BoardHref = (ref: IssueRef) => string | undefined;
+
+function subIssueView(s: SubIssue, boardHref: BoardHref): HTMLElement {
+  const href = boardHref(s.ref);
+  const where = `${s.ref.owner}/${s.ref.repo}#${s.ref.number}`;
+  const notes = [s.labels.includes(QUESTION_LABEL) ? "question" : "", s.progress ? progressText(s.progress) : ""].filter(Boolean).join(" · ");
+  return h(
+    "li",
+    { class: `sub-issue ${s.state === "closed" ? "closed" : "open"}` },
+    h("span", { class: "sub-state" }, s.state),
+    " ",
+    href ? h("a", { href }, s.title) : link(s.url, s.title),
+    " ",
+    h("span", { class: "tag" }, notes ? `${where} · ${notes}` : where),
+  );
+}
+
+function subIssuesView(item: Item, subs: readonly SubIssue[], boardHref: BoardHref): HTMLElement {
+  const summary = item.subIssues ? ` · ${progressText(item.subIssues)} (${item.subIssues.percent_completed}%)` : "";
+  return h("section", { class: "sub-issues" }, h("h3", {}, `Sub-issues${summary}`), h("ul", {}, ...subs.map((s) => subIssueView(s, boardHref))));
+}
+
 /** The part of the item view that needs the loaded context. */
-export function contextView(item: Item, context: Context | undefined, render: Renderer): DocumentFragment {
+export function contextView(item: Item, context: Context | undefined, render: Renderer, boardHref: BoardHref = () => undefined): DocumentFragment {
   const out = document.createDocumentFragment();
   if (!context) {
-    out.append(h("p", { class: "note" }, "Loading comments and gists…"));
+    out.append(h("p", { class: "note" }, "Loading comments, gists and sub-issues…"));
     return out;
   }
   for (const w of context.warnings) out.append(h("p", { class: "warn" }, w));
+  if (context.subIssues?.length) out.append(subIssuesView(item, context.subIssues, boardHref));
   for (const g of context.gists) {
     const s = h("section", { class: "gist" }, h("h3", {}, "Gist ", link(g.url, g.owner ? `by ${g.owner}` : "")));
     for (const f of g.files) {
@@ -268,6 +298,8 @@ export interface ItemViewData {
   state: AnswerState;
   /** The questions nested under this item in the queue. */
   questions?: readonly Entry[];
+  /** Links sub-issues on the board to their item view. */
+  boardHref?: BoardHref;
 }
 
 const STATE_NOTE: Record<NonNullable<AnswerState>, string> = {
@@ -303,7 +335,11 @@ export function itemView(item: Item, data: ItemViewData, render: Renderer, handl
       "div",
       { class: "hdr" },
       pill(item.priority),
-      h("span", { class: "tag" }, [item.org, onQuestion ? "question" : item.kind, item.state].filter(Boolean).join(" · ")),
+      h(
+        "span",
+        { class: "tag" },
+        [item.org, onQuestion ? "question" : item.kind, item.state, item.subIssues ? progressText(item.subIssues) : undefined].filter(Boolean).join(" · "),
+      ),
     ),
     h("h2", {}, item.title),
     links,
@@ -316,6 +352,6 @@ export function itemView(item: Item, data: ItemViewData, render: Renderer, handl
     item.body.trim()
       ? h("section", {}, h("h3", {}, onQuestion ? "Question" : item.kind === "draft" ? "Draft" : "Description"), h("div", { class: "md" }, render(item.body)))
       : null,
-    h("div", { class: CONTEXT_CLASS }, contextView(item, context, render)),
+    h("div", { class: CONTEXT_CLASS }, contextView(item, context, render, data.boardHref)),
   );
 }

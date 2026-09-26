@@ -17,6 +17,8 @@ import {
   type RawField,
   type RawItem,
   queueItems,
+  repoOf,
+  type SubIssueSummary,
 } from "./board.ts";
 import { BOARD_NUMBER, BOARD_OWNER, PAGE_SIZE, QUEUE_STATUSES, RECENT_COMMENTS, TRACKER_REPO } from "./config.ts";
 import { refKey } from "./forge.ts";
@@ -75,9 +77,22 @@ interface RawGist {
   files?: Record<string, { filename?: string; language?: string | null; content?: string; truncated?: boolean }>;
 }
 
+/** A sub-issue, as listed under its parent. */
+export interface SubIssue {
+  ref: IssueRef;
+  url: string;
+  title: string;
+  state: string;
+  labels: string[];
+  /** Its own sub-issue progress, when it has sub-issues. */
+  progress?: SubIssueSummary;
+}
+
 export interface Context {
   comments: Comment[];
   gists: Gist[];
+  /** A tracker issue's sub-issues, when it has any. */
+  subIssues?: SubIssue[];
   /** On a question: he commented after the bot last did. */
   answered?: boolean;
   /** Problems reading optional context, shown but not fatal. */
@@ -104,7 +119,25 @@ async function loadComments(gh: GitHub, ref: IssueRef): Promise<Comment[]> {
   }));
 }
 
-/** Read an item's comments and gists. */
+/**
+ * A tracker issue's sub-issues, in GitHub's order, conditionally. Only
+ * read for tracker issues whose summary says they have some; upstream
+ * issues' trees aren't the bot's.
+ */
+export async function loadSubIssues(gh: GitHub, item: Item): Promise<SubIssue[] | undefined> {
+  const ref = item.ref;
+  if (!ref || item.kind !== "issue" || repoOf(ref) !== TRACKER_REPO.toLowerCase() || !item.subIssues) return undefined;
+  const r = await gh.getAll<RawContent>(`/repos/${ref.owner}/${ref.repo}/issues/${ref.number}/sub_issues?per_page=${PAGE_SIZE}`);
+  return r.data.flatMap((c) => {
+    const subRef = parseIssueUrl(c.html_url ?? "");
+    if (!subRef || !c.html_url) return [];
+    const sub: SubIssue = { ref: subRef, url: c.html_url, title: c.title ?? "(no title)", state: c.state ?? "open", labels: labelNames(c.labels) };
+    if (c.sub_issues_summary && c.sub_issues_summary.total > 0) sub.progress = c.sub_issues_summary;
+    return [sub];
+  });
+}
+
+/** Read an item's comments, gists and, on a tracker issue, sub-issues. */
 export async function loadContext(gh: GitHub, item: Item): Promise<Context> {
   const ctx: Context = { comments: [], gists: [], warnings: [] };
   const tasks: Promise<void>[] = [];
@@ -113,6 +146,9 @@ export async function loadContext(gh: GitHub, item: Item): Promise<Context> {
       loadComments(gh, item.ref).then((all) => {
         ctx.comments = all.slice(-RECENT_COMMENTS);
         if (isQuestion(item)) ctx.answered = answeredPending(all);
+      }),
+      loadSubIssues(gh, item).then((subs) => {
+        if (subs) ctx.subIssues = subs;
       }),
     );
   }

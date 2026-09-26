@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { GitHub } from "../src/github/api.ts";
 import type { Item } from "../src/github/board.ts";
-import { gistId, loadAnswered, loadContext, loadQueue, postAnswer } from "../src/github/backend.ts";
+import { gistId, loadAnswered, loadContext, loadQueue, loadSubIssues, postAnswer } from "../src/github/backend.ts";
 import { fields, rawItems, scriptedFetch } from "./helpers.ts";
 
 const token = async () => "t";
@@ -94,6 +94,54 @@ describe("loadContext", () => {
       assert.equal(ctx.answered, want);
       assert.equal(ctx.comments.length, 5);
     }
+  });
+});
+
+describe("loadSubIssues", () => {
+  const sub = (n: number, state: string, extra: object = {}) => ({
+    html_url: `https://github.com/cgwalters-forge/tracker/issues/${n}`,
+    title: `sub ${n}`,
+    state,
+    labels: [],
+    sub_issues_summary: { total: 0, completed: 0, percent_completed: 0 },
+    ...extra,
+  });
+
+  it("lists a tracker parent's sub-issues with their state and progress", async () => {
+    const items = await queue();
+    const { fetchImpl, calls } = scriptedFetch((_m, url) =>
+      url.startsWith(`${TRACKER}/20/sub_issues`)
+        ? {
+            body: [
+              sub(21, "open", { labels: [{ name: "question" }] }),
+              sub(30, "closed"),
+              sub(31, "open", { sub_issues_summary: { total: 2, completed: 1, percent_completed: 50 } }),
+              { html_url: "javascript:alert(1)", title: "bad" },
+            ],
+          }
+        : undefined,
+    );
+    const ctx = await loadContext(new GitHub(token, fetchImpl), items.get("PVTI_synthetic_epic") as Item);
+    assert.deepEqual(
+      ctx.subIssues?.map((s) => [s.ref.number, s.state, s.labels.join(","), s.progress?.completed]),
+      [
+        [21, "open", "question", undefined],
+        [30, "closed", "", undefined],
+        [31, "open", "", 1],
+      ],
+    );
+    assert.ok(calls.some((c) => c.url === `${TRACKER}/20/sub_issues?per_page=100`));
+  });
+
+  it("reads nothing for items without sub-issues, or outside the tracker", async () => {
+    const items = await queue();
+    const { fetchImpl, calls } = scriptedFetch(() => undefined);
+    const gh = new GitHub(token, fetchImpl);
+    const upstream = { ...(items.get("PVTI_synthetic_upstream_pr") as Item), kind: "issue" as const, subIssues: { total: 2, completed: 0, percent_completed: 0 } };
+    for (const item of [items.get("PVTI_synthetic_question") as Item, items.get("PVTI_synthetic_home_issue") as Item, upstream]) {
+      assert.equal(await loadSubIssues(gh, item), undefined, item.nodeId);
+    }
+    assert.equal(calls.length, 0);
   });
 });
 

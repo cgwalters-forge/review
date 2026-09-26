@@ -96,6 +96,7 @@ describe("queueView", () => {
     const row = (id: string) => root.querySelector(`.row[href="#item/${id}"]`);
     assert.equal(row("PVTI_synthetic_question")?.querySelector(".why")?.textContent, "Which prefix?");
     assert.match(row("PVTI_synthetic_closed_question")?.querySelector(".tag")?.textContent ?? "", /blocks cgwalters-bot\/elsewhere#5/);
+    assert.equal(row("PVTI_synthetic_epic")?.querySelector(".tag")?.textContent, "cgwalters-forge/tracker#20 · 1/3 sub-issues done");
     assert.match(root.querySelector(".summary")?.textContent ?? "", /0 PRs to review · 2 questions · 5 other/);
   });
 
@@ -185,6 +186,38 @@ describe("itemView", () => {
     assert.match(root.querySelector(".target")?.textContent ?? "", /comment as you on cgwalters-forge\/tracker#21; the bot acts on it and closes the issue/);
     assert.deepEqual([...root.querySelectorAll(".links a")].map((a) => a.textContent).slice(0, 2), ["cgwalters-forge/tracker#21", "blocks"]);
     assert.equal(root.querySelector(".comment.your-answer .meta")?.textContent?.endsWith("your answer: B"), true);
+  });
+
+  it("shows a parent's sub-issue tree, linking those on the board to the app", () => {
+    const epic = fixture("PVTI_synthetic_epic");
+    const sub = (number: number, state: string, labels: string[] = [], title = `sub ${number}`) => ({
+      ref: { owner: "cgwalters-forge", repo: "tracker", number },
+      url: `https://github.com/cgwalters-forge/tracker/issues/${number}`,
+      title,
+      state,
+      labels,
+    });
+    const context: Context = {
+      comments: [],
+      gists: [],
+      warnings: [],
+      subIssues: [sub(21, "open", ["question"]), { ...sub(30, "closed"), progress: { total: 2, completed: 2, percent_completed: 100 } }, sub(31, "open", [], EVIL)],
+    };
+    const boardHref = (r: { number: number }) => (r.number === 21 ? "#item/PVTI_synthetic_question" : undefined);
+    const root = itemView(epic, { target: answerTarget(epic), context, state: undefined, boardHref }, render, noSend);
+    assertNoActiveContent(root);
+    assert.match(root.querySelector(".hdr .tag")?.textContent ?? "", /1\/3 sub-issues done$/);
+    assert.equal(root.querySelector(".sub-issues h3")?.textContent, "Sub-issues · 1/3 sub-issues done (33%)");
+    const lis = [...root.querySelectorAll(".sub-issues li")];
+    assert.deepEqual(
+      lis.map((li) => [li.className, li.querySelector("a")?.getAttribute("href"), li.querySelector(".tag")?.textContent]),
+      [
+        ["sub-issue open", "#item/PVTI_synthetic_question", "cgwalters-forge/tracker#21 · question"],
+        ["sub-issue closed", "https://github.com/cgwalters-forge/tracker/issues/30", "cgwalters-forge/tracker#30 · 2/2 sub-issues done"],
+        ["sub-issue open", "https://github.com/cgwalters-forge/tracker/issues/31", "cgwalters-forge/tracker#31"],
+      ],
+    );
+    assert.equal(lis[2]?.querySelector("a")?.textContent, EVIL);
   });
 
   it("shows a closed question as done, with nothing to send", () => {

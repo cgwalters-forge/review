@@ -95,6 +95,11 @@ details.help summary { cursor: pointer; color: var(--accent); }
 .row.sel { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
 .row.answered, .row.done, .row.v-approved-older { opacity: .75; }
 .row.child { margin-left: 28px; }
+.sub-issues ul { list-style: none; padding: 0; margin: 8px 0; }
+.sub-issue { margin: 4px 0; }
+.sub-state { font: 11px var(--mono); padding: 1px 6px; border-radius: 4px; color: var(--accent); background: var(--accent-soft); }
+.sub-issue.closed .sub-state { color: var(--muted); background: var(--p3-soft); }
+.sub-issue.closed a { color: var(--muted); }
 .row .main { display: grid; gap: 3px; min-width: 0; }
 .row .title { font-weight: 600; overflow-wrap: anywhere; line-height: 1.35; }
 .row .sub { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: center; }
