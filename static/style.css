@@ -372,3 +372,5 @@ details.history summary { cursor: pointer; color: var(--accent); }
   .past { grid-template-columns: 7.5em minmax(0, 1fr) auto; }
   .past .ran, .past .age { grid-column: 2; }
 }
+/* Data shown from the browser's cache until GitHub confirms it. */
+.meta .cached { color: var(--ink); background: var(--p1-soft); border: 1px solid var(--p1); border-radius: 4px; padding: 0 5px; }

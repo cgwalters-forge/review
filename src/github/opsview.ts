@@ -190,10 +190,15 @@ function pastRow(d: Devspace, now: number): HTMLElement {
   );
 }
 
-function devspacesSection(data: DevspaceData | undefined, now: number): HTMLElement {
+/** A section with no data: its read failed, or, in a cached copy, it isn't cached. */
+function unavailable(fromCache: boolean): string {
+  return fromCache ? "Not cached; loading…" : "Not available; see the warning above.";
+}
+
+function devspacesSection(data: DevspaceData | undefined, now: number, fromCache = false): HTMLElement {
   const sec = section("Devspaces");
   if (!data) {
-    sec.append(h("p", { class: "note" }, "Not available; see the warning above."));
+    sec.append(h("p", { class: "note" }, unavailable(fromCache)));
     return sec;
   }
   const live = data.devspaces.filter((d) => d.phase !== "done");
@@ -228,9 +233,9 @@ function agentRow(r: AgentRun, now: number): HTMLElement {
   );
 }
 
-function agentsSection(data: AgentData | undefined, now: number): HTMLElement {
+function agentsSection(data: AgentData | undefined, now: number, fromCache = false): HTMLElement {
   const sec = section("Agent runs");
-  if (!data) sec.append(h("p", { class: "note" }, "Not available; see the warning above."));
+  if (!data) sec.append(h("p", { class: "note" }, unavailable(fromCache)));
   else if (!data.deployed) {
     sec.append(h("p", { class: "note" }, `Not deployed yet: ${DEVSPACE_REPO} has no ${AGENT_WORKFLOW} on its default branch. Runs show here once it lands.`));
   } else if (data.runs.length === 0) sec.append(h("p", { class: "note" }, "No agent runs yet."));
@@ -278,10 +283,10 @@ const GROUP_LABEL: Record<WorkGroup["scope"], [string, string]> = {
   none: ["No org", "items with no target organization"],
 };
 
-function workSection(items: Item[] | undefined, now: number): HTMLElement {
+function workSection(items: Item[] | undefined, now: number, fromCache = false): HTMLElement {
   const sec = section("Active work");
   if (!items) {
-    sec.append(h("p", { class: "note" }, "Not available; see the warning above."));
+    sec.append(h("p", { class: "note" }, unavailable(fromCache)));
     return sec;
   }
   const groups = workGroups(items);
@@ -314,9 +319,9 @@ function eventRow(e: BotEvent, now: number): HTMLElement {
   );
 }
 
-function eventsSection(events: BotEvent[] | undefined, now: number): HTMLElement {
+function eventsSection(events: BotEvent[] | undefined, now: number, fromCache = false): HTMLElement {
   const sec = section(`${BOT_LOGIN} activity`);
-  if (!events) sec.append(h("p", { class: "note" }, "Not available; see the warning above."));
+  if (!events) sec.append(h("p", { class: "note" }, unavailable(fromCache)));
   else if (events.length === 0) sec.append(h("p", { class: "note" }, "No recent public activity."));
   else sec.append(h("ul", { class: "ev-list" }, ...events.slice(0, OPS_EVENTS_SHOWN).map((e) => eventRow(e, now))));
   return sec;
@@ -336,10 +341,10 @@ export function opsView(ops: Ops | undefined, now: number = Date.now()): HTMLEle
   const t = tiles(ops.devspaces, now);
   if (t) root.append(t);
   root.append(
-    devspacesSection(ops.devspaces, now),
-    agentsSection(ops.agents, now),
-    workSection(ops.work, now),
-    eventsSection(ops.events, now),
+    devspacesSection(ops.devspaces, now, ops.fromCache),
+    agentsSection(ops.agents, now, ops.fromCache),
+    workSection(ops.work, now, ops.fromCache),
+    eventsSection(ops.events, now, ops.fromCache),
   );
   return root;
 }
