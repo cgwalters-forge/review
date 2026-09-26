@@ -28,6 +28,11 @@ export interface Entry {
   settled?: boolean;
   /** The questions blocking this entry's item, nested under it. */
   children?: Entry[];
+  /**
+   * The priority it ranks and groups by, when an open nested question's
+   * outranks its own; `priority` stays what the board says.
+   */
+  rankPriority?: string;
   /** The item a top-level question blocks, when that isn't in the queue. */
   blocks?: string;
 }
@@ -42,6 +47,11 @@ export function priorityRank(p: string | undefined): number {
   return i < 0 ? PRIORITY_ORDER.length : i;
 }
 
+/** The priority an entry ranks by: its own, or its most urgent open question's. */
+export function effectivePriority(e: Entry): string | undefined {
+  return e.rankPriority ?? e.priority;
+}
+
 /** Settled last, then priority, then oldest first (no date last), then by key for stability. */
 export function rankEntries(entries: readonly Entry[]): Entry[] {
   const time = (e: Entry) => {
@@ -51,7 +61,7 @@ export function rankEntries(entries: readonly Entry[]): Entry[] {
   return [...entries].sort(
     (a, b) =>
       Number(a.settled === true) - Number(b.settled === true) ||
-      priorityRank(a.priority) - priorityRank(b.priority) ||
+      priorityRank(effectivePriority(a)) - priorityRank(effectivePriority(b)) ||
       time(a) - time(b) ||
       a.key.localeCompare(b.key),
   );
@@ -143,22 +153,27 @@ export function buildEntries(
   return rankEntries(nestQuestions(out));
 }
 
-/** The issue or PR an entry is about, as a refKey. */
-function entryRef(e: Entry): string | undefined {
-  const ref = e.pr?.ref ?? e.item?.ref;
-  return ref ? refKey(ref).toLowerCase() : undefined;
+/**
+ * The issues and PRs an entry is about, as refKeys: a forge PR entry
+ * stands for its PR and for the board item it folded in (often a tracker
+ * issue, whose questions name that issue).
+ */
+function entryRefs(e: Entry): string[] {
+  return [e.pr?.ref, e.item?.ref].flatMap((r) => (r ? [refKey(r).toLowerCase()] : []));
 }
 
 /**
  * Move each question under the entry for the item it blocks, when that
  * is listed and isn't a question itself; the rest stay top-level, noting
- * what they block.
+ * what they block. A parent ranks by its most urgent open question when
+ * that outranks it, so nesting never buries a P0 question under a P2
+ * item.
  */
 function nestQuestions(entries: Entry[]): Entry[] {
   const parents = new Map<string, Entry>();
   for (const e of entries) {
-    const ref = e.kind === "question" ? undefined : entryRef(e);
-    if (ref && !parents.has(ref)) parents.set(ref, e);
+    if (e.kind === "question") continue;
+    for (const ref of entryRefs(e)) if (!parents.has(ref)) parents.set(ref, e);
   }
   const top: Entry[] = [];
   for (const e of entries) {
@@ -171,7 +186,14 @@ function nestQuestions(entries: Entry[]): Entry[] {
     if (blocked) e.blocks = refKey(blocked);
     top.push(e);
   }
-  for (const e of top) if (e.children) e.children = rankEntries(e.children);
+  for (const e of top) {
+    if (!e.children) continue;
+    e.children = rankEntries(e.children);
+    const urgent = e.children.find((c) => !c.settled);
+    if (urgent && priorityRank(urgent.priority) < priorityRank(e.priority) && urgent.priority !== undefined) {
+      e.rankPriority = urgent.priority;
+    }
+  }
   return top;
 }
 
@@ -184,7 +206,7 @@ export interface EntryGroup {
 export function groupRanked(entries: readonly Entry[]): EntryGroup[] {
   const out: EntryGroup[] = [];
   for (const e of entries) {
-    const p = e.settled ? SETTLED_GROUP : (e.priority ?? NO_PRIORITY);
+    const p = e.settled ? SETTLED_GROUP : (effectivePriority(e) ?? NO_PRIORITY);
     const last = out.at(-1);
     if (last?.priority === p) last.entries.push(e);
     else out.push({ priority: p, entries: [e] });
