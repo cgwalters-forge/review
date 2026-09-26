@@ -13,7 +13,17 @@ export type Command =
   | "fold"
   | "compose"
   | "help"
-  | "news";
+  | "news"
+  // The PR pane's own, which it carries out itself.
+  | "next-file"
+  | "prev-file"
+  | "next-hunk"
+  | "prev-hunk"
+  | "viewed"
+  | "comment"
+  | "layout"
+  | "prev-commit"
+  | "next-commit";
 
 export interface KeyPress {
   key: string;
@@ -30,7 +40,21 @@ const BY_ROUTE: Record<Route, Record<string, Command>> = {
   queue: { j: "next", k: "prev", ArrowDown: "next", ArrowUp: "prev", o: "open", Enter: "open", n: "news" },
   news: { u: "back", Escape: "back", n: "back" },
   item: { u: "back", Escape: "back", c: "compose" },
-  pr: { j: "next", k: "prev", x: "fold", a: "approve", c: "compose", u: "back", Escape: "back" },
+  pr: {
+    n: "next-file",
+    p: "prev-file",
+    j: "next-hunk",
+    k: "prev-hunk",
+    v: "viewed",
+    x: "fold",
+    a: "approve",
+    c: "comment",
+    s: "layout",
+    "[": "prev-commit",
+    "]": "next-commit",
+    u: "back",
+    Escape: "back",
+  },
 };
 
 /**
@@ -48,7 +72,7 @@ export const HELP: Record<Route, string> = {
   queue: "j/k or ↓/↑ move · o or Enter open · n news · r refresh · ? keys",
   news: "u, Esc or n back to the queue · r refresh",
   item: "u or Esc back to the queue · c write an answer · r refresh",
-  pr: "j/k next/previous file · x fold file · a approve · c write a review · u or Esc back · r reload",
+  pr: "n/p next/previous file · j/k next/previous hunk · v mark viewed · x fold · c comment on the focused line (or write the review) · s unified/split · [/] previous/next commit · a approve · u or Esc back · r reload",
 };
 
 export type RouteInfo =

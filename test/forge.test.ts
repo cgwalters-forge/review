@@ -5,8 +5,9 @@ import {
   hasPromoteLine,
   ciSummary,
   composeReview,
+  composeReviews,
+  type DraftComment,
   parseBotMeta,
-  parsePatch,
   parseSearchPr,
   type RawIssueComment,
   type RawReview,
@@ -139,28 +140,6 @@ describe("hasPromoteLine", () => {
   for (const [body, want] of cases) it(JSON.stringify(body), () => assert.equal(hasPromoteLine(body), want));
 });
 
-describe("parsePatch", () => {
-  it("numbers lines per side", () => {
-    const lines = parsePatch("@@ -10,3 +10,4 @@ fn x() {\n a\n-b\n+c\n+d\n e\n\\ No newline at end of file\n");
-    assert.deepEqual(
-      lines.map((l) => [l.kind, l.old ?? null, l.new ?? null, l.text]),
-      [
-        ["hunk", null, null, "@@ -10,3 +10,4 @@ fn x() {"],
-        ["ctx", 10, 10, "a"],
-        ["del", 11, null, "b"],
-        ["add", null, 11, "c"],
-        ["add", null, 12, "d"],
-        ["ctx", 12, 13, "e"],
-        ["note", null, null, "\\ No newline at end of file"],
-      ],
-    );
-  });
-  it("handles a new file and an empty patch", () => {
-    assert.deepEqual(parsePatch("@@ -0,0 +1 @@\n+only").map((l) => [l.kind, l.new ?? null]), [["hunk", null], ["add", 1]]);
-    assert.deepEqual(parsePatch(""), []);
-  });
-});
-
 describe("ciChecks and ciSummary", () => {
   it("merges runs and statuses, failures first", () => {
     const checks = ciChecks(
@@ -212,4 +191,43 @@ describe("composeReview", () => {
     ["a short sha", () => composeReview("approve", "", "abc123"), /not a commit id/],
   ];
   for (const [name, f, re] of refusals) it(`refuses ${name}`, () => assert.throws(f, re));
+});
+
+describe("composeReviews", () => {
+  const c = (over: Partial<DraftComment>): DraftComment => ({ path: "src/a.rs", line: 3, side: "RIGHT", body: "why?", commit: HEAD, ...over });
+  it("sends comments on the head with the review, and earlier commits' first", () => {
+    const out = composeReviews("approve", "LGTM", HEAD, {
+      comments: [c({}), c({ commit: OLD, line: 9, body: " nit \r\n" }), c({ line: 5, start_line: 4, start_side: "RIGHT", side: "RIGHT" })],
+    });
+    assert.deepEqual(out, [
+      { commit_id: OLD, event: "COMMENT", body: "", comments: [{ path: "src/a.rs", line: 9, side: "RIGHT", body: "nit" }] },
+      {
+        commit_id: HEAD,
+        event: "APPROVE",
+        body: "LGTM",
+        comments: [
+          { path: "src/a.rs", line: 3, side: "RIGHT", body: "why?" },
+          { path: "src/a.rs", line: 5, side: "RIGHT", start_line: 4, start_side: "RIGHT", body: "why?" },
+        ],
+      },
+    ]);
+  });
+  it("sends only the API's fields, whatever storage held", () => {
+    const stored = { ...c({ start_line: 2 }), base: "pr", extra: "x", position: 9 } as DraftComment;
+    assert.deepEqual(composeReviews("comment", "", HEAD, { comments: [stored] }).at(-1)?.comments, [
+      { path: "src/a.rs", line: 3, side: "RIGHT", body: "why?", start_line: 2, start_side: "RIGHT" },
+    ]);
+  });
+  it("lets line comments stand in for a comment's or change request's text", () => {
+    assert.equal(composeReviews("comment", "", HEAD, { comments: [c({})] }).at(-1)?.event, "COMMENT");
+    assert.equal(composeReviews("request-changes", "", HEAD, { comments: [c({})] }).at(-1)?.body, "");
+    // ... but not comments on earlier commits only.
+    assert.throws(() => composeReviews("comment", "", HEAD, { comments: [c({ commit: OLD })] }), /write a comment/);
+  });
+  const refusals: [string, DraftComment, RegExp][] = [
+    ["an empty comment", c({ body: "  " }), /src\/a.rs:3 is empty/],
+    ["a command line in a comment", c({ body: "ok\n/promote" }), /in the comment on src\/a.rs:3 would be read as a bot command/],
+    ["a bad commit", c({ commit: "abc" }), /not a commit id/],
+  ];
+  for (const [name, comment, re] of refusals) it(`refuses ${name}`, () => assert.throws(() => composeReviews("approve", "", HEAD, { comments: [comment] }), re));
 });

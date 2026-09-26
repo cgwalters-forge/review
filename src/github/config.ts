@@ -49,8 +49,8 @@ export const FORGE_POLL_INTERVAL_MS = 60_000;
 export const FORGE_MIN_INTERVAL_MS = 10_000;
 /** Parallel requests when refreshing PR verdicts. */
 export const FETCH_CONCURRENCY = 6;
-/** A file's diff starts collapsed above this many lines. */
-export const DIFF_COLLAPSE_LINES = 300;
+/** A file's diff starts collapsed above this many lines (files build lazily, so this is for reading, not speed). */
+export const DIFF_COLLAPSE_LINES = 1000;
 /** Poll this many times slower when the rate budget runs low. */
 export const POLL_BACKOFF_FACTOR = 4;
 /** Below this fraction of the hourly budget, back off. */

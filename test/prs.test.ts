@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { GitHub } from "../src/github/api.ts";
-import { composeReview, type ForgePr } from "../src/github/forge.ts";
-import { FORGE_QUERY, loadForgePrs, loadPrDetail, mapLimit, refreshVerdicts, submitReview, type VerdictEntry } from "../src/github/prs.ts";
+import { composeReview, composeReviews, type ForgePr } from "../src/github/forge.ts";
+import { FORGE_QUERY, loadFileLines, loadForgePrs, loadPrDetail, loadRangeFiles, mapLimit, refreshVerdicts, submitReview, type VerdictEntry } from "../src/github/prs.ts";
 import { scriptedFetch } from "./helpers.ts";
 
 const token = async () => "t";
@@ -219,4 +219,67 @@ describe("submitReview", () => {
       assert.equal(posts.length, 0);
     });
   }
+});
+
+describe("loadFileLines and loadRangeFiles", () => {
+  it("decodes a file's lines at a commit, path segments escaped", async () => {
+    const text = "fn a() {}\r\n// é ✓\n";
+    const content = Buffer.from(text, "utf8").toString("base64").replace(/(.{20})/g, "$1\n");
+    const { fetchImpl, calls } = scriptedFetch((_m, url) =>
+      url.includes("/contents/") ? { body: { type: "file", encoding: "base64", size: text.length, content } } : undefined,
+    );
+    const lines = await loadFileLines(new GitHub(token, fetchImpl), ref, "src/a b#.rs", HEAD);
+    assert.deepEqual(lines, ["fn a() {}", "// é ✓"]);
+    assert.equal(calls[0]?.url, `${API}/repos/cgwalters-forge/widget/contents/src/a%20b%23.rs?ref=${HEAD}`);
+  });
+
+  it("refuses what it can't show", async () => {
+    const cases: [Record<string, unknown>, RegExp][] = [
+      [{ type: "dir" }, /not a file/],
+      [{ type: "file", encoding: "none", size: 5_000_000, content: "" }, /too large/],
+    ];
+    for (const [body, re] of cases) {
+      const { fetchImpl } = scriptedFetch(() => ({ body }));
+      await assert.rejects(loadFileLines(new GitHub(token, fetchImpl), ref, "x", HEAD), re);
+    }
+    await assert.rejects(loadFileLines(new GitHub(token, scriptedFetch(() => undefined).fetchImpl), ref, "x", "main"), /not a commit id/);
+    await assert.rejects(loadFileLines(new GitHub(token, scriptedFetch(() => undefined).fetchImpl), ref, "a/../../../user", HEAD), /not a repository path/);
+    await assert.rejects(loadRangeFiles(new GitHub(token, scriptedFetch(() => undefined).fetchImpl), ref, "main", HEAD), /not a commit range/);
+  });
+
+  it("lists a range's files from a compare", async () => {
+    const { fetchImpl, calls } = scriptedFetch((_m, url) =>
+      url.includes("/compare/") ? { body: { files: [{ filename: "a.rs", sha: "9".repeat(40), status: "modified", additions: 1, deletions: 0, patch: "@@ -1 +1,2 @@\n a\n+b" }] } } : undefined,
+    );
+    const files = await loadRangeFiles(new GitHub(token, fetchImpl), ref, MOVED, HEAD);
+    assert.deepEqual(files.map((f) => [f.filename, f.sha]), [["a.rs", "9".repeat(40)]]);
+    assert.match(calls[0]?.url ?? "", new RegExp(`/compare/${MOVED}\\.\\.\\.${HEAD}`));
+  });
+});
+
+describe("submitReview with line comments", () => {
+  it("posts earlier commits' comments first, then the head's review, and says what went out on failure", async () => {
+    const reviews = composeReviews("approve", "", HEAD, {
+      comments: [
+        { path: "a.rs", line: 2, side: "RIGHT", body: "old", commit: MOVED },
+        { path: "a.rs", line: 3, side: "RIGHT", body: "new", commit: HEAD },
+      ],
+    });
+    const run = async (failAt: number) => {
+      let n = 0;
+      const { fetchImpl, calls } = scriptedFetch((method, url) => {
+        if (method === "GET" && url === PULL) return { body: pull() };
+        if (method === "POST" && url === `${PULL}/reviews`) return n++ === failAt ? { status: 422, body: { message: "Line could not be resolved" } } : { body: { html_url: `https://github.com/review/${n}` } };
+        return undefined;
+      });
+      const sent: number[] = [];
+      const out = await submitReview(new GitHub(token, fetchImpl), ref, reviews, (i) => sent.push(i)).then((u) => u, (e: Error) => e.message);
+      return { out, sent, posts: calls.filter((c) => c.method === "POST").map((c) => (c.body as { commit_id: string }).commit_id) };
+    };
+    assert.deepEqual(await run(-1), { out: "https://github.com/review/2", sent: [0, 1], posts: [MOVED, HEAD] });
+    const failed = await run(1);
+    assert.deepEqual(failed.sent, [0]);
+    assert.match(failed.out, /Line could not be resolved.*the comments on 1 earlier commit went out, the rest didn't/);
+    assert.match((await run(0)).out, /nothing was sent/);
+  });
 });

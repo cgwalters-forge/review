@@ -36,3 +36,13 @@ export function link(url: string | undefined, text: string): Node {
   if (!href) return document.createTextNode(text);
   return h("a", { href, target: "_blank", rel: "noopener noreferrer" }, text);
 }
+
+/** Nodes and strings, without the nulls left by conditionals. */
+export function kids(...children: Child[]): (Node | string)[] {
+  return children.filter((c): c is Node | string => c !== null && c !== undefined && c !== false);
+}
+
+/** Scroll an element into view where the browser can (jsdom can't). */
+export function scrollTo(el: Element, block: ScrollLogicalPosition): void {
+  if (typeof el.scrollIntoView === "function") el.scrollIntoView({ block });
+}

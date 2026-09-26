@@ -31,11 +31,22 @@ queue too.
 
 - **A forge PR** opens a review pane: the description (without bot-pr's
   meta section), CI checks, every commit with its full message, and the
-  diff per file, foldable. **Approve** submits an approving review of the
-  head you were shown, which is what `bot-pr promote` acts on; if the
-  head moved meanwhile, nothing is sent. A checkbox adds the `/draft`
-  line that asks promote for a draft upstream PR. **Request changes** and
-  **Comment** submit reviews with your text.
+  diff. **Approve** submits an approving review of the head you were
+  shown, which is what `bot-pr promote` acts on; if the head moved
+  meanwhile, nothing is sent, and the confirmation names the files you
+  never expanded. A
+  checkbox adds the `/draft` line that asks promote for a draft upstream
+  PR. **Request changes** and **Comment** submit reviews with your text.
+- **The diff** is unified or split (remembered per browser), syntax
+  colored, with word-level changes marked and the unchanged lines
+  between hunks expandable from the file at the head. A file tree gives
+  each file's counts; "Viewed" marks are kept per file version, so they
+  clear when the file changes; generated, vendored and lock files and
+  test fixtures start collapsed. You can view one commit, or a range of
+  them, instead of the whole PR. Clicking a line number (or `c` on the
+  focused line) writes a line comment, shift-click a range; comments wait
+  in the form and go out with your review, those written on an earlier
+  commit viewed alone in a comment-only review of that commit.
 - **A board item** shows its Why, links, description, gist and latest
   comments, rendered from markdown and sanitized. A parent issue in
   cgwalters-forge/tracker also shows its sub-issues and their progress.
@@ -54,10 +65,12 @@ description. Harness changes stand out: PRs labeled `harness`, or
 touching `agent.yml`, `bot-harness` or a `harness/` tree.
 
 Keys: `j`/`k` move, `o` opens, `u` goes back, `r` reloads; in a PR,
-`j`/`k` step through files, `x` folds one, `a` approves (after a
-confirmation) and `c` jumps to the review text; `?` lists them. Your
-text never goes out with a line the bot would read as a command
-(`/promote`, `/draft`, `/ready`).
+`n`/`p` step through files and `j`/`k` through hunks, `v` marks a file
+viewed, `x` folds one, `s` switches unified and split, `[`/`]` step
+through the commits, `c` comments on the focused line (or jumps
+to the review text), `a` approves (after a confirmation); `?` lists
+them. Your text never goes out with a line the bot would read as a
+command (`/promote`, `/draft`, `/ready`).
 
 The board is polled every 30 seconds with ETags while the tab is
 visible, the forge's PR search every minute, and a PR's reviews only
