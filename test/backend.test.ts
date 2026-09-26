@@ -8,9 +8,11 @@ import {
   loadAnswered,
   loadContext,
   loadQueue,
+  loadRuns,
   loadSubIssues,
   postAnswer,
   postAskComment,
+  rerunFailedJobs,
 } from "../src/github/backend.ts";
 import { fields, rawItems, scriptedFetch } from "./helpers.ts";
 
@@ -306,6 +308,8 @@ describe("postAnswer", () => {
   }
 });
 
+const RUN = "https://github.com/example-upstream/widget/actions/runs/777";
+const RUN_API = `${API}/repos/example-upstream/widget/actions/runs/777`;
 const CHORE = { owner: "cgwalters-forge", repo: "tracker", number: 25 };
 const chore = {
   html_url: "https://github.com/cgwalters-forge/tracker/issues/25",
@@ -313,13 +317,24 @@ const chore = {
   labels: [{ name: "chore" }],
   assignees: [{ login: "cgwalters" }],
   user: { login: "cgwalters-bot" },
-  body: "Blocks: `https://github.com/example-upstream/widget/issues/7`\nAsk: Log in and approve the key\n",
+  body: `Blocks: \`https://github.com/example-upstream/widget/issues/7\`\nAsk: Rerun the arm legs\nRerun: \`${RUN}\`\n`,
+};
+const failedRun = { id: 777, html_url: RUN, name: "CI", status: "completed", conclusion: "failure", run_attempt: 1, repository: { full_name: "example-upstream/widget" } };
+const jobs = {
+  jobs: [
+    { name: "build", status: "completed", conclusion: "success", html_url: `${RUN}/job/1` },
+    { name: "uki (arm)", status: "completed", conclusion: "failure", html_url: `${RUN}/job/2` },
+  ],
 };
 
-/** A GitHub that serves the chore and takes a comment on it. */
-function choreGitHub(over: { issue?: unknown } = {}) {
+/** A GitHub that serves the chore, the run and its jobs, and takes the rerun and the comment. */
+function rerunGitHub(over: { issue?: unknown; run?: unknown; jobs?: unknown } = {}) {
   return scriptedFetch((method, url) => {
     if (method === "GET" && url === `${TRACKER}/25`) return { body: over.issue ?? chore };
+    if (method === "GET" && url.startsWith(`${TRACKER}/25/comments`)) return { body: [] };
+    if (method === "GET" && url === RUN_API) return { body: over.run ?? failedRun };
+    if (method === "GET" && url === `${RUN_API}/jobs?filter=latest&per_page=100`) return { body: over.jobs ?? jobs };
+    if (method === "POST" && url === `${RUN_API}/rerun-failed-jobs`) return { status: 201, body: {} };
     if (method === "POST" && url === `${TRACKER}/25/comments`) return { status: 201, body: { html_url: `${chore.html_url}#c1` } };
     return undefined;
   });
@@ -327,7 +342,7 @@ function choreGitHub(over: { issue?: unknown } = {}) {
 
 describe("postAskComment", () => {
   it("posts his text on a chore after checking it fresh", async () => {
-    const { fetchImpl, calls } = choreGitHub();
+    const { fetchImpl, calls } = rerunGitHub();
     const posted = await postAskComment(new GitHub(token, fetchImpl), CHORE, "chore", "  done  ");
     assert.equal(posted.url, `${chore.html_url}#c1`);
     assert.deepEqual(calls.map((c) => c.method), ["GET", "POST"]);
@@ -343,9 +358,87 @@ describe("postAskComment", () => {
   ];
   for (const [name, text, issue, want] of refusals) {
     it(`refuses ${name} without commenting`, async () => {
-      const { fetchImpl, calls } = choreGitHub({ issue });
+      const { fetchImpl, calls } = rerunGitHub({ issue });
       await assert.rejects(postAskComment(new GitHub(token, fetchImpl), CHORE, "chore", text), want);
       assert.equal(calls.filter((c) => c.method === "POST").length, 0);
     });
   }
+});
+
+describe("loadRuns", () => {
+  it("lists each run's failed jobs, and why one can't be rerun", async () => {
+    const { fetchImpl } = rerunGitHub({ run: { ...failedRun, status: "in_progress", conclusion: null } });
+    const [r] = await loadRuns(new GitHub(token, fetchImpl), [{ url: RUN, owner: "example-upstream", repo: "widget", id: "777" }]);
+    assert.deepEqual(r?.failed, [{ name: "uki (arm)", url: `${RUN}/job/2` }]);
+    assert.match(r?.problem ?? "", /in_progress, not completed/);
+    const ok = await loadRuns(new GitHub(token, rerunGitHub().fetchImpl), [{ url: RUN, owner: "example-upstream", repo: "widget", id: "777" }]);
+    assert.deepEqual([ok[0]?.problem, ok[0]?.status, ok[0]?.conclusion, ok[0]?.attempt], [undefined, "completed", "failure", 1]);
+  });
+
+  it("reports a run it can't read instead of failing", async () => {
+    const { fetchImpl } = scriptedFetch(() => ({ status: 404, body: { message: "Not Found" } }));
+    const [r] = await loadRuns(new GitHub(token, fetchImpl), [{ url: RUN, owner: "example-upstream", repo: "widget", id: "777" }]);
+    assert.match(r?.problem ?? "", /couldn't read the run: .*404/);
+  });
+
+  it("is read with a rerun chore's context", async () => {
+    const item = (await queue()).get("PVTI_synthetic_chore_ask") as Item;
+    const ctx = await loadContext(new GitHub(token, rerunGitHub().fetchImpl), item);
+    assert.deepEqual(ctx.warnings, []);
+    assert.deepEqual(ctx.runs?.map((r) => [r.run.id, r.failed.length, r.problem]), [["777", 1, undefined]]);
+    // A review ask reads no runs.
+    const review = (await queue()).get("PVTI_synthetic_review_ask") as Item;
+    const { fetchImpl, calls } = scriptedFetch((_m, u) => (u.includes("/comments") ? { body: [] } : undefined));
+    assert.equal((await loadContext(new GitHub(token, fetchImpl), review)).runs, undefined);
+    assert.equal(calls.length, 1);
+  });
+});
+
+describe("rerunFailedJobs", () => {
+  it("reruns the failed jobs of a run the chore names, then says so", async () => {
+    const { fetchImpl, calls } = rerunGitHub();
+    const posted = await rerunFailedJobs(new GitHub(token, fetchImpl), CHORE, RUN);
+    assert.equal(posted.url, `${chore.html_url}#c1`);
+    assert.deepEqual(
+      calls.map((c) => `${c.method} ${c.url.replace(API, "")}`),
+      [
+        "GET /repos/cgwalters-forge/tracker/issues/25",
+        "GET /repos/example-upstream/widget/actions/runs/777",
+        "GET /repos/example-upstream/widget/actions/runs/777/jobs?filter=latest&per_page=100",
+        "POST /repos/example-upstream/widget/actions/runs/777/rerun-failed-jobs",
+        "POST /repos/cgwalters-forge/tracker/issues/25/comments",
+      ],
+    );
+    assert.deepEqual(calls.at(-1)?.body, { body: `Reran the failed jobs of ${RUN}\n` });
+  });
+
+  const other = "https://github.com/example-upstream/widget/actions/runs/778";
+  const refusals: [string, string, Parameters<typeof rerunGitHub>[0], RegExp][] = [
+    ["a URL that isn't a run", `${RUN}/job/2`, {}, /not a workflow run URL/],
+    ["a run the chore doesn't name", other, {}, /doesn't ask to rerun .*runs\/778/],
+    ["a run in another repository, same id", "https://github.com/evil/widget/actions/runs/777", {}, /doesn't ask to rerun/],
+    ["a chore with an unreadable Rerun: line", RUN, { issue: { ...chore, body: `Ask: x\nRerun: \`${RUN}\`\nRerun: \`${RUN}/attempts/2\`` } }, /can't read "Rerun:/],
+    ["a review ask", RUN, { issue: { ...chore, labels: [{ name: "review" }] } }, /not labelled "chore"/],
+    ["a chore not assigned to him", RUN, { issue: { ...chore, assignees: [] } }, /not assigned to cgwalters/],
+    ["a chore someone else opened", RUN, { issue: { ...chore, user: { login: "someone" } } }, /not opened by cgwalters-bot/],
+    ["a closed chore", RUN, { issue: { ...chore, state: "closed" } }, /is closed/],
+    ["a running run", RUN, { run: { ...failedRun, status: "in_progress", conclusion: null } }, /not completed/],
+    ["a successful run", RUN, { run: { ...failedRun, conclusion: "success" } }, /ended success/],
+    ["a run with no failed jobs", RUN, { jobs: { jobs: [{ name: "b", status: "completed", conclusion: "success" }] } }, /no failed jobs/],
+    ["a run GitHub reports in another repository", RUN, { run: { ...failedRun, repository: { full_name: "evil/widget" } } }, /not in example-upstream\/widget/],
+  ];
+  for (const [name, url, over, want] of refusals) {
+    it(`refuses ${name}, rerunning nothing`, async () => {
+      const { fetchImpl, calls } = rerunGitHub(over);
+      await assert.rejects(rerunFailedJobs(new GitHub(token, fetchImpl), CHORE, url), want);
+      assert.equal(calls.filter((c) => c.method === "POST").length, 0);
+    });
+  }
+
+  it("says the rerun happened when the comment then fails", async () => {
+    const base = rerunGitHub();
+    const fetchImpl = async (url: string, init?: RequestInit) =>
+      init?.method === "POST" && url.endsWith("/comments") ? new Response(JSON.stringify({ message: "nope" }), { status: 403 }) : base.fetchImpl(url, init);
+    await assert.rejects(rerunFailedJobs(new GitHub(token, fetchImpl), CHORE, RUN), /reran the failed jobs of .*runs\/777, but couldn't say so on cgwalters-forge\/tracker#25.*Comment there yourself/);
+  });
 });

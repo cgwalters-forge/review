@@ -7,7 +7,7 @@ import { GitHub, GitHubError } from "./api.ts";
 import { missingScopes, type Persistence, savedToken, type TokenSource, useToken } from "./auth.ts";
 import { itemAction, reviewAskFor, reviewComment } from "./asks.ts";
 import type { Item } from "./board.ts";
-import { type Context, loadAnswered, loadContext, loadQueue, postAnswer, postAskComment, viewer } from "./backend.ts";
+import { type Context, loadAnswered, loadContext, loadQueue, postAnswer, postAskComment, rerunFailedJobs, viewer } from "./backend.ts";
 import {
   CLASSIC_SCOPES,
   FORGE_MIN_INTERVAL_MS,
@@ -236,19 +236,30 @@ function renderRoute(state: State): void {
           return done((await postAnswer(state.gh, action.ref, answer)).url);
         },
         comment: async (text) => {
-          if (action.kind !== "review" && action.kind !== "comment") throw new Error("this is not a review or chore");
-          const kind = action.kind === "comment" ? action.ask : "review";
+          if (action.kind !== "review" && action.kind !== "rerun" && action.kind !== "comment") throw new Error("this is not a review or chore");
+          const kind = action.kind === "comment" ? action.ask : action.kind === "review" ? "review" : "chore";
           return done((await postAskComment(state.gh, action.ref, kind, text)).url);
         },
+        rerun: (url) => rerun(state, item, url),
       },
     ),
   );
   if (!ctx) void refreshContext(state, item);
 }
 
+/** Rerun a rerun chore's run, as its view asks. */
+async function rerun(state: State, item: Item, url: string): Promise<string> {
+  const action = itemAction(item, 0);
+  if (action.kind !== "rerun") throw new Error("this chore asks for no reruns");
+  const posted = await rerunFailedJobs(state.gh, action.ref, url);
+  state.sent.add(item.nodeId);
+  void refreshContext(state, item);
+  return posted.url;
+}
+
 /** What an item's loaded context acts through. */
 function contextHooks(state: State, item: Item): ContextHooks {
-  return { boardHref: boardHref(state) };
+  return { boardHref: boardHref(state), rerun: (url) => rerun(state, item, url) };
 }
 
 function prEntry(state: State, key: string): Entry | undefined {

@@ -1,17 +1,17 @@
 // The views put untrusted board and issue text on screen: check that it
 // lands as text or sanitized markdown, whatever it contains. And that
 // each item offers the right action: an answer box only on questions,
-// a review action only on reviews, and never "nothing to do" on a Needs
-// human item.
+// review and rerun actions only on those asks, and never "nothing to do"
+// on a Needs human item.
 
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { itemAction } from "../src/github/asks.ts";
 import { type Item, queueItems } from "../src/github/board.ts";
-import type { Context } from "../src/github/backend.ts";
+import type { Context, RunStatus } from "../src/github/backend.ts";
 import { createRenderer } from "../src/markdown.ts";
 import { buildEntries, type Entry } from "../src/github/queue.ts";
-import { age, answerState, type AnswerState, type ItemViewHandlers, itemView, queueView, STATE_LABEL } from "../src/github/view.ts";
+import { age, answerState, type AnswerState, contextView, type ItemViewHandlers, itemView, queueView, STATE_LABEL } from "../src/github/view.ts";
 import { installDom, rawItems } from "./helpers.ts";
 
 const win = installDom();
@@ -19,6 +19,7 @@ const render = createRenderer(win as unknown as Parameters<typeof createRenderer
 const noSend: ItemViewHandlers = {
   send: async () => "https://github.com/x",
   comment: async () => "https://github.com/x",
+  rerun: async () => "https://github.com/x",
 };
 
 const EVIL = '<img src=x onerror=alert(1)><script>alert(2)</script>[x](javascript:alert(3))';
@@ -247,6 +248,7 @@ describe("itemView", () => {
       },
     });
     win.document.body.replaceChildren(root);
+    assert.equal(root.querySelector(".runs"), null);
     const submit = async (text: string) => {
       (root.querySelector(".comment-ask textarea") as HTMLTextAreaElement).value = text;
       root.querySelector(".comment-ask")?.dispatchEvent(new win.Event("submit", { cancelable: true }));
@@ -266,6 +268,62 @@ describe("itemView", () => {
     assert.match(root.querySelector(".warn")?.textContent ?? "", /can't offer this review's action: can't read "Review:/);
     assert.equal(root.querySelector(".review-asks"), null);
     assert.ok(root.querySelector(".comment-ask"));
+  });
+
+  describe("a rerun chore's runs", () => {
+    const RUN = "https://github.com/example-upstream/widget/actions/runs/777";
+    const run = (over: Partial<RunStatus> = {}): RunStatus => ({
+      run: { url: RUN, owner: "example-upstream", repo: "widget", id: "777" },
+      name: "CI",
+      status: "completed",
+      conclusion: "failure",
+      failed: [{ name: "uki (arm)", url: `${RUN}/job/2` }, { name: EVIL }],
+      ...over,
+    });
+    function runs(r: RunStatus, rerun?: (url: string) => Promise<string>) {
+      const item = fixture("PVTI_synthetic_chore_ask");
+      const frag = contextView(item, { comments: [], gists: [], warnings: [], runs: [r] }, render, rerun ? { rerun } : {});
+      const root = win.document.createElement("div");
+      root.append(frag);
+      win.document.body.replaceChildren(root);
+      const button = root.querySelector(".runs button") as HTMLButtonElement;
+      return { root, button, status: () => root.querySelector(".runs .status")?.textContent ?? "" };
+    }
+
+    it("lists failed jobs as text, with a rerun button", () => {
+      const { root, button } = runs(run(), async () => "x");
+      assertNoActiveContent(root);
+      assert.deepEqual([...root.querySelectorAll(".jobs li")].map((li) => li.textContent), ["uki (arm)", EVIL]);
+      assert.equal(button.disabled, false);
+    });
+
+    it("reruns only after he confirms, then shows the comment", async () => {
+      const reran: string[] = [];
+      const confirms: string[] = [];
+      let answer = false;
+      Object.assign(win, { confirm: (m: string) => (confirms.push(m), answer) });
+      const { button, status } = runs(run(), async (u) => (reran.push(u), "https://github.com/cgwalters-forge/tracker/issues/25#c1"));
+      button.click();
+      await new Promise((r) => setTimeout(r, 0));
+      assert.deepEqual(reran, []);
+      assert.match(confirms[0] ?? "", /Rerun the 2 failed jobs \(uki \(arm\), .*\) of .*runs\/777\?.*your token to write to example-upstream\/widget/s);
+      answer = true;
+      button.click();
+      await new Promise((r) => setTimeout(r, 0));
+      assert.deepEqual(reran, [RUN]);
+      assert.match(status(), /^Rerun started; told the bot: https:/);
+      assert.equal(button.disabled, true);
+    });
+
+    it("offers no rerun for a run GitHub says can't be rerun", () => {
+      const { root, button } = runs(run({ status: "in_progress", problem: "the run is in_progress, not completed" }), async () => "x");
+      assert.equal(button.disabled, true);
+      assert.match(root.textContent ?? "", /Can't rerun: the run is in_progress, not completed/);
+    });
+
+    it("offers no rerun without a handler", () => {
+      assert.equal(runs(run()).button.disabled, true);
+    });
   });
 
   it("offers a question's options, recommendation first, and names the issue", () => {

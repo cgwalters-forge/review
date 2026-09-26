@@ -6,7 +6,7 @@ import { h, link } from "../dom.ts";
 import type { Renderer } from "../markdown.ts";
 import { commentNote, type ItemAction, parseAskBody } from "./asks.ts";
 import { ASK_LABELS, askKind, type IssueRef, isAsk, isQuestion, type Item, questionOf, type SubIssueSummary } from "./board.ts";
-import type { Context, SubIssue } from "./backend.ts";
+import type { Context, RunStatus, SubIssue } from "./backend.ts";
 import { BOARD_URL, OPERATOR } from "./config.ts";
 import { type Entry, type EntryKind, groupRanked } from "./queue.ts";
 
@@ -174,6 +174,8 @@ export interface ItemViewHandlers {
   send(answer: Answer): Promise<string>;
   /** Post his comment on a review or chore; resolves to its URL. */
   comment(text: string): Promise<string>;
+  /** Rerun a run's failed jobs; resolves to the URL of the comment saying so. */
+  rerun(runUrl: string): Promise<string>;
 }
 
 function where(ref: IssueRef): string {
@@ -323,20 +325,67 @@ function subIssuesView(item: Item, subs: readonly SubIssue[], boardHref: BoardHr
   return h("section", { class: "sub-issues" }, h("h3", {}, `Sub-issues${summary}`), h("ul", {}, ...subs.map((s) => subIssueView(s, boardHref))));
 }
 
+/** One run a chore asks to rerun: its failed jobs, and the button, only when GitHub says it can be rerun. */
+function runView(r: RunStatus, rerun: ((url: string) => Promise<string>) | undefined): HTMLElement {
+  const { run } = r;
+  const state = [r.status, r.conclusion, r.attempt ? `attempt ${r.attempt}` : ""].filter(Boolean).join(", ");
+  const status = h("p", { class: "status", role: "status" });
+  const button = h("button", { type: "button", class: "primary" }, "Rerun failed jobs");
+  button.disabled = r.problem !== undefined || !rerun;
+  const jobs = r.failed.length
+    ? h("ul", { class: "jobs" }, ...r.failed.map((j) => h("li", {}, link(j.url, j.name))))
+    : h("p", { class: "tag" }, "No failed jobs in its latest attempt.");
+  button.addEventListener("click", () => {
+    if (!rerun || r.problem !== undefined) return;
+    const names = r.failed.map((j) => j.name).join(", ");
+    const ok = window.confirm(
+      `Rerun the ${r.failed.length} failed job${r.failed.length === 1 ? "" : "s"} (${names}) of ${run.url}?\n\nThis uses your token to write to ${run.owner}/${run.repo}, then comments on the chore so the bot knows.`,
+    );
+    if (!ok) return;
+    button.disabled = true;
+    status.textContent = "Rerunning…";
+    rerun(run.url)
+      .then((url) => {
+        status.textContent = "Rerun started; told the bot: ";
+        status.append(link(url, url));
+      })
+      .catch((e: unknown) => {
+        status.textContent = `Not rerun: ${e instanceof Error ? e.message : String(e)}`;
+        button.disabled = false;
+      });
+  });
+  return h(
+    "li",
+    { class: "run" },
+    link(run.url, `${run.owner}/${run.repo} run ${run.id}`),
+    r.name ? ` · ${r.name}` : "",
+    state ? h("span", { class: "tag" }, ` · ${state}`) : null,
+    jobs,
+    r.problem ? h("p", { class: "note" }, `Can't rerun: ${r.problem}.`) : null,
+    h("div", { class: "actions" }, button),
+    status,
+  );
+}
+
 /** Hooks the loaded context's parts act through. */
 export interface ContextHooks {
   /** Links sub-issues on the board to their item view. */
   boardHref?: BoardHref;
+  /** Rerun a run's failed jobs (a rerun chore's runs). */
+  rerun?: (runUrl: string) => Promise<string>;
 }
 
 /** The part of the item view that needs the loaded context. */
 export function contextView(item: Item, context: Context | undefined, render: Renderer, hooks: ContextHooks = {}): DocumentFragment {
   const out = document.createDocumentFragment();
   if (!context) {
-    out.append(h("p", { class: "note" }, "Loading comments, gists and sub-issues…"));
+    out.append(h("p", { class: "note" }, "Loading comments, gists, sub-issues and runs…"));
     return out;
   }
   for (const w of context.warnings) out.append(h("p", { class: "warn" }, w));
+  if (context.runs?.length) {
+    out.append(h("section", { class: "runs" }, h("h3", {}, "Runs to rerun"), h("ul", {}, ...context.runs.map((r) => runView(r, hooks.rerun)))));
+  }
   if (context.subIssues?.length) out.append(subIssuesView(item, context.subIssues, hooks.boardHref ?? (() => undefined)));
   for (const g of context.gists) {
     const s = h("section", { class: "gist" }, h("h3", {}, "Gist ", link(g.url, g.owner ? `by ${g.owner}` : "")));
@@ -438,6 +487,12 @@ function actionView(item: Item, data: ItemViewData, handlers: ItemViewHandlers):
           "The review pane shows the head the bot asked about and warns if the PR moved since. Approving or requesting changes there also comments on this issue, so the bot sees it.",
         ),
         commentForm(action.ref, answered, "Or say something else (e.g. why not now)", handlers),
+      ];
+    case "rerun":
+      return [
+        askLine(action.body.ask),
+        h("p", { class: "note" }, "The runs are listed below, each with its failed jobs; rerunning asks you first, then comments on this issue."),
+        commentForm(action.ref, answered, "Or say something else", handlers),
       ];
     case "comment": {
       const note = commentNote(action);
