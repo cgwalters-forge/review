@@ -16,6 +16,7 @@ import {
   POLL_BACKOFF_FACTOR,
   POLL_INTERVAL_MS,
   RATE_LOW_FRACTION,
+  THEME_KEY,
 } from "./config.ts";
 import { composeReview, type ForgePr, refKey, VERDICT_LABEL } from "./forge.ts";
 import { type Command, HELP, keyCommand, parseRoute, type Route, type RouteInfo } from "./keys.ts";
@@ -494,6 +495,36 @@ function installKeys(state: State): void {
   });
 }
 
+type Theme = "auto" | "light" | "dark";
+const THEMES: readonly Theme[] = ["auto", "light", "dark"];
+
+function applyTheme(theme: Theme): void {
+  if (theme === "auto") delete document.documentElement.dataset.theme;
+  else document.documentElement.dataset.theme = theme;
+  byId("theme").textContent = `Theme: ${theme}`;
+}
+
+/** A per-browser convenience; storage may be blocked. */
+function installTheme(): void {
+  let theme: Theme = "auto";
+  try {
+    const saved = window.localStorage.getItem(THEME_KEY);
+    if (saved && (THEMES as readonly string[]).includes(saved)) theme = saved as Theme;
+  } catch {
+    // Default theme.
+  }
+  applyTheme(theme);
+  byId("theme").onclick = () => {
+    theme = THEMES[(THEMES.indexOf(theme) + 1) % THEMES.length] ?? "auto";
+    applyTheme(theme);
+    try {
+      window.localStorage.setItem(THEME_KEY, theme);
+    } catch {
+      // Not remembered.
+    }
+  };
+}
+
 /** Which token problem to explain on the sign-in page. */
 type SignInReason = "none" | "rejected";
 
@@ -639,6 +670,7 @@ function trackHeaderHeight(): void {
 }
 
 async function main(): Promise<void> {
+  installTheme();
   trackHeaderHeight();
   // A CSP meta tag can't forbid framing, so refuse to run in a frame:
   // otherwise another site could overlay the approve and send buttons.

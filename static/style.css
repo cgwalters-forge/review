@@ -11,8 +11,9 @@
   --sans: system-ui, -apple-system, "Segoe UI", sans-serif;
   --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
+/* Dark by preference unless light was picked, or when dark was picked. */
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     color-scheme: dark;
     --ground: #0e131a; --surface: #161d27; --ink: #e4e9f0; --muted: #95a1b3; --line: #29333f;
     --accent: #86a6ff; --accent-soft: #1c2842;
@@ -21,6 +22,15 @@
     --ok: #6fcf97; --ok-soft: #13291d;
     --add: #12291b; --add-ink: #8fdcab; --del: #32151a; --del-ink: #ff9ea4; --hunk: #19223a;
   }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --ground: #0e131a; --surface: #161d27; --ink: #e4e9f0; --muted: #95a1b3; --line: #29333f;
+  --accent: #86a6ff; --accent-soft: #1c2842;
+  --p0: #ff7070; --p0-soft: #3d1414; --p1: #ff8a63; --p1-soft: #3a1d14;
+  --p2: #f0b85a; --p2-soft: #33270f; --p3: #9aa6b8; --p3-soft: #1f2631;
+  --ok: #6fcf97; --ok-soft: #13291d;
+  --add: #12291b; --add-ink: #8fdcab; --del: #32151a; --del-ink: #ff9ea4; --hunk: #19223a;
 }
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--ground); color: var(--ink); font: 15px/1.5 var(--sans); padding: 0 16px 48px; }
