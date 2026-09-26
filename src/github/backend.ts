@@ -23,8 +23,9 @@ import {
   type SubIssueSummary,
   TRACKER_SCOPE,
 } from "./board.ts";
-import { BOARD_NUMBER, BOARD_OWNER, PAGE_SIZE, QUEUE_STATUSES, RECENT_COMMENTS, TRACKER_REPO } from "./config.ts";
+import { BOARD_NUMBER, BOARD_OWNER, FETCH_CONCURRENCY, PAGE_SIZE, QUEUE_STATUSES, RECENT_COMMENTS, TRACKER_REPO } from "./config.ts";
 import { refKey } from "./forge.ts";
+import { mapLimit } from "./prs.ts";
 
 const PROJECT = `/users/${BOARD_OWNER}/projectsV2/${BOARD_NUMBER}`;
 
@@ -189,20 +190,19 @@ export async function viewer(gh: GitHub): Promise<string> {
 /**
  * The open questions he has answered and the bot hasn't acted on yet, by
  * node id. Reads comments only of open questions that have any; the reads
- * are conditional, so an unchanged issue costs nothing. A question whose
- * comments can't be read counts as unanswered.
+ * are conditional, so an unchanged issue costs nothing, and at most
+ * FETCH_CONCURRENCY run at once. A question whose comments can't be read
+ * counts as unanswered.
  */
 export async function loadAnswered(gh: GitHub, items: readonly Item[]): Promise<Set<string>> {
   const asked = items.filter((i) => isQuestion(i) && i.state === "open" && i.ref && (i.comments ?? 1) > 0);
-  const answered = await Promise.all(
-    asked.map(async (i) => {
-      try {
-        return answeredPending(await loadComments(gh, i.ref as IssueRef)) ? [i.nodeId] : [];
-      } catch {
-        return [];
-      }
-    }),
-  );
+  const answered = await mapLimit(asked, FETCH_CONCURRENCY, async (i) => {
+    try {
+      return answeredPending(await loadComments(gh, i.ref as IssueRef)) ? [i.nodeId] : [];
+    } catch {
+      return [];
+    }
+  });
   return new Set(answered.flat());
 }
 

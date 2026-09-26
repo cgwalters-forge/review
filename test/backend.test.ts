@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { GitHub } from "../src/github/api.ts";
 import type { Item } from "../src/github/board.ts";
+import { FETCH_CONCURRENCY } from "../src/github/config.ts";
 import { gistId, loadAnswered, loadContext, loadQueue, loadSubIssues, postAnswer } from "../src/github/backend.ts";
 import { fields, rawItems, scriptedFetch } from "./helpers.ts";
 
@@ -161,6 +162,25 @@ describe("loadAnswered", () => {
     assert.deepEqual(calls.map((c) => new URL(c.url).pathname), ["/repos/cgwalters-forge/tracker/issues/21/comments"]);
     assert.deepEqual([...(await loadAnswered(gh, items))], ["PVTI_synthetic_question"]);
     assert.equal(calls[1]?.headers["If-None-Match"], '"c21"');
+  });
+
+  it("reads at most FETCH_CONCURRENCY at once", async () => {
+    const base = (await queue()).get("PVTI_synthetic_question") as Item;
+    const many = Array.from({ length: 20 }, (_, n) => ({
+      ...base,
+      nodeId: `PVTI_q${n}`,
+      ref: { owner: "cgwalters-forge", repo: "tracker", number: 100 + n },
+    }));
+    let inFlight = 0;
+    let peak = 0;
+    const gh = new GitHub(token, async () => {
+      peak = Math.max(peak, ++inFlight);
+      await new Promise((r) => setTimeout(r, 1));
+      inFlight--;
+      return new Response(JSON.stringify([comment("cgwalters", 1)]), { status: 200 });
+    });
+    assert.equal((await loadAnswered(gh, many)).size, 20);
+    assert.equal(peak, FETCH_CONCURRENCY);
   });
 
   it("counts a question it can't read as unanswered", async () => {

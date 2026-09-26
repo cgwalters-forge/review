@@ -54,6 +54,8 @@ interface State {
   sent: Set<string>;
   /** Open questions he has answered on GitHub and the bot hasn't acted on, by node id. */
   answered: Set<string>;
+  /** Bumped per board change, so an older answered read can't land over a newer one. */
+  answeredSeq: number;
   /** PRs reviewed from this tab, by refKey. */
   reviewed: Set<string>;
   /** Context of opened items, by node id. */
@@ -358,6 +360,20 @@ async function pollVerdicts(state: State): Promise<void> {
   }
 }
 
+/**
+ * Re-read which questions he answered, after the queue is on screen (one
+ * request per open question with comments, so it shouldn't hold up the
+ * first render), and update the view if that changed.
+ */
+async function refreshAnswered(state: State, items: readonly Item[]): Promise<void> {
+  const seq = ++state.answeredSeq;
+  const answered = await loadAnswered(state.gh, items);
+  if (seq !== state.answeredSeq) return;
+  const same = answered.size === state.answered.size && [...answered].every((id) => state.answered.has(id));
+  state.answered = answered;
+  if (!same) update(state, false, false);
+}
+
 function rebuildEntries(state: State): void {
   const verdicts = new Map([...state.verdicts].map(([k, v]) => [k, v.verdict]));
   state.entries = buildEntries(state.items, state.prs, verdicts, state.forgeKnown, new Set([...state.answered, ...state.sent]));
@@ -412,9 +428,9 @@ async function poll(state: State): Promise<void> {
       const ids = new Set(q.items.map((i) => i.nodeId));
       for (const s of state.sent) if (!ids.has(s)) state.sent.delete(s);
       state.context.clear();
-      state.answered = await loadAnswered(state.gh, q.items);
       state.loaded = true;
       update(state, true, first);
+      void refreshAnswered(state, q.items);
     } else {
       renderChrome(state);
     }
@@ -582,6 +598,7 @@ async function start(source: TokenSource): Promise<void> {
     entries: [],
     sent: new Set(),
     answered: new Set(),
+    answeredSeq: 0,
     reviewed: new Set(),
     context: new Map(),
     details: new Map(),
