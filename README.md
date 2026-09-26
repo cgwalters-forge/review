@@ -22,12 +22,13 @@ claude.ai-hosted prototype, and why it is being replaced, is described in
 
 One ranked queue of everything waiting on you: the bot's open draft PRs
 in cgwalters-forge that you haven't approved or sent back at their
-current head, and the Workstream board's "Needs human" items (questions,
-and other actions) and Draft items (gists to read). P0 comes first
-(the board's Priority; a PR takes its board item's), then the oldest.
-Questions you answered, or the bot closed, move to the end until the bot
-acts. A question is nested under the item it blocks when that is in the
-queue too.
+current head, and the Workstream board's "Needs human" items and Draft
+items (gists to read). P0 comes first (the board's Priority; a PR takes
+its board item's), then the oldest. What the bot asks of you is an
+issue in cgwalters-forge/tracker, a question, a review or a chore,
+nested under the item it blocks. Asks you answered, or the bot closed,
+move to the end until the bot acts. A Needs human item with no open ask
+is flagged as a bot bug.
 
 - **A forge PR** opens a review pane: the description (without bot-pr's
   meta section), CI checks, every commit with its full message, and the
@@ -64,7 +65,17 @@ queue too.
   comment by you on that issue, whose first line is the letter you
   picked. The bot acts on it and closes the issue. Upstream issues and
   PRs are never answered from here: they link to GitHub, and the bot's
-  questions about them are tracker issues.
+  asks about them are tracker issues.
+- **A review** ask (label `review`) opens the PR it names in the review
+  pane, upstream PRs included, showing the head the bot asked about and
+  warning if the PR moved since (reviewing the new head needs your
+  confirmation). Approving or requesting changes also comments on the
+  ask so the bot sees it.
+- **A chore** (label `chore`) shows what the bot asks and a comment box.
+  One naming workflow runs lists their failed jobs, with a "Rerun failed
+  jobs" button per run: after you confirm, it reruns them with your
+  token (you need write access to that repository) and comments on the
+  chore.
 
 The **news** pane (`n`) lists recently merged PRs in the bot
 (cgwalters-bot/homegit), its runner (cgwalters-devspace-sandbox, both
