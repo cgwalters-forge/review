@@ -67,14 +67,18 @@ export class GitHub {
   #token: TokenGetter;
   #cache = new Map<string, CacheEntry>();
   rate: RateLimit | undefined;
+  /** A classic token's scopes, from X-OAuth-Scopes; unset for other tokens. */
+  scopes: string | undefined;
 
   constructor(token: TokenGetter, fetchImpl: Fetch = (i, init) => fetch(i, init)) {
     this.#token = token;
     this.#fetch = fetchImpl;
   }
 
+  /** The API URL for PATH; the token never goes anywhere else. */
   #url(path: string): string {
     if (path.startsWith(`${API_ROOT}/`)) return path;
+    if (/^[a-z]+:/i.test(path)) throw new Error(`refusing to send the token outside ${API_ROOT}: ${path}`);
     if (!path.startsWith("/")) throw new Error(`API path must start with /: ${path}`);
     return `${API_ROOT}${path}`;
   }
@@ -84,6 +88,8 @@ export class GitHub {
     const remaining = Number(res.headers.get("x-ratelimit-remaining"));
     const reset = Number(res.headers.get("x-ratelimit-reset"));
     if (limit > 0 && Number.isFinite(remaining)) this.rate = { limit, remaining, reset };
+    const scopes = res.headers.get("x-oauth-scopes");
+    if (scopes !== null) this.scopes = scopes;
   }
 
   async #send(method: string, url: string, headers: Record<string, string>, body?: unknown): Promise<Response> {
@@ -139,7 +145,7 @@ export class GitHub {
     let url: string | undefined = this.#url(path);
     for (let page = 0; url; page++) {
       if (page >= maxPages) throw new Error(`GET ${path}: more than ${maxPages} pages; refusing to continue`);
-      const { entry, changed: pageChanged } = await this.#getPage(url);
+      const { entry, changed: pageChanged } = await this.#getPage(this.#url(url));
       if (!Array.isArray(entry.data)) throw new Error(`GET ${url}: expected a JSON array`);
       out.push(...(entry.data as T[]));
       changed ||= pageChanged;
