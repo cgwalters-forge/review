@@ -18,6 +18,11 @@ export const DRAFT = "Draft";
 /** The Statuses that put an item in the queue (the board's "Needs cgwalters" view). */
 export const QUEUE_STATUSES: readonly string[] = [NEEDS_HUMAN, DRAFT];
 
+/** The organization holding the forks where the bot proposes draft PRs. */
+export const FORGE_ORG = "cgwalters-forge";
+/** The bot's login: the forge PRs listed are the ones it opened. */
+export const BOT_LOGIN = "cgwalters-bot";
+
 /** Board fields the app reads, by name; their ids are looked up at runtime. */
 export const FIELD = {
   status: "Status",
@@ -37,6 +42,8 @@ export const HOME_OWNERS: readonly string[] = ["cgwalters-forge", "cgwalters-bot
 
 /** Poll every this many ms while the tab is visible. */
 export const POLL_INTERVAL_MS = 30_000;
+/** Parallel requests when refreshing PR verdicts. */
+export const FETCH_CONCURRENCY = 6;
 /** Poll this many times slower when the rate budget runs low. */
 export const POLL_BACKOFF_FACTOR = 4;
 /** Below this fraction of the hourly budget, back off. */
