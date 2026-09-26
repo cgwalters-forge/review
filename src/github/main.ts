@@ -5,8 +5,9 @@ import { h } from "../dom.ts";
 import { createRenderer } from "../markdown.ts";
 import { GitHub, GitHubError } from "./api.ts";
 import { missingScopes, type Persistence, savedToken, type TokenSource, useToken } from "./auth.ts";
-import { answerTarget, type Item } from "./board.ts";
-import { type Context, loadAnswered, loadContext, loadQueue, postAnswer, viewer } from "./backend.ts";
+import { itemAction, reviewAskFor, reviewComment } from "./asks.ts";
+import type { Item } from "./board.ts";
+import { type Context, loadAnswered, loadContext, loadQueue, postAnswer, postAskComment, viewer } from "./backend.ts";
 import {
   CLASSIC_SCOPES,
   FORGE_MIN_INTERVAL_MS,
@@ -23,9 +24,9 @@ import { type Command, HELP, keyCommand, parseRoute, type Route, type RouteInfo 
 import { type HarnessCache, loadNews, type News } from "./news.ts";
 import { newsView } from "./newsview.ts";
 import { loadFileLines, loadForgePrs, loadPrDetail, loadRangeFiles, type PrDetail, refreshVerdicts, submitReview, type VerdictEntry } from "./prs.ts";
-import { APPROVE_ACTION, type PrPane, prView, REVIEW_FORM_CLASS } from "./prview.ts";
+import { APPROVE_ACTION, type PrPane, prView, REVIEW_FORM_CLASS, type ReviewAskInfo } from "./prview.ts";
 import { buildEntries, type Entry, itemHref } from "./queue.ts";
-import { answerState, type BoardHref, CONTEXT_CLASS, contextView, itemView, queueView, ROW_CLASS, ROW_KEY_ATTR, type RowLabel, STATE_LABEL } from "./view.ts";
+import { answerState, type BoardHref, type ContextHooks, CONTEXT_CLASS, contextView, itemView, queueView, ROW_CLASS, ROW_KEY_ATTR, type RowLabel, STATE_LABEL } from "./view.ts";
 
 const render = createRenderer(window);
 
@@ -214,22 +215,40 @@ function renderRoute(state: State): void {
     return;
   }
   const ctx = state.context.get(item.nodeId);
-  const target = answerTarget(item);
   state.shown = { nodeId: item.nodeId, key: itemKey(item) };
   const answered = ctx?.answered ? new Set([...state.answered, item.nodeId]) : state.answered;
   const entry = state.entries.find((e) => e.item?.nodeId === item.nodeId);
+  const asks = entry?.children ?? [];
+  const action = itemAction(item, asks.filter((a) => a.item?.state !== "closed").length);
+  const done = (url: string) => {
+    state.sent.add(item.nodeId);
+    void refreshContext(state, item);
+    return url;
+  };
   showMain(
-    itemView(item, { target, context: ctx, state: answerState(item, state.sent, answered), questions: entry?.children ?? [], boardHref: boardHref(state) }, render, {
-      send: async (answer) => {
-        if (target.kind !== "question") throw new Error(`can't answer here: ${target.reason}`);
-        const posted = await postAnswer(state.gh, target.ref, answer);
-        state.sent.add(item.nodeId);
-        void refreshContext(state, item);
-        return posted.url;
+    itemView(
+      item,
+      { action, context: ctx, state: answerState(item, state.sent, answered), asks, hooks: contextHooks(state, item), labelOf: labelOf(state) },
+      render,
+      {
+        send: async (answer) => {
+          if (action.kind !== "answer") throw new Error("this is not a question");
+          return done((await postAnswer(state.gh, action.ref, answer)).url);
+        },
+        comment: async (text) => {
+          if (action.kind !== "review" && action.kind !== "comment") throw new Error("this is not a review or chore");
+          const kind = action.kind === "comment" ? action.ask : "review";
+          return done((await postAskComment(state.gh, action.ref, kind, text)).url);
+        },
       },
-    }),
+    ),
   );
   if (!ctx) void refreshContext(state, item);
+}
+
+/** What an item's loaded context acts through. */
+function contextHooks(state: State, item: Item): ContextHooks {
+  return { boardHref: boardHref(state) };
 }
 
 function prEntry(state: State, key: string): Entry | undefined {
@@ -254,12 +273,32 @@ function renderPr(state: State, ref: { owner: string; repo: string; number: numb
     return;
   }
   state.shownPr = { key, updatedAt: detail.updatedAt };
+  const found = reviewAskFor(state.items, ref);
+  const ask: ReviewAskInfo | undefined = found && {
+    pr: found.target.ref,
+    issue: found.ref,
+    head: found.target.head,
+    ...(found.item.url ? { issueUrl: found.item.url } : {}),
+    ...(found.body.ask ? { text: found.body.ask } : {}),
+  };
   const pane = prView(detail, prEntry(state, key), render, {
     review: async (action, text, draft, comments, sent) => {
       const reviews = composeReviews(action, text, detail.head, { draft, comments });
       const url = await submitReview(state.gh, ref, reviews, (i) => sent(reviews[i]?.commit_id ?? ""));
       state.reviewed.add(key);
       state.forceForge = true;
+      // Tell the bot on its review ask. The review went out either way.
+      const note = found ? reviewComment(action, ref, detail.head, url) : undefined;
+      if (found && note) {
+        postAskComment(state.gh, found.ref, "review", note)
+          .then(() => {
+            state.sent.add(found.item.nodeId);
+          })
+          .catch((e: unknown) => {
+            state.error = `Your review went out, but the comment telling the bot on ${refKey(found.ref)} didn't: ${message(e)}. Comment there yourself.`;
+            renderChrome(state);
+          });
+      }
       // Our own review moved updated_at: note the new one so it isn't
       // reported as a change, without re-rendering the form.
       void loadPrDetail(state.gh, ref)
@@ -274,7 +313,7 @@ function renderPr(state: State, ref: { owner: string; repo: string; number: numb
     },
     loadRange: (base, to) => loadRangeFiles(state.gh, ref, base, to),
     loadLines: (path, sha) => loadFileLines(state.gh, ref, path, sha),
-  }, { reviewedHere: state.reviewed.has(key) });
+  }, { reviewedHere: state.reviewed.has(key), ...(ask ? { ask } : {}) });
   state.pane = pane;
   showMain(pane.el);
 }
@@ -308,7 +347,7 @@ async function refreshContext(state: State, item: Item): Promise<void> {
   state.context.set(item.nodeId, ctx);
   if (routeItemId() !== item.nodeId) return;
   const container = byId("view").querySelector(`.${CONTEXT_CLASS}`);
-  container?.replaceChildren(contextView(item, ctx, render, boardHref(state)));
+  container?.replaceChildren(contextView(item, ctx, render, contextHooks(state, item)));
 }
 
 /** Re-read the news (conditionally), and show it if the pane is open and it changed. */

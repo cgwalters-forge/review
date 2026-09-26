@@ -40,6 +40,10 @@ export const FIELD = {
 export const TRACKER_REPO = "cgwalters-forge/tracker";
 /** The label the bot puts on a question issue in TRACKER_REPO. */
 export const QUESTION_LABEL = "question";
+/** ... on an issue asking him to review a PR. */
+export const REVIEW_LABEL = "review";
+/** ... on an issue asking him for any other action. */
+export const CHORE_LABEL = "chore";
 
 /** Poll every this many ms while the tab is visible. */
 export const POLL_INTERVAL_MS = 30_000;

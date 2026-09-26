@@ -8,7 +8,7 @@ import { describe, it } from "node:test";
 import type { DraftComment, ReviewAction } from "../src/github/forge.ts";
 import type { GuideState } from "../src/github/guide.ts";
 import type { PrDetail } from "../src/github/prs.ts";
-import { buildTree, canReview, hotspotsFor, type PrViewHandlers, prView, rangeEnds, unseenNote } from "../src/github/prview.ts";
+import { buildTree, canReview, hotspotsFor, movedFrom, type PrViewHandlers, prView, rangeEnds, type ReviewAskInfo, unseenNote } from "../src/github/prview.ts";
 import { createRenderer } from "../src/markdown.ts";
 import { installDom } from "./helpers.ts";
 
@@ -341,6 +341,84 @@ describe("prView", () => {
       assert.equal(el.querySelectorAll("td.ln.can-comment").length > 0, want, "line comments only with a form");
       assert.equal(canReview(detail(over)), want);
     }
+  });
+
+  describe("a PR a review ask names", () => {
+    const UP = { owner: "bootc-dev", repo: "bootc", number: 2500 };
+    const ASKED = "a".repeat(40);
+    const upstream = (over: Partial<PrDetail> = {}) => detail({ ref: UP, url: "https://github.com/bootc-dev/bootc/pull/2500", author: "cgwalters-bot", body: "fix", draft: false, head: ASKED, ...over });
+    const ask: ReviewAskInfo = { pr: UP, issue: { owner: "cgwalters-forge", repo: "tracker", number: 24 }, issueUrl: "https://github.com/cgwalters-forge/tracker/issues/24", head: ASKED, text: "Re-approve" };
+    const askPane = (d: PrDetail, a: ReviewAskInfo | undefined, h: PrViewHandlers = handlers()) => {
+      const p = prView(d, undefined, render, h, a ? { reviewedHere: false, ask: a } : opts);
+      win.document.body.replaceChildren(p.el);
+      return p;
+    };
+
+    it("gets a review form only with an ask for that very PR", () => {
+      const cases: [string, PrDetail, ReviewAskInfo | undefined, boolean][] = [
+        ["no ask", upstream(), undefined, false],
+        ["the ask", upstream(), ask, true],
+        ["someone else's PR, asked", upstream({ author: "someone" }), ask, true],
+        ["an ask for another PR", upstream(), { ...ask, pr: { ...UP, number: 2501 } }, false],
+        ["an ask for another repository", upstream(), { ...ask, pr: { ...UP, repo: "other" } }, false],
+        ["asked, in any case", upstream(), { ...ask, pr: { ...UP, owner: "Bootc-Dev" } }, true],
+        ["asked, but merged", upstream({ state: "merged" }), ask, false],
+      ];
+      for (const [name, d, a, want] of cases) {
+        assert.equal(canReview(d, a), want, name);
+        assert.equal(askPane(d, a).el.querySelector("form.review") !== null, want, name);
+      }
+    });
+
+    it("shows the head asked about, and says when it is still the head", () => {
+      const { el } = askPane(upstream(), ask);
+      const banner = el.querySelector(".review-ask p");
+      assert.equal(banner?.className, "note");
+      assert.match(banner?.textContent ?? "", /The bot asks you to review this at aaaaaaaaaa \(cgwalters-forge\/tracker#24: Re-approve\)\. That is still its head\./);
+      assert.match(el.querySelector("form.review .target")?.textContent ?? "", /also comments on cgwalters-forge\/tracker#24/);
+      assert.equal(movedFrom(upstream(), ask), undefined);
+    });
+
+    it("warns when the head moved, and asks before reviewing the new one", async () => {
+      const moved = upstream({ head: HEAD });
+      assert.equal(movedFrom(moved, ask), ASKED);
+      const sent: ReviewAction[] = [];
+      const confirms: string[] = [];
+      let answers: boolean[] = [];
+      Object.assign(win, { confirm: (m: string) => (confirms.push(m), answers.shift() ?? false) });
+      const { el } = askPane(moved, ask, handlers({ review: async (a) => (sent.push(a), "https://github.com/r") }));
+      const banner = el.querySelector(".review-ask p");
+      assert.equal(banner?.className, "warn");
+      assert.match(banner?.textContent ?? "", /has moved since: its head is now eeeeeeeeee\. What you see and review here is eeeeeeeeee, not what the bot asked about/);
+      const approve = el.querySelector('button[data-action="approve"]') as HTMLButtonElement;
+      // Declining the moved-head question sends nothing, and asks nothing more.
+      answers = [false];
+      approve.click();
+      await tick();
+      assert.deepEqual(sent, []);
+      assert.equal(confirms.length, 1);
+      assert.match(confirms[0] ?? "", /The bot asked you to review aaaaaaaaaa, but the PR's head is now eeeeeeeeee\. Review eeeeeeeeee instead\?/);
+      // Accepting it still leaves the usual confirmation.
+      answers = [true, false];
+      approve.click();
+      await tick();
+      assert.deepEqual(sent, []);
+      answers = [true, true];
+      approve.click();
+      await tick();
+      assert.deepEqual(sent, ["approve"]);
+    });
+
+    it("asks nothing extra when the head is the one asked about", async () => {
+      const sent: ReviewAction[] = [];
+      const confirms: string[] = [];
+      Object.assign(win, { confirm: (m: string) => (confirms.push(m), true) });
+      const { el } = askPane(upstream(), ask, handlers({ review: async (a) => (sent.push(a), "https://github.com/r") }));
+      (el.querySelector('button[data-action="approve"]') as HTMLButtonElement).click();
+      await tick();
+      assert.deepEqual(sent, ["approve"]);
+      assert.equal(confirms.length, 1);
+    });
   });
 
   it("offers no review form on a closed PR", () => {

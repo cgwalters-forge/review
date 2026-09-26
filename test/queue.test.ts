@@ -93,8 +93,8 @@ describe("buildEntries", () => {
       entries.map((e) => [e.key, e.kind, e.priority ?? "-"]),
       [
         ["pr:cgwalters-forge/a#1", "pr", "P0"],
-        ["item:PVTI_chore", "chore", "P0"],
-        ["item:PVTI_gist", "chore", "P1"],
+        ["item:PVTI_chore", "item", "P0"],
+        ["item:PVTI_gist", "item", "P1"],
         ["item:PVTI_q", "question", "P1"],
         ["pr:cgwalters-forge/b#2", "pr", "P2"],
         ["pr:cgwalters-forge/untracked#3", "pr", "-"],
@@ -129,16 +129,51 @@ describe("buildEntries", () => {
     assert.deepEqual(keys.sort(), ["item:PVTI_nh", "pr:cgwalters-forge/a#1"]);
   });
 
-  it("counts only tracker question issues as questions", () => {
+  it("takes ask kinds from tracker issues' labels only", () => {
     const items = [
       question("PVTI_q", 1, `${TRACKER}/9`),
-      tracked("PVTI_chore", 2, { why: "Options:\nA) x\nB) y" }),
+      tracked("PVTI_rev", 3, { labels: ["review"], body: `Blocks: ${TRACKER}/9` }),
+      tracked("PVTI_do", 4, { labels: ["chore"], body: `Blocks: ${TRACKER}/9` }),
+      tracked("PVTI_both", 5, { labels: ["chore", "review"] }),
+      tracked("PVTI_plain", 2, { why: "Options:\nA) x\nB) y" }),
       item("PVTI_upstream", { kind: "pr", ref: { owner: "up", repo: "r", number: 1 }, labels: ["question"] }),
       item("PVTI_draft", { body: "Options:\nA) x\nB) y" }),
     ];
     assert.deepEqual(
       buildEntries(items, [], verdicts([])).map((e) => [e.key, e.kind]).sort(),
-      [["item:PVTI_chore", "chore"], ["item:PVTI_draft", "chore"], ["item:PVTI_q", "question"], ["item:PVTI_upstream", "chore"]],
+      [
+        ["item:PVTI_both", "item"],
+        ["item:PVTI_do", "chore"],
+        ["item:PVTI_draft", "item"],
+        ["item:PVTI_plain", "item"],
+        ["item:PVTI_q", "question"],
+        ["item:PVTI_rev", "review"],
+        ["item:PVTI_upstream", "item"],
+      ],
+    );
+  });
+
+  it("nests every kind of ask under the item it blocks, and flags Needs human items left without one", () => {
+    const upstream = "https://github.com/example-upstream/widget/issues/7";
+    const items = [
+      item("PVTI_up", { kind: "issue", url: upstream, ref: { owner: "example-upstream", repo: "widget", number: 7 }, priority: "P1" }),
+      tracked("PVTI_rev", 24, { labels: ["review"], body: `Blocks: \`${upstream}\`` }),
+      tracked("PVTI_do", 25, { labels: ["chore"], body: `Blocks: \`${upstream}\`` }),
+      item("PVTI_lonely", { kind: "issue", ref: { owner: "example-upstream", repo: "widget", number: 8 } }),
+      item("PVTI_gist", { status: "Draft", gist: ["https://gist.github.com/x/1"] }),
+      // Only a closed ask left: still a bug.
+      item("PVTI_stale", { kind: "issue", ref: { owner: "example-upstream", repo: "widget", number: 9 } }),
+      tracked("PVTI_old", 26, { labels: ["chore"], state: "closed", body: "Blocks: `https://github.com/example-upstream/widget/issues/9`" }),
+    ];
+    const entries = buildEntries(items, [], verdicts([]));
+    assert.deepEqual(
+      entries.map((e) => [e.key, e.children?.map((c) => c.kind) ?? [], e.bug ?? false]),
+      [
+        ["item:PVTI_up", ["chore", "review"], false],
+        ["item:PVTI_gist", [], false],
+        ["item:PVTI_lonely", [], true],
+        ["item:PVTI_stale", ["chore"], true],
+      ],
     );
   });
 
@@ -231,11 +266,11 @@ describe("buildEntries", () => {
   it("drops no forge-only Draft item before the forge was read", () => {
     const items = [item("PVTI_f", { status: "Draft", branch: ["https://github.com/cgwalters-forge/a/pull/1"] })];
     assert.deepEqual(buildEntries(items, [], verdicts([])).length, 0);
-    assert.deepEqual(buildEntries(items, [], verdicts([]), false).map((e) => [e.key, e.kind]), [["item:PVTI_f", "chore"]]);
+    assert.deepEqual(buildEntries(items, [], verdicts([]), false).map((e) => [e.key, e.kind]), [["item:PVTI_f", "item"]]);
   });
 
   it("keeps a Draft item whose Branch is not only forge PRs", () => {
     const items = [item("PVTI_up", { status: "Draft", branch: ["https://github.com/up/r/compare/main...cgwalters-bot:bot/x"] })];
-    assert.deepEqual(buildEntries(items, [], verdicts([])).map((e) => e.kind), ["chore"]);
+    assert.deepEqual(buildEntries(items, [], verdicts([])).map((e) => e.kind), ["item"]);
   });
 });

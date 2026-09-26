@@ -1,12 +1,17 @@
-// The one ranked queue: forge PRs waiting for his review, board questions
-// and chores, P0 first, then oldest first. Pure, so tests can check the
-// ranking and what gets merged or dropped.
+// The one ranked queue: forge PRs waiting for his review, the bot's asks
+// (questions, reviews and chores) and the board items they block, P0
+// first, then oldest first. Pure, so tests can check the ranking and what
+// gets merged or dropped.
 
-import { blockedBy, isQuestion, type Item, NO_PRIORITY, PRIORITY_ORDER } from "./board.ts";
+import { askKind, blockedBy, type Item, NO_PRIORITY, PRIORITY_ORDER } from "./board.ts";
 import { DRAFT, FORGE_ORG, NEEDS_HUMAN } from "./config.ts";
 import { type ForgePr, parseBotMeta, refKey, type Verdict, waitsOnReviewer } from "./forge.ts";
 
-export type EntryKind = "pr" | "question" | "chore";
+/** A forge PR, an ask of one kind, or another board item. */
+export type EntryKind = "pr" | "question" | "review" | "chore" | "item";
+
+/** The kinds that are asks. */
+export const ASK_ENTRY_KINDS: readonly EntryKind[] = ["question", "review", "chore"];
 
 export interface Entry {
   /** `pr:owner/repo#n` or `item:PVTI_...`. */
@@ -26,8 +31,10 @@ export interface Entry {
   verdict?: Verdict;
   /** A question he answered, or the bot closed: waiting on the bot, not him. */
   settled?: boolean;
-  /** The questions blocking this entry's item, nested under it. */
+  /** The asks about this entry's item, nested under it. */
   children?: Entry[];
+  /** Needs human, yet no open ask names it: the bot left it without telling him what to do. */
+  bug?: boolean;
   /**
    * The priority it ranks and groups by, when an open nested question's
    * outranks its own; `priority` stays what the board says.
@@ -91,15 +98,17 @@ function itemWhere(item: Item): string {
  * - A Draft board item tracking a forge PR is that PR's entry, never a
  *   second one. One whose Branch holds only forge PRs, none of them open
  *   and waiting, is stale (promoted or closed) and dropped.
- * - Question issues in the tracker are questions: settled (listed last)
- *   once he answered (`answered`, by node id) or the bot closed them.
- *   One whose blocked item (its parent issue, else its `Blocks:` URL) is
- *   also listed is nested under that entry rather than listed twice.
- * - Other Draft items (a gist to read) are chores, and so are Needs human
- *   items that aren't questions.
+ * - Ask issues in the tracker (questions, reviews, chores) are listed by
+ *   kind: settled (listed last) once he commented after the bot
+ *   (`answered`, by node id) or the bot closed them. One whose blocked
+ *   item (its parent issue, else its `Blocks:` URL) is also listed is
+ *   nested under that entry rather than listed twice.
+ * - Other board items are items: a Draft one (a gist to read), or a
+ *   Needs human one, which should have open asks nested under it; one
+ *   without is flagged as a bot bug.
  *
  * Until the forge has been read once (`forgeKnown`), nothing is stale:
- * forge-only Draft items are listed as chores rather than dropped.
+ * forge-only Draft items are listed as items rather than dropped.
  */
 export function buildEntries(
   items: readonly Item[],
@@ -132,14 +141,15 @@ export function buildEntries(
   for (const item of items) {
     if (tracked.has(item.nodeId)) continue;
     let kind: EntryKind;
-    if (isQuestion(item)) {
-      kind = "question";
+    const ask = askKind(item);
+    if (ask) {
+      kind = ask;
     } else if (item.status === DRAFT) {
       const forgeOnly = item.branch.length > 0 && item.branch.every((u) => FORGE_PR_RE.test(u));
       if (forgeOnly && forgeKnown) continue;
-      kind = "chore";
+      kind = "item";
     } else if (item.status === NEEDS_HUMAN) {
-      kind = "chore";
+      kind = "item";
     } else {
       continue;
     }
@@ -147,18 +157,27 @@ export function buildEntries(
     if (item.priority) e.priority = item.priority;
     const since = item.createdAt ?? item.updatedAt;
     if (since) e.since = since;
-    if (kind === "question" && (item.state === "closed" || answered.has(item.nodeId))) e.settled = true;
+    if (ask && (item.state === "closed" || answered.has(item.nodeId))) e.settled = true;
     out.push(e);
   }
-  return rankEntries(nestQuestions(out));
+  const top = nestAsks(out);
+  for (const e of top) {
+    if (e.kind === "item" && e.item?.status === NEEDS_HUMAN && !(e.children ?? []).some((c) => c.item?.state !== "closed")) e.bug = true;
+  }
+  return rankEntries(top);
+}
+
+/** Whether an entry is an ask. */
+export function isAskEntry(e: Entry): boolean {
+  return ASK_ENTRY_KINDS.includes(e.kind);
 }
 
 /**
  * The issues and PRs an entry is about, as refKeys: a forge PR entry
  * stands for its PR and for the Draft board item it folded in (often a
- * tracker issue, whose questions name that issue). A PR entry's item that
+ * tracker issue, whose asks name that issue). A PR entry's item that
  * wasn't folded in (say, Needs human) has an entry of its own, which is
- * where its questions belong.
+ * where its asks belong.
  */
 function entryRefs(e: Entry): string[] {
   const item = e.kind !== "pr" || e.item?.status === DRAFT ? e.item : undefined;
@@ -166,16 +185,15 @@ function entryRefs(e: Entry): string[] {
 }
 
 /**
- * Move each question under the entry for the item it blocks, when that
- * is listed and isn't a question itself; the rest stay top-level, noting
- * what they block. A parent ranks by its most urgent open question when
- * that outranks it, so nesting never buries a P0 question under a P2
- * item.
+ * Move each ask under the entry for the item it blocks, when that is
+ * listed and isn't an ask itself; the rest stay top-level, noting what
+ * they block. A parent ranks by its most urgent open ask when that
+ * outranks it, so nesting never buries a P0 question under a P2 item.
  */
-function nestQuestions(entries: Entry[]): Entry[] {
+function nestAsks(entries: Entry[]): Entry[] {
   const parents = new Map<string, Entry>();
   for (const e of entries) {
-    if (e.kind === "question") continue;
+    if (isAskEntry(e)) continue;
     for (const ref of entryRefs(e)) if (!parents.has(ref)) parents.set(ref, e);
   }
   const top: Entry[] = [];

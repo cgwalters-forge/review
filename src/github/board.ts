@@ -2,8 +2,8 @@
 // the app's item model. Pure functions over JSON, so tests feed them
 // synthetic payloads.
 
-import { parseQuestion, type Question } from "../answer.ts";
-import { BOT_LOGIN, FIELD, OPERATOR, QUESTION_LABEL, QUEUE_STATUSES, TRACKER_REPO } from "./config.ts";
+import { parseBlocks, parseQuestion, type Question, unfencedLines } from "../answer.ts";
+import { BOT_LOGIN, CHORE_LABEL, FIELD, OPERATOR, QUESTION_LABEL, QUEUE_STATUSES, REVIEW_LABEL, TRACKER_REPO } from "./config.ts";
 
 /** The subset of a project field the app uses. */
 export interface RawField {
@@ -91,6 +91,8 @@ export interface Item {
   labels: string[];
   /** Assignee logins, on issues and PRs. */
   assignees: string[];
+  /** Who opened the issue or PR, when the payload says. */
+  author?: string;
   /** Number of comments, when the payload says. */
   comments?: number;
   /** Sub-issue progress, on issues that have sub-issues. */
@@ -222,6 +224,7 @@ export function parseItem(raw: RawItem): Item {
     opt("ref", parseIssueUrl(c.html_url));
     opt("state", c.merged_at ? "merged" : c.state);
   }
+  if (c.user?.login) item.author = c.user.login;
   if (typeof c.comments === "number") item.comments = c.comments;
   if (c.sub_issues_summary && c.sub_issues_summary.total > 0) item.subIssues = c.sub_issues_summary;
   if (c.parent_issue_url) opt("parent", parseApiIssueUrl(c.parent_issue_url));
@@ -236,47 +239,85 @@ export function queueItems(raw: readonly RawItem[]): Item[] {
     .filter((i) => i.status !== undefined && QUEUE_STATUSES.includes(i.status));
 }
 
-/** What postAnswer and answerTarget check an issue against. */
-export interface QuestionFacts {
+/** The kinds of ask: a tracker issue asking him to answer, review or act. */
+export type AskKind = "question" | "review" | "chore";
+
+/** Each kind's label; an ask carries exactly one. */
+export const ASK_LABELS: Readonly<Record<AskKind, string>> = { question: QUESTION_LABEL, review: REVIEW_LABEL, chore: CHORE_LABEL };
+
+const ASK_KINDS = Object.keys(ASK_LABELS) as AskKind[];
+
+/** The ask kinds its labels name. */
+function askLabels(labels: readonly string[]): AskKind[] {
+  return ASK_KINDS.filter((k) => labels.includes(ASK_LABELS[k]));
+}
+
+/** What postAnswer, postAskComment and askTarget check an issue against. */
+export interface AskFacts {
   kind: ItemKind;
   ref?: IssueRef;
   state?: string;
   labels: readonly string[];
   assignees: readonly string[];
+  author?: string;
 }
 
-/** Where questions live and whom they ask. */
-export interface QuestionScope {
+/** Where asks live, whom they ask and who writes them. */
+export interface AskScope {
   repo: string;
   assignee: string;
+  author: string;
 }
 
 /**
- * The real scope: the tracker, asking him. Tests against a sandbox
- * repository override both, since he can't be assigned there.
+ * The real scope: the tracker, the bot asking him. Tests against a
+ * sandbox repository override the assignee, since he can't be assigned
+ * there.
  */
-export const TRACKER_SCOPE: QuestionScope = { repo: TRACKER_REPO, assignee: OPERATOR };
+export const TRACKER_SCOPE: AskScope = { repo: TRACKER_REPO, assignee: OPERATOR, author: BOT_LOGIN };
+
+/** The kind of ask an issue is, if it is one: an issue in the tracker with exactly one ask label. */
+export function askKind(q: Pick<AskFacts, "kind" | "ref" | "labels">, repo: string = TRACKER_REPO): AskKind | undefined {
+  if (q.kind !== "issue" || !q.ref || repoOf(q.ref) !== repo.toLowerCase()) return undefined;
+  const kinds = askLabels(q.labels);
+  return kinds.length === 1 ? kinds[0] : undefined;
+}
 
 /**
- * Why this can't take an answer, or undefined if it can: only an open
- * issue in the tracker labelled `question` and assigned to him does.
- * Anything else, above all an upstream issue or PR, is acted on in
- * GitHub: a bare "B" there is noise to its maintainers.
+ * Why this can't take his action, or undefined if it can: only an open
+ * issue in the tracker, opened by the bot, assigned to him, with exactly
+ * one ask label (`want`'s, when given) does. Anything else, above all an
+ * upstream issue or PR, is acted on in GitHub: a bare "B" there is noise
+ * to its maintainers.
  */
-export function questionProblem(q: QuestionFacts, scope: QuestionScope = TRACKER_SCOPE): string | undefined {
+export function askProblem(q: AskFacts, want?: AskKind, scope: AskScope = TRACKER_SCOPE): string | undefined {
   if (!q.ref) return "this item has no issue to comment on";
   const where = `${q.ref.owner}/${q.ref.repo}#${q.ref.number}`;
   if (q.kind !== "issue") return `${where} is not an issue`;
-  if (repoOf(q.ref) !== scope.repo.toLowerCase()) return `${where} is not in ${scope.repo}, where the bot's questions are`;
-  if (!q.labels.includes(QUESTION_LABEL)) return `${where} is not labelled "${QUESTION_LABEL}"`;
+  if (repoOf(q.ref) !== scope.repo.toLowerCase()) return `${where} is not in ${scope.repo}, where the bot's asks are`;
+  const kinds = askLabels(q.labels);
+  if (want !== undefined && !kinds.includes(want)) return `${where} is not labelled "${ASK_LABELS[want]}"`;
+  if (kinds.length === 0) return `${where} has none of the labels ${ASK_KINDS.map((k) => `"${ASK_LABELS[k]}"`).join(", ")}`;
+  if (kinds.length > 1) return `${where} has several of the labels ${kinds.map((k) => `"${ASK_LABELS[k]}"`).join(", ")}`;
+  if (q.author?.toLowerCase() !== scope.author.toLowerCase()) return `${where} was not opened by ${scope.author}`;
   if (!q.assignees.some((a) => a.toLowerCase() === scope.assignee.toLowerCase())) return `${where} is not assigned to ${scope.assignee}`;
   if (q.state !== "open") return `${where} is closed`;
   return undefined;
 }
 
+/** Why a question can't take an answer; see askProblem. */
+export function questionProblem(q: AskFacts, scope: AskScope = TRACKER_SCOPE): string | undefined {
+  return askProblem(q, "question", scope);
+}
+
+/** An ask issue in the tracker, open or closed, of any kind. */
+export function isAsk(item: Item): boolean {
+  return askKind(item) !== undefined;
+}
+
 /** A question issue in the tracker, open or closed. */
-export function isQuestion(item: Item, repo: string = TRACKER_REPO): boolean {
-  return item.kind === "issue" && item.ref !== undefined && repoOf(item.ref) === repo.toLowerCase() && item.labels.includes(QUESTION_LABEL);
+export function isQuestion(item: Item): boolean {
+  return askKind(item) === "question";
 }
 
 /** The question an item asks: parsed from a question issue's body, else none. */
@@ -284,22 +325,12 @@ export function questionOf(item: Item): Question {
   return isQuestion(item) ? parseQuestion(item.body) : { options: [] };
 }
 
-/** The item a question blocks: its parent issue, else its `Blocks:` line. */
+/** The item an ask blocks: its parent issue, else its `Blocks:` line. */
 export function blockedBy(item: Item): IssueRef | undefined {
-  if (!isQuestion(item)) return undefined;
+  if (!isAsk(item)) return undefined;
   if (item.parent) return item.parent;
-  const url = questionOf(item).blocks;
+  const url = parseBlocks(unfencedLines(item.body));
   return url ? parseIssueUrl(url) : undefined;
-}
-
-/** Where an answer to this item goes: a comment on its question issue, or nowhere. */
-export type AnswerTarget = { kind: "question"; ref: IssueRef } | { kind: "none"; reason: string };
-
-/** Decide the answer channel. This is the one place that picks it. */
-export function answerTarget(item: Item): AnswerTarget {
-  const problem = questionProblem(item);
-  if (problem !== undefined || !item.ref) return { kind: "none", reason: problem ?? "no issue" };
-  return { kind: "question", ref: item.ref };
 }
 
 /** The subset of a comment that decides whether he has answered. */
