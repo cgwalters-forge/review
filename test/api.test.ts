@@ -46,7 +46,23 @@ describe("GitHub.get", () => {
 
   it("refuses paths that would leave the API origin", async () => {
     const gh = new GitHub(token, scriptedFetch(() => ({})).fetchImpl);
-    await assert.rejects(gh.get("https://evil.example/x"), /must start with \//);
+    await assert.rejects(gh.get("https://evil.example/x"), /refusing to send the token outside/);
+    await assert.rejects(gh.get("x"), /must start with \//);
+  });
+
+  it("refuses a next page outside the API origin", async () => {
+    const { fetchImpl, calls } = scriptedFetch(() => ({ body: [1], headers: { link: '<https://evil.example/x?page=2>; rel="next"' } }));
+    const gh = new GitHub(token, fetchImpl);
+    await assert.rejects(gh.getAll("/x"), /refusing to send the token outside/);
+    assert.equal(calls.length, 1);
+  });
+
+  it("notes a classic token's scopes", async () => {
+    const { fetchImpl } = scriptedFetch(() => ({ body: {}, headers: { "x-oauth-scopes": "gist, repo" } }));
+    const gh = new GitHub(token, fetchImpl);
+    assert.equal(gh.scopes, undefined);
+    await gh.get("/user");
+    assert.equal(gh.scopes, "gist, repo");
   });
 });
 
