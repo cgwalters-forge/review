@@ -430,7 +430,10 @@ async function poll(state: State): Promise<void> {
       state.context.clear();
       state.loaded = true;
       update(state, true, first);
-      void refreshAnswered(state, q.items);
+      refreshAnswered(state, q.items).catch((e: unknown) => {
+        // The answered labels stay as they were; the next board change retries.
+        console.error("review: couldn't update which questions are answered:", e);
+      });
     } else {
       renderChrome(state);
     }
