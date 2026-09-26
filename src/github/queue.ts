@@ -155,11 +155,14 @@ export function buildEntries(
 
 /**
  * The issues and PRs an entry is about, as refKeys: a forge PR entry
- * stands for its PR and for the board item it folded in (often a tracker
- * issue, whose questions name that issue).
+ * stands for its PR and for the Draft board item it folded in (often a
+ * tracker issue, whose questions name that issue). A PR entry's item that
+ * wasn't folded in (say, Needs human) has an entry of its own, which is
+ * where its questions belong.
  */
 function entryRefs(e: Entry): string[] {
-  return [e.pr?.ref, e.item?.ref].flatMap((r) => (r ? [refKey(r).toLowerCase()] : []));
+  const item = e.kind !== "pr" || e.item?.status === DRAFT ? e.item : undefined;
+  return [e.pr?.ref, item?.ref].flatMap((r) => (r ? [refKey(r).toLowerCase()] : []));
 }
 
 /**
