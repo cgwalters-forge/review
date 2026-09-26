@@ -129,6 +129,21 @@ above, in development mode. Next come the relay, the bot's answer check
 in homegit, and the App (created by you, with its secret installed by you
 on `forge`). PR review (§6 v2) and Forgejo follow.
 
+### Direction (2026-09-26)
+
+cgwalters' stated goal, recorded as direction rather than a committed
+design; a separate design pass will follow:
+
+- The app should feel more like the github.com interface: a queue, news,
+  and an agent chat. The queue and a news pane (recently merged changes
+  to the bot, its runner and this app, with harness changes marked)
+  exist now; chat does not.
+- The long-term target is that the coordinator itself runs from a
+  scheduled GitHub Actions workflow, and he can type into the UI and get
+  an interactive session with it, driven over ACP (the Agent Client
+  Protocol; the proposed `bot-harness`, in
+  cgwalters-forge/cgwalters-devspace-sandbox#4, is an ACP client).
+
 ### Hosting v0: GitHub Pages and a pasted token (2026-09-26)
 
 cgwalters asked for something usable now rather than after the relay and
