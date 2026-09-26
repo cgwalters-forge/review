@@ -2,18 +2,20 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
   answeredPending,
-  answerTarget,
+  type AskFacts,
+  askKind,
+  askProblem,
+  type AskScope,
   assigneeLogins,
   blockedBy,
   type CommentFacts,
   fieldIds,
+  isAsk,
   isQuestion,
   type Item,
   labelNames,
   parseApiIssueUrl,
   parseIssueUrl,
-  type QuestionFacts,
-  type QuestionScope,
   questionOf,
   questionProblem,
   queueItems,
@@ -79,6 +81,9 @@ describe("queueItems", () => {
         "PVTI_synthetic_question",
         "PVTI_synthetic_upstream_question",
         "PVTI_synthetic_closed_question",
+        "PVTI_synthetic_upstream_issue",
+        "PVTI_synthetic_review_ask",
+        "PVTI_synthetic_chore_ask",
       ],
     );
   });
@@ -128,14 +133,33 @@ describe("questions", () => {
   it("are tracker issues labelled question, open or closed", () => {
     const questions = [...items.values()].filter((i) => isQuestion(i)).map((i) => i.nodeId);
     assert.deepEqual(questions, ["PVTI_synthetic_question", "PVTI_synthetic_upstream_question", "PVTI_synthetic_closed_question"]);
+    const asks = [...items.values()].filter((i) => isAsk(i)).map((i) => [i.nodeId, askKind(i)]);
+    assert.deepEqual(asks.slice(3), [
+      ["PVTI_synthetic_review_ask", "review"],
+      ["PVTI_synthetic_chore_ask", "chore"],
+    ]);
+  });
+
+  it("an ask has exactly one ask label, and is in the tracker", () => {
+    const ref = { owner: "cgwalters-forge", repo: "tracker", number: 1 };
+    const kind = (labels: string[], over: Partial<AskFacts> = {}) => askKind({ kind: "issue", ref, labels, ...over });
+    assert.equal(kind(["chore", "infra"]), "chore");
+    assert.equal(kind(["review"]), "review");
+    assert.equal(kind(["review", "chore"]), undefined);
+    assert.equal(kind([]), undefined);
+    assert.equal(kind(["question"], { ref: { owner: "o", repo: "r", number: 1 } }), undefined);
+    assert.equal(kind(["question"], { kind: "pr" }), undefined);
   });
 
   const tracker = { owner: "cgwalters-forge", repo: "tracker", number: 21 };
-  const open: QuestionFacts = { kind: "issue", ref: tracker, state: "open", labels: ["question"], assignees: ["someone", "cgwalters"] };
-  const sandbox: QuestionScope = { repo: "cgwalters-bot/review-sandbox", assignee: "cgwalters-bot" };
-  const inSandbox: QuestionFacts = { ...open, ref: { owner: "cgwalters-bot", repo: "review-sandbox", number: 4 }, assignees: ["cgwalters-bot"] };
-  const problems: [string, QuestionFacts, QuestionScope | undefined, RegExp | undefined][] = [
+  const open: AskFacts = { kind: "issue", ref: tracker, state: "open", labels: ["question"], assignees: ["someone", "cgwalters"], author: "cgwalters-bot" };
+  const sandbox: AskScope = { repo: "cgwalters-bot/review-sandbox", assignee: "cgwalters-bot", author: "cgwalters-bot" };
+  const inSandbox: AskFacts = { ...open, ref: { owner: "cgwalters-bot", repo: "review-sandbox", number: 4 }, assignees: ["cgwalters-bot"] };
+  const problems: [string, AskFacts, AskScope | undefined, RegExp | undefined][] = [
     ["an open question", open, undefined, undefined],
+    ["not opened by the bot", { ...open, author: "someone" }, undefined, /not opened by cgwalters-bot/],
+    ["with no known author", { kind: "issue", ref: tracker, state: "open", labels: ["question"], assignees: ["cgwalters"] }, undefined, /not opened by cgwalters-bot/],
+    ["another ask label as well", { ...open, labels: ["question", "chore"] }, undefined, /several of the labels "question", "chore"/],
     ["any case of the repository name", { ...open, ref: { ...tracker, owner: "CGWalters-Forge" } }, undefined, undefined],
     ["not assigned to him", { ...open, assignees: ["cgwalters-bot"] }, undefined, /not assigned to cgwalters$/],
     ["assigned to nobody", { ...open, assignees: [] }, undefined, /not assigned to cgwalters$/],
@@ -156,22 +180,19 @@ describe("questions", () => {
     });
   }
 
-  it("answer only by comment on an open question", () => {
-    assert.deepEqual(answerTarget(get("PVTI_synthetic_question")), { kind: "question", ref: tracker });
-    const none: [string, RegExp][] = [
-      ["PVTI_synthetic_upstream_pr", /not an issue/],
-      ["PVTI_synthetic_home_issue", /not in cgwalters-forge\/tracker/],
-      ["PVTI_synthetic_epic", /not labelled/],
-      ["PVTI_synthetic_closed_question", /is closed/],
-      ["PVTI_synthetic_draft", /no issue/],
-      ["PVTI_synthetic_redacted", /no issue/],
-    ];
-    for (const [id, reason] of none) {
-      const t = answerTarget(get(id));
-      assert.equal(t.kind, "none", id);
-      if (t.kind === "none") assert.match(t.reason, reason, id);
-    }
-  });
+  const askProblems: [string, AskFacts, "review" | "chore" | undefined, RegExp | undefined][] = [
+    ["a review ask", { ...open, labels: ["review"] }, "review", undefined],
+    ["a chore, of any kind", { ...open, labels: ["chore"] }, undefined, undefined],
+    ["a chore wanted as a review", { ...open, labels: ["chore"] }, "review", /not labelled "review"/],
+    ["no ask label", { ...open, labels: ["bug"] }, undefined, /has none of the labels "question", "review", "chore"/],
+  ];
+  for (const [name, facts, want, re] of askProblems) {
+    it(`askProblem: ${name}`, () => {
+      const got = askProblem(facts, want);
+      if (re) assert.match(got ?? "", re);
+      else assert.equal(got, undefined);
+    });
+  }
 
   it("are parsed only from question issues", () => {
     const letters = (item: Item) => questionOf(item).options.map((o) => `${o.letter}${o.recommended ? "*" : ""}`).join(" ");
@@ -191,6 +212,10 @@ describe("questions", () => {
       number: 20,
     });
     assert.equal(blocked("PVTI_synthetic_epic"), undefined);
+    // Review and chore asks too, from their backticked Blocks: line.
+    for (const id of ["PVTI_synthetic_review_ask", "PVTI_synthetic_chore_ask"]) {
+      assert.deepEqual(blocked(id), { owner: "example-upstream", repo: "widget", number: 7 }, id);
+    }
   });
 });
 

@@ -1,20 +1,21 @@
 // What the app does against GitHub: read the queue, read an item's
-// context, and post an answer. The views call these; tests drive them
-// with a scripted fetch.
+// context, and act on an ask: answer a question, comment on a review or
+// chore. The views call these; tests drive them with a scripted fetch.
 
-import { type Answer, formatAnswer, parseQuestion } from "../answer.ts";
+import { type Answer, formatAnswer, formatComment, parseQuestion } from "../answer.ts";
 import type { GitHub } from "./api.ts";
 import {
   answeredPending,
+  askProblem,
+  type AskKind,
+  type AskScope,
   assigneeLogins,
   fieldIds,
   type IssueRef,
-  isQuestion,
+  isAsk,
   type Item,
   labelNames,
   parseIssueUrl,
-  questionProblem,
-  type QuestionScope,
   type RawContent,
   type RawField,
   type RawItem,
@@ -149,7 +150,7 @@ export async function loadContext(gh: GitHub, item: Item): Promise<Context> {
     tasks.push(
       loadComments(gh, item.ref).then((all) => {
         ctx.comments = all.slice(-RECENT_COMMENTS);
-        if (isQuestion(item)) ctx.answered = answeredPending(all);
+        if (isAsk(item)) ctx.answered = answeredPending(all);
       }),
       loadSubIssues(gh, item).then((subs) => {
         if (subs) ctx.subIssues = subs;
@@ -188,14 +189,14 @@ export async function viewer(gh: GitHub): Promise<string> {
 }
 
 /**
- * The open questions he has answered and the bot hasn't acted on yet, by
- * node id. Reads comments only of open questions that have any; the reads
+ * The open asks he has answered (or commented on) and the bot hasn't acted
+ * on yet, by node id. Reads comments only of open asks that have any; the reads
  * are conditional, so an unchanged issue costs nothing, and at most
  * FETCH_CONCURRENCY run at once. A question whose comments can't be read
  * counts as unanswered.
  */
 export async function loadAnswered(gh: GitHub, items: readonly Item[]): Promise<Set<string>> {
-  const asked = items.filter((i) => isQuestion(i) && i.state === "open" && i.ref && (i.comments ?? 1) > 0);
+  const asked = items.filter((i) => isAsk(i) && i.state === "open" && i.ref && (i.comments ?? 1) > 0);
   const answered = await mapLimit(asked, FETCH_CONCURRENCY, async (i) => {
     try {
       return answeredPending(await loadComments(gh, i.ref as IssueRef)) ? [i.nodeId] : [];
@@ -212,19 +213,13 @@ export interface Posted {
 }
 
 /**
- * Answer a question: one comment by you on its issue. The issue is read
- * fresh first and must be an open question in `scope` (the tracker,
- * assigned to him, unless overridden, e.g. by a test against a sandbox
- * repository), and a picked letter must be one of the options its body
- * offers now; anything else is refused before writing. A plain function
- * of a client and an issue, so a script can drive it with any token.
+ * Read an ask's issue fresh and check it is still one of `want`'s kind
+ * in `scope`; anything else throws, before anything is written. A
+ * transferred issue doesn't count: it would answer from its new home.
  */
-export async function postAnswer(gh: GitHub, ref: IssueRef, answer: Answer, scope: QuestionScope = TRACKER_SCOPE): Promise<Posted> {
-  const body = formatAnswer(answer);
-  const path = `/repos/${ref.owner}/${ref.repo}/issues/${ref.number}`;
-  const issue = await gh.send<RawContent>("GET", path);
+async function freshAsk(gh: GitHub, ref: IssueRef, want: AskKind, scope: AskScope): Promise<RawContent> {
+  const issue = await gh.send<RawContent>("GET", `/repos/${ref.owner}/${ref.repo}/issues/${ref.number}`);
   const actual = parseIssueUrl(issue.html_url ?? "");
-  // A transferred issue answers from its new home; don't follow it.
   if (!actual || refKey(actual).toLowerCase() !== refKey(ref).toLowerCase()) {
     throw new Error(`not answering: ${refKey(ref)} is now ${issue.html_url ?? "somewhere unknown"}`);
   }
@@ -233,9 +228,31 @@ export async function postAnswer(gh: GitHub, ref: IssueRef, answer: Answer, scop
     ref: actual,
     labels: labelNames(issue.labels),
     assignees: assigneeLogins(issue.assignees),
+    ...(issue.user?.login ? { author: issue.user.login } : {}),
+    ...(issue.state ? { state: issue.state } : {}),
   } as const;
-  const problem = questionProblem(issue.state ? { ...facts, state: issue.state } : facts, scope);
+  const problem = askProblem(facts, want, scope);
   if (problem !== undefined) throw new Error(`not answering: ${problem}`);
+  return issue;
+}
+
+async function comment(gh: GitHub, ref: IssueRef, body: string): Promise<Posted> {
+  const c = await gh.send<{ html_url: string }>("POST", `/repos/${ref.owner}/${ref.repo}/issues/${ref.number}/comments`, { body });
+  return { url: c.html_url };
+}
+
+/**
+ * Answer a question: one comment by you on its issue. The issue is read
+ * fresh first and must be an open question in `scope` (the tracker,
+ * opened by the bot and assigned to him, unless overridden, e.g. by a
+ * test against a sandbox repository), and a picked letter must be one of
+ * the options its body offers now; anything else is refused before
+ * writing. A plain function of a client and an issue, so a script can
+ * drive it with any token.
+ */
+export async function postAnswer(gh: GitHub, ref: IssueRef, answer: Answer, scope: AskScope = TRACKER_SCOPE): Promise<Posted> {
+  const body = formatAnswer(answer);
+  const issue = await freshAsk(gh, ref, "question", scope);
   // The options may have changed since the view was rendered.
   if (answer.choice !== undefined) {
     const letters = parseQuestion(issue.body ?? "").options.map((o) => o.letter);
@@ -244,6 +261,17 @@ export async function postAnswer(gh: GitHub, ref: IssueRef, answer: Answer, scop
       throw new Error(`not answering: ${refKey(ref)} has no option ${answer.choice}; ${now}. Reload it.`);
     }
   }
-  const c = await gh.send<{ html_url: string }>("POST", `${path}/comments`, { body });
-  return { url: c.html_url };
+  return comment(gh, ref, body);
 }
+
+/**
+ * Comment on a review or chore ask: his own words (bot command lines
+ * refused, as in an answer), or what the app did for him. The issue is
+ * read fresh and checked as postAnswer does.
+ */
+export async function postAskComment(gh: GitHub, ref: IssueRef, kind: "review" | "chore", text: string, scope: AskScope = TRACKER_SCOPE): Promise<Posted> {
+  const body = formatComment(text);
+  await freshAsk(gh, ref, kind, scope);
+  return comment(gh, ref, body);
+}
+

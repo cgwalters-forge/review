@@ -120,7 +120,14 @@ details.help summary { cursor: pointer; color: var(--accent); }
 .kind { font: 11px var(--mono); font-weight: 600; padding: 2px 6px; border-radius: 4px; min-width: 3.2em; text-align: center; border: 1px solid var(--line); }
 .kind.k-pr { color: var(--accent); background: var(--accent-soft); border-color: transparent; }
 .kind.k-question { color: var(--p1); background: var(--p1-soft); border-color: transparent; }
-.kind.k-chore { color: var(--muted); }
+.kind.k-review { color: var(--accent); background: var(--accent-soft); border-color: transparent; }
+.kind.k-chore { color: var(--p2); background: var(--p2-soft); border-color: transparent; }
+.kind.k-item { color: var(--muted); }
+.state.bug { color: var(--p0); background: var(--p0-soft); }
+.asks ul, .review-asks { list-style: none; padding: 0; margin: 8px 0; }
+.asks li, .review-asks li { margin: 6px 0; }
+.asks .state { margin-left: 8px; }
+.ask { margin: 0; }
 .row .state { margin-left: 0; }
 .state.pending { color: var(--muted); background: var(--p3-soft); }
 .state.v-approved-older, .state.v-changes-requested-older { color: var(--p2); background: var(--p2-soft); }

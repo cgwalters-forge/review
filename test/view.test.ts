@@ -1,19 +1,25 @@
 // The views put untrusted board and issue text on screen: check that it
 // lands as text or sanitized markdown, whatever it contains. And that
-// only question issues get an answer box.
+// each item offers the right action: an answer box only on questions,
+// a review action only on reviews, and never "nothing to do" on a Needs
+// human item.
 
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { answerTarget, type Item, queueItems } from "../src/github/board.ts";
+import { itemAction } from "../src/github/asks.ts";
+import { type Item, queueItems } from "../src/github/board.ts";
 import type { Context } from "../src/github/backend.ts";
 import { createRenderer } from "../src/markdown.ts";
 import { buildEntries, type Entry } from "../src/github/queue.ts";
-import { age, answerState, type AnswerState, itemView, queueView, STATE_LABEL } from "../src/github/view.ts";
+import { age, answerState, type AnswerState, type ItemViewHandlers, itemView, queueView, STATE_LABEL } from "../src/github/view.ts";
 import { installDom, rawItems } from "./helpers.ts";
 
 const win = installDom();
 const render = createRenderer(win as unknown as Parameters<typeof createRenderer>[0]);
-const noSend = { send: async () => "https://github.com/x" };
+const noSend: ItemViewHandlers = {
+  send: async () => "https://github.com/x",
+  comment: async () => "https://github.com/x",
+};
 
 const EVIL = '<img src=x onerror=alert(1)><script>alert(2)</script>[x](javascript:alert(3))';
 
@@ -73,13 +79,13 @@ describe("queueView", () => {
   };
   const items = () => [evilItem(), ...queueItems(rawItems()).slice(1)];
 
-  it("ranks by priority, nests questions and shows untrusted text as text", () => {
+  it("ranks by priority, nests asks and shows untrusted text as text", () => {
     const root = queueView(entriesOf(items()), labels(new Set(), new Set()), Date.parse("2026-02-01T00:00:00Z"));
     assertNoActiveContent(root);
     assert.deepEqual(
       [...root.querySelectorAll(".group-h")].map((e) => e.textContent),
       // The P1 epic ranks as P0 by its P0 question; counts include nested rows.
-      ["P0 · 3", "P1 · 2", "P2 · 1", "No priority · 1", "Answered, waiting on the bot · 1"],
+      ["P0 · 3", "P1 · 5", "P2 · 1", "No priority · 1", "Answered, waiting on the bot · 1"],
     );
     assert.ok(root.textContent?.includes("<script>alert(2)</script>"));
     const hrefs = (sel: string) => [...root.querySelectorAll(sel)].map((r) => r.getAttribute("href"));
@@ -89,23 +95,35 @@ describe("queueView", () => {
       "#item/PVTI_synthetic_question",
       "#item/PVTI_synthetic_upstream_pr",
       "#item/PVTI_synthetic_upstream_question",
+      "#item/PVTI_synthetic_upstream_issue",
+      "#item/PVTI_synthetic_review_ask",
+      "#item/PVTI_synthetic_chore_ask",
       "#item/PVTI_synthetic_redacted",
       "#item/PVTI_synthetic_home_issue",
       "#item/PVTI_synthetic_closed_question",
     ]);
-    assert.deepEqual(hrefs(".row.child"), ["#item/PVTI_synthetic_question", "#item/PVTI_synthetic_upstream_question"]);
+    assert.deepEqual(hrefs(".row.child"), [
+      "#item/PVTI_synthetic_question",
+      "#item/PVTI_synthetic_upstream_question",
+      "#item/PVTI_synthetic_review_ask",
+      "#item/PVTI_synthetic_chore_ask",
+    ]);
+    // Needs human items with no open ask are flagged, and only those.
+    assert.deepEqual(hrefs(".row:has(.state.bug)"), ["#item/PVTI_synthetic_draft", "#item/PVTI_synthetic_redacted", "#item/PVTI_synthetic_home_issue"]);
     const row = (id: string) => root.querySelector(`.row[href="#item/${id}"]`);
     assert.equal(row("PVTI_synthetic_question")?.querySelector(".why")?.textContent, "Which prefix?");
     assert.match(row("PVTI_synthetic_closed_question")?.querySelector(".tag")?.textContent ?? "", /blocks cgwalters-bot\/elsewhere#5/);
     assert.equal(row("PVTI_synthetic_epic")?.querySelector(".tag")?.textContent, "cgwalters-forge/tracker#20 · 1/3 sub-issues done");
-    assert.match(root.querySelector(".summary")?.textContent ?? "", /0 PRs to review · 2 questions · 5 other/);
+    assert.equal(row("PVTI_synthetic_review_ask")?.querySelector(".why")?.textContent, "Re-approve widget#50 at its new head, then the bot signs off");
+    assert.equal(row("PVTI_synthetic_chore_ask")?.querySelector(".kind")?.textContent, "do");
+    assert.match(root.querySelector(".summary")?.textContent ?? "", /0 PRs to review · 2 questions · 1 reviews · 1 chores · 3 without an ask/);
   });
 
   it("labels answered and closed questions", () => {
     const answered = new Set(["PVTI_synthetic_question"]);
     const root = queueView(entriesOf(items(), answered), labels(new Set(["PVTI_synthetic_home_issue"]), answered));
     const states = [...root.querySelectorAll(".row")].flatMap((r) => {
-      const s = r.querySelector(".state")?.textContent;
+      const s = r.querySelector(".state:not(.bug)")?.textContent;
       return s ? [[r.getAttribute("href"), s]] : [];
     });
     assert.deepEqual(states, [
@@ -154,8 +172,21 @@ describe("itemView", () => {
       },
     ],
   };
-  const view = (item: Item, state: AnswerState = undefined, send = noSend.send, questions: Entry[] = []) =>
-    itemView(item, { target: answerTarget(item), context: ctx, state, questions }, render, { send });
+  const ask = (key: string, kind: Entry["kind"], title: string, state = "open"): Entry => ({
+    key,
+    kind,
+    title,
+    where: "",
+    href: `#item/${key}`,
+    item: { ...fixture("PVTI_synthetic_review_ask"), nodeId: key, state, body: `Ask: ${title}`, labels: [kind] },
+  });
+  const view = (item: Item, state: AnswerState = undefined, handlers: Partial<ItemViewHandlers> = {}, asks: Entry[] = [], context: Context = ctx) =>
+    itemView(
+      item,
+      { action: itemAction(item, asks.filter((a) => a.item?.state !== "closed").length), context, state, asks },
+      render,
+      { ...noSend, ...handlers },
+    );
 
   it("renders every untrusted field safely", () => {
     for (const item of [evilItem(), evilQuestion()]) {
@@ -166,16 +197,75 @@ describe("itemView", () => {
     }
   });
 
-  it("gives an upstream item no answer box, and a link to act on GitHub", () => {
+  it("shows an upstream Needs human item's asks as actions, never nothing to do", () => {
     const item = fixture("PVTI_synthetic_upstream_pr");
-    const q: Entry = { key: "item:Q", kind: "question", title: "Rerun or rebase?", where: "", href: "#item/Q" };
-    const root = view(item, undefined, noSend.send, [q]);
+    const root = view(item, undefined, {}, [ask("R", "review", "Re-approve widget#50"), ask("C", "chore", "Rerun the arm legs")]);
     assert.equal(root.querySelector("form"), null);
-    assert.match(root.querySelector(".target")?.textContent ?? "", /^Nothing to answer here: example-upstream\/widget#42 is not an issue/);
+    assert.doesNotMatch(root.textContent ?? "", /Nothing to/);
     assert.equal(root.querySelector(".links a")?.textContent, "example-upstream/widget#42: act on GitHub");
-    assert.deepEqual([...root.querySelectorAll(".questions a")].map((a) => [a.getAttribute("href"), a.textContent]), [["#item/Q", "Rerun or rebase?"]]);
-    // Not a question, so his comment there is not an answer.
+    assert.equal(root.querySelector(".asks h3")?.textContent, "What the bot asks of you");
+    assert.deepEqual(
+      [...root.querySelectorAll(".asks li")].map((li) => [li.querySelector(".kind")?.textContent, li.querySelector("a")?.getAttribute("href"), li.querySelector("a")?.textContent]),
+      [
+        ["rev", "#item/R", "Re-approve widget#50"],
+        ["do", "#item/C", "Rerun the arm legs"],
+      ],
+    );
+    // Not an ask, so his comment there is not an answer.
     assert.equal(root.querySelectorAll(".comment.your-answer").length, 0);
+  });
+
+  it("calls a Needs human item without an open ask a bot bug", () => {
+    for (const asks of [[], [ask("C", "chore", "done already", "closed")]]) {
+      const root = view(fixture("PVTI_synthetic_upstream_issue"), undefined, {}, asks);
+      assert.match(root.querySelector(".warn.bug")?.textContent ?? "", /^The bot left this without an ask/);
+      assert.doesNotMatch(root.textContent ?? "", /Nothing to/);
+      assert.match(root.textContent ?? "", /Re-approve the fix PR/);
+      assert.equal(root.querySelector("form"), null);
+    }
+  });
+
+  it("offers a review ask's PR in the review pane, and a comment box", () => {
+    const root = view(fixture("PVTI_synthetic_review_ask"));
+    const a = root.querySelector(".review-asks a");
+    assert.equal(a?.getAttribute("href"), "#pr/example-upstream/widget/50");
+    assert.equal(a?.textContent, `Review example-upstream/widget#50 at ${"a".repeat(12)}`);
+    assert.match(root.querySelector(".ask")?.textContent ?? "", /^Ask: Re-approve widget#50/);
+    assert.match(root.querySelector(".comment-ask .target")?.textContent ?? "", /comment as you on cgwalters-forge\/tracker#24/);
+    assert.equal(root.querySelector(".hdr .tag")?.textContent?.includes("review"), true);
+  });
+
+  it("sends a chore comment, refusing command lines", async () => {
+    const sent: string[] = [];
+    const item = { ...fixture("PVTI_synthetic_chore_ask"), body: "Blocks: `https://github.com/o/r/issues/1`\nAsk: Log in and approve the key" };
+    const root = view(item, undefined, {
+      comment: async (t) => {
+        const { formatComment } = await import("../src/answer.ts");
+        formatComment(t);
+        sent.push(t);
+        return "https://github.com/c";
+      },
+    });
+    win.document.body.replaceChildren(root);
+    const submit = async (text: string) => {
+      (root.querySelector(".comment-ask textarea") as HTMLTextAreaElement).value = text;
+      root.querySelector(".comment-ask")?.dispatchEvent(new win.Event("submit", { cancelable: true }));
+      await new Promise((r) => setTimeout(r, 0));
+    };
+    const status = () => root.querySelector(".comment-ask .status")?.textContent ?? "";
+    await submit("done\n/ready");
+    assert.match(status(), /^Not sent: .*bot command/);
+    await submit("Done, approved it.");
+    assert.deepEqual(sent, ["Done, approved it."]);
+    assert.match(status(), /^Sent: https:\/\/github\.com\/c/);
+  });
+
+  it("says why a review it can't read falls back to a comment box", () => {
+    const item = { ...fixture("PVTI_synthetic_review_ask"), body: "Ask: Re-approve\nReview: `https://github.com/o/r/pull/1` at aec657dd" };
+    const root = view(item);
+    assert.match(root.querySelector(".warn")?.textContent ?? "", /can't offer this review's action: can't read "Review:/);
+    assert.equal(root.querySelector(".review-asks"), null);
+    assert.ok(root.querySelector(".comment-ask"));
   });
 
   it("offers a question's options, recommendation first, and names the issue", () => {
@@ -205,7 +295,9 @@ describe("itemView", () => {
       subIssues: [sub(21, "open", ["question"]), { ...sub(30, "closed"), progress: { total: 2, completed: 2, percent_completed: 100 } }, sub(31, "open", [], EVIL)],
     };
     const boardHref = (r: { number: number }) => (r.number === 21 ? "#item/PVTI_synthetic_question" : undefined);
-    const root = itemView(epic, { target: answerTarget(epic), context, state: undefined, boardHref }, render, noSend);
+    // The epic has an open question nested under it.
+    const asks: Entry[] = [{ key: "q", kind: "question", title: "q", where: "", href: "#item/q", item: fixture("PVTI_synthetic_question") }];
+    const root = itemView(epic, { action: itemAction(epic, 1), context, state: undefined, asks, hooks: { boardHref } }, render, noSend);
     assertNoActiveContent(root);
     assert.match(root.querySelector(".hdr .tag")?.textContent ?? "", /1\/3 sub-issues done$/);
     assert.equal(root.querySelector(".sub-issues h3")?.textContent, "Sub-issues · 1/3 sub-issues done (33%)");
@@ -240,11 +332,11 @@ describe("itemView", () => {
   it("shows a closed question as done, with nothing to send", () => {
     const root = view(fixture("PVTI_synthetic_closed_question"), "done");
     assert.equal(root.querySelector("form"), null);
-    assert.match(root.textContent ?? "", /The bot acted on this question and closed it/);
+    assert.match(root.textContent ?? "", /The bot acted on this and closed it/);
   });
 
   function answering(send: (a: unknown) => Promise<string>, state: AnswerState = undefined) {
-    const root = view(fixture("PVTI_synthetic_question"), state, send as typeof noSend.send);
+    const root = view(fixture("PVTI_synthetic_question"), state, { send: send as ItemViewHandlers["send"] });
     win.document.body.replaceChildren(root);
     const submit = async (letter: string | undefined, text: string) => {
       const b = letter ? root.querySelector<HTMLInputElement>(`input[value=${letter}]`) : null;
@@ -287,7 +379,7 @@ describe("itemView", () => {
     const confirms: string[] = [];
     Object.assign(win, { confirm: (m: string) => (confirms.push(m), false) });
     const v = answering(async (a) => (sent.push(a), "https://github.com/x"), "answered");
-    assert.match(v.root.textContent ?? "", /You answered; the question stays in the queue/);
+    assert.match(v.root.textContent ?? "", /You answered; it stays in the queue/);
     await v.submit("A", "");
     assert.deepEqual(sent, []);
     assert.match(confirms[0] ?? "", /already answered/);

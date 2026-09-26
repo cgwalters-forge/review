@@ -5,6 +5,7 @@
 
 import { h, kids, link, scrollTo } from "../dom.ts";
 import type { Renderer } from "../markdown.ts";
+import type { IssueRef } from "./board.ts";
 import { BOARD_URL, BOT_LOGIN, FORGE_ORG } from "./config.ts";
 import type { Row } from "./diff.ts";
 import { FILE_CLASS, type FileHooks, FileView, type PlacedHotspot, type Side } from "./diffview.ts";
@@ -59,9 +60,24 @@ export interface PrViewHandlers {
   loadLines(path: string, sha: string): Promise<string[]>;
 }
 
+/** An open review ask naming this PR: the tracker issue, and the head the bot asked about. */
+export interface ReviewAskInfo {
+  /** The PR it names; the pane checks it is this one. */
+  pr: IssueRef;
+  /** The ask's issue in the tracker. */
+  issue: IssueRef;
+  issueUrl?: string;
+  /** The 40-hex head the bot asked him to review. */
+  head: string;
+  /** Its `Ask:` line. */
+  text?: string;
+}
+
 export interface PrViewOptions {
   /** A review was already sent from this tab. */
   reviewedHere: boolean;
+  /** The review ask for this PR, if there is one. */
+  ask?: ReviewAskInfo;
 }
 
 /** The pane, and the keyboard commands it carries out itself. */
@@ -76,13 +92,47 @@ export interface PrPane {
 /** Owners whose bot-authored PRs can be reviewed from here. */
 const REVIEWABLE_OWNERS: readonly string[] = [FORGE_ORG, BOT_LOGIN];
 
+function samePr(a: IssueRef, b: IssueRef): boolean {
+  return a.owner.toLowerCase() === b.owner.toLowerCase() && a.repo.toLowerCase() === b.repo.toLowerCase() && a.number === b.number;
+}
+
 /**
- * Whether the pane offers a review form: only for the bot's own PRs in
- * its own space, so a crafted link can't turn this page into a one-click
- * approval of someone else's PR.
+ * Whether the pane offers a review form: for the bot's own PRs in its own
+ * space, and for any PR an open review ask from the bot names (say, an
+ * upstream PR he approves). Nothing else, so a crafted link can't turn
+ * this page into a one-click approval of someone else's PR.
  */
-export function canReview(d: PrDetail): boolean {
-  return d.state === "open" && d.author === BOT_LOGIN && REVIEWABLE_OWNERS.includes(d.ref.owner);
+export function canReview(d: PrDetail, ask?: ReviewAskInfo): boolean {
+  if (d.state !== "open") return false;
+  if (ask && samePr(ask.pr, d.ref)) return true;
+  return d.author === BOT_LOGIN && REVIEWABLE_OWNERS.includes(d.ref.owner);
+}
+
+/** The ask's expected head, when the PR's head is no longer it. */
+export function movedFrom(d: PrDetail, ask: ReviewAskInfo | undefined): string | undefined {
+  return ask && ask.head !== d.head ? ask.head : undefined;
+}
+
+function askBanner(d: PrDetail, ask: ReviewAskInfo): HTMLElement {
+  const issue = `${ask.issue.owner}/${ask.issue.repo}#${ask.issue.number}`;
+  const moved = movedFrom(d, ask);
+  return h(
+    "div",
+    { class: "review-ask" },
+    h(
+      "p",
+      { class: moved ? "warn" : "note" },
+      "The bot asks you to review this at ",
+      h("code", {}, short(ask.head)),
+      " (",
+      ask.issueUrl ? link(ask.issueUrl, issue) : issue,
+      ask.text ? `: ${ask.text}` : "",
+      ").",
+      moved
+        ? ` The PR has moved since: its head is now ${short(d.head)}. What you see and review here is ${short(d.head)}, not what the bot asked about; you'll be asked to confirm that before anything is sent.`
+        : " That is still its head.",
+    ),
+  );
 }
 
 /** What he hasn't seen of a PR, for the approval's confirmation. */
@@ -166,6 +216,8 @@ function reviewForm(d: PrDetail, opts: PrViewOptions, handlers: PrViewHandlers, 
   const comment = h("button", { type: "button", "data-action": "comment" }, "Comment");
   const buttons = [approve, changes, comment];
   const forge = d.ref.owner === FORGE_ORG;
+  const ask = opts.ask && samePr(opts.ask.pr, d.ref) ? opts.ask : undefined;
+  const moved = movedFrom(d, ask);
   let sent = opts.reviewedHere;
   const enable = () => {
     for (const b of buttons) b.disabled = false;
@@ -206,6 +258,7 @@ function reviewForm(d: PrDetail, opts: PrViewOptions, handlers: PrViewHandlers, 
   const form = h(
     "form",
     { class: REVIEW_FORM_CLASS },
+    ask ? askBanner(d, ask) : null,
     orphans,
     drafts,
     text,
@@ -219,6 +272,7 @@ function reviewForm(d: PrDetail, opts: PrViewOptions, handlers: PrViewHandlers, 
       `Reviews head ${short(d.head)} as you.`,
       forge ? " An approval is what bot-pr promote acts on: it opens the upstream PR from exactly this head, signing off where the project wants DCO." : "",
       " If the head moves before you send, nothing is sent.",
+      ask ? ` Approving or requesting changes also comments on ${ask.issue.owner}/${ask.issue.repo}#${ask.issue.number}, so the bot sees it.` : "",
     ),
     status,
   );
@@ -230,6 +284,8 @@ function reviewForm(d: PrDetail, opts: PrViewOptions, handlers: PrViewHandlers, 
     const withComments = comments.length ? ` with ${comments.length} line comment${comments.length > 1 ? "s" : ""}` : "";
     const again = sent ? " You already reviewed it from here." : "";
     const note = action === "approve" ? unseenNote(hooks.unseen()) : "";
+    // Never silently review a head other than the one the bot asked about.
+    if (moved && !window.confirm(`The bot asked you to review ${short(moved)}, but the PR's head is now ${short(d.head)}. Review ${short(d.head)} instead?`)) return;
     if (!window.confirm(`${what} ${d.ref.owner}/${d.ref.repo}#${d.ref.number} at ${short(d.head)}${withComments}?${note}${again}`)) return;
     for (const b of buttons) b.disabled = true;
     status.textContent = "Sending…";
@@ -390,7 +446,7 @@ class Pane implements PrPane {
   constructor(d: PrDetail, entry: Entry | undefined, render: Renderer, handlers: PrViewHandlers, opts: PrViewOptions) {
     this.#d = d;
     this.#handlers = handlers;
-    this.#canReview = canReview(d);
+    this.#canReview = canReview(d, opts.ask);
     this.#guide = d.guide;
     this.#seen = loadSeen(this.#guideKey());
     this.#drafts = load(this.#draftsKey(), [], (v): v is DraftComment[] => Array.isArray(v) && v.every(isDraft));
@@ -425,7 +481,7 @@ class Pane implements PrPane {
       });
       form = this.#form.form;
     } else if (d.state !== "open") form = h("p", { class: "warn" }, `This PR is ${d.state}; there is nothing to review.`);
-    else form = h("p", { class: "note" }, `Reviews from here are only for ${BOT_LOGIN}'s PRs in ${REVIEWABLE_OWNERS.join(" and ")}; use GitHub for this one.`);
+    else form = h("p", { class: "note" }, `Reviews from here are only for ${BOT_LOGIN}'s PRs in ${REVIEWABLE_OWNERS.join(" and ")}, and PRs a review ask from the bot names; use GitHub for this one.`);
     const files = h(
       "section",
       { class: "files" },

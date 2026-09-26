@@ -3,7 +3,15 @@ import { describe, it } from "node:test";
 import { GitHub } from "../src/github/api.ts";
 import type { Item } from "../src/github/board.ts";
 import { FETCH_CONCURRENCY } from "../src/github/config.ts";
-import { gistId, loadAnswered, loadContext, loadQueue, loadSubIssues, postAnswer } from "../src/github/backend.ts";
+import {
+  gistId,
+  loadAnswered,
+  loadContext,
+  loadQueue,
+  loadSubIssues,
+  postAnswer,
+  postAskComment,
+} from "../src/github/backend.ts";
 import { fields, rawItems, scriptedFetch } from "./helpers.ts";
 
 const token = async () => "t";
@@ -31,7 +39,7 @@ describe("loadQueue", () => {
     const gh = new GitHub(token, fetchImpl);
     const first = await loadQueue(gh);
     assert.equal(first.changed, true);
-    assert.equal(first.items.length, 8);
+    assert.equal(first.items.length, 11);
     const itemsUrl = new URL(calls[1]?.url ?? "");
     assert.equal(itemsUrl.searchParams.get("fields"), "102,104,103,105,106,107");
     assert.equal(itemsUrl.searchParams.get("q"), 'status:"Needs human","Draft"');
@@ -197,6 +205,7 @@ describe("postAnswer", () => {
     state: "open",
     labels: [{ name: "question" }],
     assignees: [{ login: "cgwalters" }],
+    user: { login: "cgwalters-bot" },
     body: "Blocks: https://github.com/cgwalters-forge/tracker/issues/20\nQ: which?\nOptions:\nA) x\nB) y\nRecommended: A",
   };
   const commentUrl = "https://github.com/cgwalters-forge/tracker/issues/21#issuecomment-1";
@@ -269,6 +278,7 @@ describe("postAnswer", () => {
             state: "open",
             labels: [{ name: "question" }],
             assignees: [{ login: "cgwalters-bot" }],
+            user: { login: "cgwalters-bot" },
             body: "Q: ok?\nOptions:\nA) yes\nB) no",
           },
         };
@@ -278,7 +288,7 @@ describe("postAnswer", () => {
     });
     const gh = new GitHub(token, fetchImpl);
     await assert.rejects(postAnswer(gh, sandbox, { choice: "A", text: "" }), /not in cgwalters-forge\/tracker/);
-    await postAnswer(gh, sandbox, { choice: "A", text: "" }, { repo: "cgwalters-bot/review-sandbox", assignee: "cgwalters-bot" });
+    await postAnswer(gh, sandbox, { choice: "A", text: "" }, { repo: "cgwalters-bot/review-sandbox", assignee: "cgwalters-bot", author: "cgwalters-bot" });
     assert.deepEqual(calls.at(-1)?.body, { body: "A\n" });
   });
 
@@ -292,6 +302,50 @@ describe("postAnswer", () => {
       const { fetchImpl, calls } = scriptedFetch(() => undefined);
       await assert.rejects(postAnswer(new GitHub(token, fetchImpl), ref, answer), want);
       assert.equal(calls.length, 0);
+    });
+  }
+});
+
+const CHORE = { owner: "cgwalters-forge", repo: "tracker", number: 25 };
+const chore = {
+  html_url: "https://github.com/cgwalters-forge/tracker/issues/25",
+  state: "open",
+  labels: [{ name: "chore" }],
+  assignees: [{ login: "cgwalters" }],
+  user: { login: "cgwalters-bot" },
+  body: "Blocks: `https://github.com/example-upstream/widget/issues/7`\nAsk: Log in and approve the key\n",
+};
+
+/** A GitHub that serves the chore and takes a comment on it. */
+function choreGitHub(over: { issue?: unknown } = {}) {
+  return scriptedFetch((method, url) => {
+    if (method === "GET" && url === `${TRACKER}/25`) return { body: over.issue ?? chore };
+    if (method === "POST" && url === `${TRACKER}/25/comments`) return { status: 201, body: { html_url: `${chore.html_url}#c1` } };
+    return undefined;
+  });
+}
+
+describe("postAskComment", () => {
+  it("posts his text on a chore after checking it fresh", async () => {
+    const { fetchImpl, calls } = choreGitHub();
+    const posted = await postAskComment(new GitHub(token, fetchImpl), CHORE, "chore", "  done  ");
+    assert.equal(posted.url, `${chore.html_url}#c1`);
+    assert.deepEqual(calls.map((c) => c.method), ["GET", "POST"]);
+    assert.deepEqual(calls[1]?.body, { body: "done\n" });
+  });
+
+  const refusals: [string, string, unknown, RegExp][] = [
+    ["a command line", "ok\n/promote", chore, /bot command/],
+    ["an empty comment", " ", chore, /write a comment/],
+    ["a chore as a review", "done", { ...chore, labels: [{ name: "review" }] }, /not labelled "chore"/],
+    ["a chore someone else opened", "done", { ...chore, user: { login: "someone" } }, /not opened by cgwalters-bot/],
+    ["a closed chore", "done", { ...chore, state: "closed" }, /is closed/],
+  ];
+  for (const [name, text, issue, want] of refusals) {
+    it(`refuses ${name} without commenting`, async () => {
+      const { fetchImpl, calls } = choreGitHub({ issue });
+      await assert.rejects(postAskComment(new GitHub(token, fetchImpl), CHORE, "chore", text), want);
+      assert.equal(calls.filter((c) => c.method === "POST").length, 0);
     });
   }
 });

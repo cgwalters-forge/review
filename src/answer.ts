@@ -85,12 +85,28 @@ function validate(answer: Answer): void {
       `your text starts with the line ${JSON.stringify(lines[0]?.trim())}, which reads as picking an option; pick it above, or reword`,
     );
   }
+  refuseCommandLines(lines);
+}
+
+function refuseCommandLines(lines: readonly string[]): void {
   const bad = lines.find(isCommandLine);
   if (bad !== undefined) {
     throw new AnswerError(
       `the line ${JSON.stringify(bad.trim())} would be read as a bot command; reword it (e.g. put it in backticks)`,
     );
   }
+}
+
+/**
+ * Format his comment on a review or chore issue: his text, trimmed, with
+ * the same refusal of bot command lines as an answer. Those issues offer
+ * no options, so a first line that is a letter means nothing special.
+ */
+export function formatComment(text: string): string {
+  const clean = cleanText(text);
+  if (clean === "") throw new AnswerError("write a comment first");
+  refuseCommandLines(clean.split("\n"));
+  return `${clean}\n`;
 }
 
 /**
@@ -163,7 +179,7 @@ const FENCE_RE = /^(`{3,}|~{3,})(.*)$/;
  * at least as long as the opening one, with nothing after it; an
  * unclosed block runs to the end.
  */
-function unfencedLines(body: string): string[] {
+export function unfencedLines(body: string): string[] {
   let fence: string | undefined;
   return body
     .replace(/\r\n?/g, "\n")
@@ -224,12 +240,17 @@ function parseOptions(lines: readonly string[], recommended: string | undefined)
   return { options: [], problem: options.length === 1 ? "it has only one option" : "no option follows it" };
 }
 
+/** The URL on a `Blocks:` first line (bare or in a code span), if any, from unfencedLines. */
+export function parseBlocks(lines: readonly string[]): string | undefined {
+  return BLOCKS_RE.exec(lines[0] ?? "")?.[2];
+}
+
 /** Parse a question issue's body (see the format at the top). */
 export function parseQuestion(body: string): Question {
   const lines = unfencedLines(body);
   const q: Question = { options: [] };
-  const blocks = BLOCKS_RE.exec(lines[0] ?? "");
-  if (blocks) q.blocks = blocks[2] as string;
+  const blocks = parseBlocks(lines);
+  if (blocks) q.blocks = blocks;
   const askAt = lines.findIndex((l) => ASK_RE.test(l));
   if (askAt < 0) return q;
   q.ask = (ASK_RE.exec(lines[askAt] as string)?.[1] as string).trim();

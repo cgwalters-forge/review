@@ -192,5 +192,79 @@
     ],
     "created_at": "2026-01-08T00:00:00Z",
     "archived_at": null
+  },
+  {
+    "id": 9011,
+    "node_id": "PVTI_synthetic_upstream_issue",
+    "content_type": "Issue",
+    "content": {
+      "node_id": "I_synthetic_upstream_7",
+      "title": "widget: frob fails on arm",
+      "body": "Upstream report.",
+      "html_url": "https://github.com/example-upstream/widget/issues/7",
+      "state": "open",
+      "updated_at": "2026-01-09T00:00:00Z",
+      "user": {"login": "someone"},
+      "labels": [],
+      "assignees": [],
+      "comments": 4
+    },
+    "fields": [
+      {"id": 102, "name": "Status", "data_type": "single_select", "value": {"id": "x1", "name": {"raw": "Needs human"}}},
+      {"id": 104, "name": "Priority", "data_type": "single_select", "value": {"id": "p", "name": {"raw": "P1"}}},
+      {"id": 103, "name": "Why", "data_type": "text", "value": {"raw": "Re-approve the fix PR at its new head, and rerun two legs that lost their runner."}}
+    ],
+    "created_at": "2026-01-09T00:00:00Z",
+    "archived_at": null
+  },
+  {
+    "id": 9024,
+    "node_id": "PVTI_synthetic_review_ask",
+    "content_type": "Issue",
+    "content": {
+      "node_id": "I_synthetic_tracker_24",
+      "title": "Re-approve widget#50",
+      "body": "Blocks: `https://github.com/example-upstream/widget/issues/7`\nAsk: Re-approve widget#50 at its new head, then the bot signs off\nReview: `https://github.com/example-upstream/widget/pull/50` at aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n",
+      "html_url": "https://github.com/cgwalters-forge/tracker/issues/24",
+      "state": "open",
+      "updated_at": "2026-01-10T00:00:00Z",
+      "user": {"login": "cgwalters-bot"},
+      "labels": [{"name": "review"}],
+      "assignees": [{"login": "cgwalters"}],
+      "comments": 0,
+      "sub_issues_summary": {"total": 0, "completed": 0, "percent_completed": 0}
+    },
+    "fields": [
+      {"id": 102, "name": "Status", "data_type": "single_select", "value": {"id": "x1", "name": {"raw": "Needs human"}}},
+      {"id": 104, "name": "Priority", "data_type": "single_select", "value": {"id": "p", "name": {"raw": "P1"}}},
+      {"id": 103, "name": "Why", "data_type": "text", "value": {"raw": "Ask for cgwalters."}}
+    ],
+    "created_at": "2026-01-10T00:00:00Z",
+    "archived_at": null
+  },
+  {
+    "id": 9025,
+    "node_id": "PVTI_synthetic_chore_ask",
+    "content_type": "Issue",
+    "content": {
+      "node_id": "I_synthetic_tracker_25",
+      "title": "Rerun the arm legs",
+      "body": "Blocks: `https://github.com/example-upstream/widget/issues/7`\nAsk: Rerun the two arm legs that lost their runner\nRerun: `https://github.com/example-upstream/widget/actions/runs/777`\n",
+      "html_url": "https://github.com/cgwalters-forge/tracker/issues/25",
+      "state": "open",
+      "updated_at": "2026-01-11T00:00:00Z",
+      "user": {"login": "cgwalters-bot"},
+      "labels": [{"name": "chore"}],
+      "assignees": [{"login": "cgwalters"}],
+      "comments": 0,
+      "sub_issues_summary": {"total": 0, "completed": 0, "percent_completed": 0}
+    },
+    "fields": [
+      {"id": 102, "name": "Status", "data_type": "single_select", "value": {"id": "x1", "name": {"raw": "Needs human"}}},
+      {"id": 104, "name": "Priority", "data_type": "single_select", "value": {"id": "p", "name": {"raw": "P1"}}},
+      {"id": 103, "name": "Why", "data_type": "text", "value": {"raw": "Ask for cgwalters."}}
+    ],
+    "created_at": "2026-01-11T00:00:00Z",
+    "archived_at": null
   }
 ]
