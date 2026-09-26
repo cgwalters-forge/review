@@ -61,6 +61,9 @@ export const PAGE_SIZE = 100;
 export const RECENT_COMMENTS = 5;
 
 
+/** localStorage key for the chosen theme (auto, light, dark). */
+export const THEME_KEY = "review.theme";
+
 /** Storage key for the pasted token (sessionStorage, or localStorage if remembered). */
 export const TOKEN_KEY = "review.token";
 
