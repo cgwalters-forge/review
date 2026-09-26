@@ -208,7 +208,6 @@ describe("composeReview", () => {
     ["a /draft line in a change request", () => composeReview("request-changes", "fix\n/draft", HEAD), /bot command/],
     ["a typed /ready in an approval", () => composeReview("approve", "/ready", HEAD), /bot command/],
     ["/promote --human-text", () => composeReview("comment", "/promote --human-text", HEAD), /bot command/],
-    ["an /answer line", () => composeReview("comment", "/answer A", HEAD), /bot command/],
     ["/draft without approving", () => composeReview("comment", "x", HEAD, { draft: true }), /only with an approval/],
     ["a short sha", () => composeReview("approve", "", "abc123"), /not a commit id/],
   ];

@@ -1,17 +1,31 @@
-// The answer format: what the app writes as cgwalters, and what the bot
-// parses. Forge-neutral, and free of DOM and network code so that the
-// bot-side parser can mirror it line for line.
+// The question and answer formats: what the bot writes, what the app
+// writes as cgwalters, and what the bot parses back. Forge-neutral, and
+// free of DOM and network code so that the bot-side parser can mirror it
+// line for line.
 //
-// An answer is a block of text whose first line is the command:
+// A question is an issue the bot opens in the tracker repository,
+// labelled `question`. Its body:
 //
-//     /answer B
+//     Blocks: https://github.com/cgwalters-forge/tracker/issues/12
+//     Context, any number of lines.
+//     Q: Which prefix?
+//     Options:
+//     A) org.example
+//     B) io.example
+//     Recommended: A, because it is already registered
+//
+// The first line always names the board item it blocks. Options and the
+// recommendation may be absent (an action, or an open question); when
+// there is a recommendation, it is option A.
+//
+// He answers with a plain comment on that issue: GitHub records who wrote
+// it, so nothing else vouches for it. A picked option is the comment's
+// first line, exactly the letter, optionally followed by his own text:
+//
+//     B
 //     Free markdown from him, any number of lines.
 //
-// The letter is optional (free text only), as is the text (one tap only),
-// but not both. The block is the whole comment, on an issue or PR.
-
-/** The command line that starts an answer. */
-export const ANSWER_COMMAND = "/answer";
+// Without a pick, the comment is only his text.
 
 /**
  * Commands the bot acts on when they appear on a line of their own in
@@ -19,10 +33,11 @@ export const ANSWER_COMMAND = "/answer";
  * any line, after trimming whitespace, so free text must never contain
  * one: an answer saying "ok\n/promote" would promote a fork PR.
  */
-export const BOT_COMMANDS: readonly string[] = [ANSWER_COMMAND, "/promote", "/draft", "/ready"];
+export const BOT_COMMANDS: readonly string[] = ["/promote", "/draft", "/ready"];
 
 const CHOICE_RE = /^[A-Z]$/;
-const COMMAND_RE = /^\/answer(?:[ \t]+([A-Z]))?[ \t]*$/;
+// A first line of free text that the bot could read as a pick.
+const LETTER_LINE_RE = /^[A-Za-z]$/;
 
 export interface Answer {
   /** The option letter, if he picked one. */
@@ -41,14 +56,26 @@ export function isCommandLine(line: string): boolean {
   return BOT_COMMANDS.includes(word);
 }
 
+/** Normalize line endings and trim, without touching inner lines. */
+function cleanText(text: string): string {
+  return text.replace(/\r\n?/g, "\n").trim();
+}
+
 function validate(answer: Answer): void {
   if (answer.choice !== undefined && !CHOICE_RE.test(answer.choice)) {
     throw new AnswerError(`invalid choice ${JSON.stringify(answer.choice)}: expected one letter A-Z`);
   }
-  if (answer.choice === undefined && answer.text.trim() === "") {
+  const text = cleanText(answer.text);
+  if (answer.choice === undefined && text === "") {
     throw new AnswerError("pick an option or write an answer");
   }
-  const bad = cleanText(answer.text).split("\n").find(isCommandLine);
+  const lines = text.split("\n");
+  if (answer.choice === undefined && LETTER_LINE_RE.test(lines[0]?.trim() ?? "")) {
+    throw new AnswerError(
+      `your text starts with the line ${JSON.stringify(lines[0]?.trim())}, which reads as picking an option; pick it above, or reword`,
+    );
+  }
+  const bad = lines.find(isCommandLine);
   if (bad !== undefined) {
     throw new AnswerError(
       `the line ${JSON.stringify(bad.trim())} would be read as a bot command; reword it (e.g. put it in backticks)`,
@@ -56,77 +83,89 @@ function validate(answer: Answer): void {
   }
 }
 
-/** Normalize line endings and trim, without touching inner lines. */
-function cleanText(text: string): string {
-  return text.replace(/\r\n?/g, "\n").trim();
-}
-
 /**
- * Format an answer as posted in an issue or PR comment.
+ * Format an answer as the comment posted on the question issue.
  *
- * Only the letter and his own text go in: option text
- * comes from the bot, and echoing it under his name would let a confused
- * bot put words in his mouth. Text lines that are bot commands are
- * refused (see BOT_COMMANDS).
+ * Only the letter and his own text go in: option text comes from the bot,
+ * and echoing it under his name would let a confused bot put words in his
+ * mouth. Text lines that are bot commands are refused (see BOT_COMMANDS),
+ * and so is free text whose first line would read as a pick.
  */
 export function formatAnswer(answer: Answer): string {
   validate(answer);
-  const head = answer.choice ? `${ANSWER_COMMAND} ${answer.choice}` : ANSWER_COMMAND;
   const text = cleanText(answer.text);
-  return text ? `${head}\n${text}\n` : `${head}\n`;
+  if (answer.choice === undefined) return `${text}\n`;
+  return text ? `${answer.choice}\n${text}\n` : `${answer.choice}\n`;
 }
 
 /**
- * Parse an answer block, or return null if the text isn't one. Only a
- * first line that is exactly the command counts, so prose that mentions
- * /answer is not an answer. (Stricter than bot-pr's `/promote`, which
- * counts on any line; see BOT_COMMANDS.)
+ * Read his comment on a question issue as an answer: a first line that is
+ * one capital letter (surrounding whitespace aside) is a pick, and the
+ * rest is his text. Every comment of his there is an answer.
  */
-export function parseAnswer(text: string): Answer | null {
-  const lines = text.replace(/\r\n?/g, "\n").split("\n");
-  const m = COMMAND_RE.exec(lines[0] ?? "");
-  if (!m) return null;
-  const rest = cleanText(lines.slice(1).join("\n"));
-  const answer: Answer = { text: rest };
-  if (m[1]) answer.choice = m[1];
-  return answer;
+export function parseAnswer(comment: string): Answer {
+  const lines = comment.replace(/\r\n?/g, "\n").split("\n");
+  const first = lines[0]?.trim() ?? "";
+  if (CHOICE_RE.test(first)) return { choice: first, text: cleanText(lines.slice(1).join("\n")) };
+  return { text: cleanText(comment) };
 }
 
-/** An option the bot offered, e.g. from "Options: A) ... B) ...". */
+/** An option the bot offered. */
 export interface Option {
   letter: string;
   text: string;
   recommended: boolean;
 }
 
-// "A) text" either at the start of a line (markdown lists welcome) or
-// inline after whitespace, as the bot writes them in the one-line Why
-// field: "Q: ...? Options: A) foo B) bar. Recommend A because ...".
-const OPTION_RE = /(?<=^|\s)(?:[-*][ \t]+)?\(?([A-Z])\)[ \t]+/gm;
-const RECOMMEND_RE = /\b[Rr]ecommend(?:ed|s)?:?[ \t]+(?:option[ \t]+)?\(?([A-Z])\b/;
-const OPTIONS_START_RE = /\bOptions:/;
+/** A question issue's body, as far as the app reads it. */
+export interface Question {
+  /** The URL on the `Blocks:` first line, if there is one. */
+  blocks?: string;
+  /** The `Q:` line, without its prefix. */
+  ask?: string;
+  options: Option[];
+  /** The `Recommended:` line, without its prefix, e.g. "A, because ...". */
+  recommendation?: string;
+}
+
+const BLOCKS_RE = /^Blocks:[ \t]*(https:\/\/\S+)[ \t]*$/;
+const ASK_RE = /^Q:[ \t]*(.+)$/;
+const OPTIONS_RE = /^Options:[ \t]*$/;
+// "A) text", also as a markdown list item or with "(A)".
+const OPTION_RE = /^(?:[-*][ \t]+)?\(?([A-Z])\)[ \t]+(.+)$/;
+const RECOMMENDED_RE = /^Recommended:[ \t]*(\(?([A-Z])\b.*)$/;
 
 /**
- * Extract lettered options from bot-written text. Options must be
- * consecutive letters starting at A; anything else is not a list of
- * options (e.g. "see (B) above") and yields none.
+ * Parse the options: one per line after a line `Options:`, blank lines
+ * allowed between them, up to the first other line. They must be
+ * consecutive letters from A, and at least two; anything else is not a
+ * choice and yields none.
  */
-export function parseOptions(text: string): Option[] {
-  const start = OPTIONS_START_RE.exec(text);
-  const scope = start ? text.slice(start.index + start[0].length) : text;
-  const recommend = RECOMMEND_RE.exec(scope);
-  const body = recommend ? scope.slice(0, recommend.index) : scope;
-  const marks = [...body.matchAll(OPTION_RE)];
+function parseOptions(lines: readonly string[], recommended: string | undefined): Option[] {
+  const start = lines.findIndex((l) => OPTIONS_RE.test(l));
+  if (start < 0) return [];
   const options: Option[] = [];
-  for (const [i, m] of marks.entries()) {
+  for (const line of lines.slice(start + 1)) {
+    if (line === "") continue;
+    const m = OPTION_RE.exec(line);
+    if (!m) break;
     const letter = m[1] as string;
-    if (letter !== String.fromCharCode("A".charCodeAt(0) + i)) return [];
-    const from = (m.index ?? 0) + m[0].length;
-    const to = marks[i + 1]?.index ?? body.length;
-    const optionText = body.slice(from, to).trim().replace(/[.;,]$/, "").trim();
-    if (!optionText) return [];
-    options.push({ letter, text: optionText, recommended: recommend?.[1] === letter });
+    if (letter !== String.fromCharCode("A".charCodeAt(0) + options.length)) return [];
+    options.push({ letter, text: (m[2] as string).trim(), recommended: letter === recommended });
   }
-  // A single "A)" is not a choice.
   return options.length >= 2 ? options : [];
+}
+
+/** Parse a question issue's body (see the format at the top). */
+export function parseQuestion(body: string): Question {
+  const lines = body.replace(/\r\n?/g, "\n").split("\n").map((l) => l.trim());
+  const q: Question = { options: [] };
+  const blocks = BLOCKS_RE.exec(lines[0] ?? "");
+  if (blocks) q.blocks = blocks[1] as string;
+  const ask = lines.map((l) => ASK_RE.exec(l)).find((m) => m);
+  if (ask) q.ask = (ask[1] as string).trim();
+  const rec = lines.map((l) => RECOMMENDED_RE.exec(l)).find((m) => m);
+  if (rec) q.recommendation = (rec[1] as string).trim();
+  q.options = parseOptions(lines, rec?.[2]);
+  return q;
 }

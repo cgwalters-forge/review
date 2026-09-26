@@ -2,10 +2,22 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { Item } from "../src/github/board.ts";
 import type { ForgePr, Verdict } from "../src/github/forge.ts";
-import { buildEntries, type Entry, groupRanked, priorityRank, rankEntries } from "../src/github/queue.ts";
+import { buildEntries, type Entry, groupRanked, priorityRank, rankEntries, SETTLED_GROUP } from "../src/github/queue.ts";
 
 function item(nodeId: string, over: Partial<Item> = {}): Item {
-  return { id: 0, nodeId, kind: "draft", title: nodeId, body: "", why: "", branch: [], gist: [], status: "Needs human", ...over };
+  return { id: 0, nodeId, kind: "draft", title: nodeId, body: "", why: "", branch: [], gist: [], labels: [], status: "Needs human", ...over };
+}
+
+const TRACKER = "https://github.com/cgwalters-forge/tracker/issues";
+
+/** A tracker issue on the board. */
+function tracked(nodeId: string, number: number, over: Partial<Item> = {}): Item {
+  return item(nodeId, { kind: "issue", url: `${TRACKER}/${number}`, ref: { owner: "cgwalters-forge", repo: "tracker", number }, state: "open", ...over });
+}
+
+/** A question issue in the tracker blocking `blocks`. */
+function question(nodeId: string, number: number, blocks: string, over: Partial<Item> = {}): Item {
+  return tracked(nodeId, number, { labels: ["question"], body: `Blocks: ${blocks}\nQ: which?\nOptions:\nA) this\nB) that\n`, ...over });
 }
 
 function pr(owner: string, repo: string, number: number, over: Partial<ForgePr> = {}): ForgePr {
@@ -49,6 +61,13 @@ describe("rankEntries", () => {
     assert.deepEqual(ranked.map((x) => x.key), ["p0", "old-p1", "new-p1", "bad-date-p1", "undated-p1", "odd", "none"]);
     assert.deepEqual(groupRanked(ranked).map((g) => [g.priority, g.entries.length]), [["P0", 1], ["P1", 4], ["P7", 1], ["No priority", 1]]);
   });
+
+  it("puts settled entries last, under their own heading", () => {
+    const e = (key: string, priority: string, settled: boolean): Entry => ({ key, kind: "question", title: key, where: "", href: "#", priority, settled });
+    const ranked = rankEntries([e("done-p0", "P0", true), e("p2", "P2", false), e("p1", "P1", false), e("done-p1", "P1", true)]);
+    assert.deepEqual(ranked.map((x) => x.key), ["p1", "p2", "done-p0", "done-p1"]);
+    assert.deepEqual(groupRanked(ranked).map((g) => [g.priority, g.entries.length]), [["P1", 1], ["P2", 1], [SETTLED_GROUP, 2]]);
+  });
 });
 
 describe("buildEntries", () => {
@@ -56,7 +75,7 @@ describe("buildEntries", () => {
 
   it("merges board items and forge PRs into one ranked list", () => {
     const items = [
-      item("PVTI_q", { why: "Q#2: which? Options: A) this B) that", priority: "P1", createdAt: "2026-01-05T00:00:00Z" }),
+      question("PVTI_q", 2, "https://github.com/elsewhere/r/issues/1", { priority: "P1", createdAt: "2026-01-05T00:00:00Z" }),
       item("PVTI_chore", { why: "Please rerun the job", priority: "P0", createdAt: "2026-02-01T00:00:00Z" }),
       item("PVTI_trackmeta", { status: "Draft", priority: "P0", branch: [] }),
       item("PVTI_trackbranch", { status: "Draft", priority: "P2", branch: ["https://github.com/cgwalters-forge/b/pull/2"] }),
@@ -105,9 +124,69 @@ describe("buildEntries", () => {
   });
 
   it("keeps a Needs human item about a forge PR as its own entry", () => {
-    const items = [item("PVTI_nh", { branch: ["https://github.com/cgwalters-forge/a/pull/1"], why: "Q#1: ok? Options: A) yes B) no" })];
+    const items = [item("PVTI_nh", { branch: ["https://github.com/cgwalters-forge/a/pull/1"], why: "Please look" })];
     const keys = buildEntries(items, [pr("cgwalters-forge", "a", 1)], verdicts([])).map((e) => e.key);
     assert.deepEqual(keys.sort(), ["item:PVTI_nh", "pr:cgwalters-forge/a#1"]);
+  });
+
+  it("counts only tracker question issues as questions", () => {
+    const items = [
+      question("PVTI_q", 1, `${TRACKER}/9`),
+      tracked("PVTI_chore", 2, { why: "Options:\nA) x\nB) y" }),
+      item("PVTI_upstream", { kind: "pr", ref: { owner: "up", repo: "r", number: 1 }, labels: ["question"] }),
+      item("PVTI_draft", { body: "Options:\nA) x\nB) y" }),
+    ];
+    assert.deepEqual(
+      buildEntries(items, [], verdicts([])).map((e) => [e.key, e.kind]).sort(),
+      [["item:PVTI_chore", "chore"], ["item:PVTI_draft", "chore"], ["item:PVTI_q", "question"], ["item:PVTI_upstream", "chore"]],
+    );
+  });
+
+  it("settles questions he answered or the bot closed", () => {
+    const items = [
+      question("PVTI_open", 1, `${TRACKER}/9`, { priority: "P2" }),
+      question("PVTI_answered", 2, `${TRACKER}/9`, { priority: "P0" }),
+      question("PVTI_closed", 3, `${TRACKER}/9`, { priority: "P0", state: "closed" }),
+    ];
+    const entries = buildEntries(items, [], verdicts([]), true, new Set(["PVTI_answered"]));
+    assert.deepEqual(entries.map((e) => [e.key, e.settled ?? false]), [
+      ["item:PVTI_open", false],
+      ["item:PVTI_answered", true],
+      ["item:PVTI_closed", true],
+    ]);
+  });
+
+  it("nests a question under the listed item it blocks", () => {
+    const upstream = "https://github.com/example-upstream/widget/pull/42";
+    const items = [
+      tracked("PVTI_epic", 20, { priority: "P2" }),
+      // A sub-issue of the epic, whatever its Blocks: line says.
+      question("PVTI_sub", 21, "https://github.com/o/r/issues/1", { parent: { owner: "cgwalters-forge", repo: "tracker", number: 20 }, priority: "P0" }),
+      question("PVTI_sub2", 25, `${TRACKER}/20`, { priority: "P1" }),
+      item("PVTI_up", { kind: "pr", url: upstream, ref: { owner: "example-upstream", repo: "widget", number: 42 }, priority: "P1" }),
+      question("PVTI_upq", 22, upstream),
+      // The blocked item isn't in the queue: top-level, noting it.
+      question("PVTI_lone", 23, `${TRACKER}/99`, { priority: "P3" }),
+      // Questions don't nest under questions.
+      question("PVTI_qq", 24, `${TRACKER}/23`, { priority: "P3" }),
+    ];
+    const entries = buildEntries(items, [], verdicts([]));
+    const shape = (es: readonly Entry[]): unknown[] => es.map((e) => (e.children ? [e.key, shape(e.children)] : e.key));
+    assert.deepEqual(shape(entries), [
+      ["item:PVTI_up", ["item:PVTI_upq"]],
+      ["item:PVTI_epic", ["item:PVTI_sub", "item:PVTI_sub2"]],
+      "item:PVTI_lone",
+      "item:PVTI_qq",
+    ]);
+    assert.equal(entries.find((e) => e.key === "item:PVTI_lone")?.blocks, "cgwalters-forge/tracker#99");
+    assert.equal(entries.find((e) => e.key === "item:PVTI_qq")?.blocks, "cgwalters-forge/tracker#23");
+    assert.equal(entries.find((e) => e.key === "item:PVTI_up")?.blocks, undefined);
+  });
+
+  it("nests a question blocking a forge PR under the PR", () => {
+    const items = [question("PVTI_q", 1, "https://github.com/cgwalters-forge/a/pull/1")];
+    const entries = buildEntries(items, [pr("cgwalters-forge", "a", 1)], verdicts([]));
+    assert.deepEqual(entries.map((e) => [e.key, e.children?.map((c) => c.key)]), [["pr:cgwalters-forge/a#1", ["item:PVTI_q"]]]);
   });
 
   it("drops no forge-only Draft item before the forge was read", () => {

@@ -5,13 +5,12 @@ import { h } from "../dom.ts";
 import { createRenderer } from "../markdown.ts";
 import { GitHub, GitHubError } from "./api.ts";
 import { missingScopes, type Persistence, savedToken, type TokenSource, useToken } from "./auth.ts";
-import { answerTarget, type Item, questionOf } from "./board.ts";
-import { type Context, loadContext, loadQueue, postAnswer, viewer } from "./backend.ts";
+import { answerTarget, type Item } from "./board.ts";
+import { type Context, loadAnswered, loadContext, loadQueue, postAnswer, viewer } from "./backend.ts";
 import {
   CLASSIC_SCOPES,
   FORGE_MIN_INTERVAL_MS,
   FORGE_POLL_INTERVAL_MS,
-  HOME_OWNERS,
   NEWS_LIMIT,
   OPERATOR,
   POLL_BACKOFF_FACTOR,
@@ -53,6 +52,8 @@ interface State {
   selected: string | undefined;
   /** Items answered from this tab, until the bot moves them on. */
   sent: Set<string>;
+  /** Open questions he has answered on GitHub and the bot hasn't acted on, by node id. */
+  answered: Set<string>;
   /** PRs reviewed from this tab, by refKey. */
   reviewed: Set<string>;
   /** Context of opened items, by node id. */
@@ -143,7 +144,7 @@ function labelOf(state: State): (e: Entry) => RowLabel | undefined {
       if (!v) return { text: "checking reviews…", cls: "pending" };
       return v.state === "none" ? undefined : { text: VERDICT_LABEL[v.state], cls: `v-${v.state}` };
     }
-    const st = e.item ? answerState(e.item, state.sent) : undefined;
+    const st = e.item ? answerState(e.item, state.sent, state.answered) : undefined;
     return st ? { text: STATE_LABEL[st], cls: st } : undefined;
   };
 }
@@ -201,12 +202,15 @@ function renderRoute(state: State): void {
     return;
   }
   const ctx = state.context.get(item.nodeId);
-  const target = answerTarget(item, HOME_OWNERS, ctx?.isPrivate ?? item.isPrivate);
+  const target = answerTarget(item);
   state.shown = { nodeId: item.nodeId, key: itemKey(item) };
+  const answered = ctx?.answered ? new Set([...state.answered, item.nodeId]) : state.answered;
+  const entry = state.entries.find((e) => e.item?.nodeId === item.nodeId);
   showMain(
-    itemView(item, target, questionOf(item), ctx, render, state.sent.has(item.nodeId), {
+    itemView(item, { target, context: ctx, state: answerState(item, state.sent, answered), questions: entry?.children ?? [] }, render, {
       send: async (answer) => {
-        const posted = await postAnswer(state.gh, target, answer);
+        if (target.kind !== "question") throw new Error(`can't answer here: ${target.reason}`);
+        const posted = await postAnswer(state.gh, target.ref, answer);
         state.sent.add(item.nodeId);
         void refreshContext(state, item);
         return posted.url;
@@ -347,7 +351,7 @@ async function pollVerdicts(state: State): Promise<void> {
 
 function rebuildEntries(state: State): void {
   const verdicts = new Map([...state.verdicts].map(([k, v]) => [k, v.verdict]));
-  state.entries = buildEntries(state.items, state.prs, verdicts, state.forgeKnown);
+  state.entries = buildEntries(state.items, state.prs, verdicts, state.forgeKnown, new Set([...state.answered, ...state.sent]));
 }
 
 /**
@@ -399,6 +403,7 @@ async function poll(state: State): Promise<void> {
       const ids = new Set(q.items.map((i) => i.nodeId));
       for (const s of state.sent) if (!ids.has(s)) state.sent.delete(s);
       state.context.clear();
+      state.answered = await loadAnswered(state.gh, q.items);
       state.loaded = true;
       update(state, true, first);
     } else {
@@ -567,6 +572,7 @@ async function start(source: TokenSource): Promise<void> {
     polling: false,
     entries: [],
     sent: new Set(),
+    answered: new Set(),
     reviewed: new Set(),
     context: new Map(),
     details: new Map(),
@@ -653,13 +659,13 @@ function signInView(reason: SignInReason): HTMLElement {
       h(
         "p",
         {},
-        "A classic token with a short expiry works everywhere the bot asks you things, including upstream repositories. It needs:",
+        "A classic token with a short expiry reads everything the queue shows, upstream repositories included. It needs:",
       ),
       scopeList(),
       h(
         "p",
         {},
-        "A fine-grained token acts on one resource owner only: with owner cgwalters-forge and Pull requests: read and write, Issues: read and write, and Contents and Commit statuses: read, it can review forge PRs, but not answer on upstream repositories.",
+        "A fine-grained token acts on one resource owner only: with owner cgwalters-forge and Pull requests: read and write, Issues: read and write, and Contents and Commit statuses: read, it can review forge PRs and answer the bot's questions in cgwalters-forge/tracker.",
       ),
       h("p", {}, "Anyone who can change this site's code could read a pasted token, so prefer one that expires soon."),
     ),

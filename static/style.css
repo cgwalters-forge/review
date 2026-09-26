@@ -55,7 +55,7 @@ header.top h1 a { color: inherit; text-decoration: none; }
 .pill.p2 { color: var(--p2); background: var(--p2-soft); } .pill.p3, .pill.pn { color: var(--p3); background: var(--p3-soft); }
 .tag { font: 12px var(--mono); color: var(--muted); }
 .state { margin-left: auto; font: 11px var(--mono); padding: 2px 7px; border-radius: 4px; color: var(--ok); background: var(--ok-soft); }
-.state.claimed { color: var(--p2); background: var(--p2-soft); }
+.state.done { color: var(--muted); background: var(--p3-soft); }
 .item { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; padding-top: 12px; }
 .item section { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 4px 14px; overflow-wrap: anywhere; }
 .item h3 { font-size: 13px; font-family: var(--mono); color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
@@ -93,7 +93,8 @@ details.help summary { cursor: pointer; color: var(--accent); }
 .row { display: grid; grid-template-columns: auto 1fr auto; gap: 10px; align-items: start; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 9px 12px; margin-bottom: 6px; color: inherit; text-decoration: none; }
 .row:hover { border-color: var(--accent); }
 .row.sel { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
-.row.answered, .row.v-approved-older { opacity: .75; }
+.row.answered, .row.done, .row.v-approved-older { opacity: .75; }
+.row.child { margin-left: 28px; }
 .row .main { display: grid; gap: 3px; min-width: 0; }
 .row .title { font-weight: 600; overflow-wrap: anywhere; line-height: 1.35; }
 .row .sub { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: center; }
@@ -150,6 +151,7 @@ table.diff tr.hunk, table.diff tr.note { background: var(--hunk); color: var(--m
   header.top .meta { flex-basis: 100%; order: 3; }
   .row { grid-template-columns: auto 1fr; }
   .row .age { grid-column: 2; }
+  .row.child { margin-left: 14px; }
   table.diff td.ln { padding: 0 4px; }
   details.file > summary { position: static; }
   form.review { position: static; }

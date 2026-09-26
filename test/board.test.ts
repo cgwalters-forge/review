@@ -1,7 +1,21 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { answerTarget, fieldIds, type Item, parseIssueUrl, questionOf, queueItems } from "../src/github/board.ts";
-import { HOME_OWNERS } from "../src/github/config.ts";
+import {
+  answeredPending,
+  answerTarget,
+  blockedBy,
+  type CommentFacts,
+  fieldIds,
+  isQuestion,
+  type Item,
+  labelNames,
+  parseApiIssueUrl,
+  parseIssueUrl,
+  type QuestionFacts,
+  questionOf,
+  questionProblem,
+  queueItems,
+} from "../src/github/board.ts";
 import { fields, rawItems } from "./helpers.ts";
 
 describe("fieldIds", () => {
@@ -24,6 +38,22 @@ describe("parseIssueUrl", () => {
   for (const [url, want] of cases) it(url, () => assert.deepEqual(parseIssueUrl(url), want));
 });
 
+describe("parseApiIssueUrl", () => {
+  const cases: [string, ReturnType<typeof parseApiIssueUrl>][] = [
+    ["https://api.github.com/repos/cgwalters-forge/tracker/issues/20", { owner: "cgwalters-forge", repo: "tracker", number: 20 }],
+    ["https://github.com/cgwalters-forge/tracker/issues/20", undefined],
+    ["https://api.github.com/repos/o/r/pulls/2", undefined],
+  ];
+  for (const [url, want] of cases) it(url, () => assert.deepEqual(parseApiIssueUrl(url), want));
+});
+
+describe("labelNames", () => {
+  it("takes objects and strings, skipping nameless ones", () => {
+    assert.deepEqual(labelNames([{ name: "question" }, "bug", {}, { name: "" }]), ["question", "bug"]);
+    assert.deepEqual(labelNames(undefined), []);
+  });
+});
+
 describe("queueItems", () => {
   const items = queueItems(rawItems());
   const byId = new Map(items.map((i) => [i.nodeId, i]));
@@ -31,7 +61,16 @@ describe("queueItems", () => {
   it("keeps unarchived Needs human and Draft items only, in board order", () => {
     assert.deepEqual(
       items.map((i) => i.nodeId),
-      ["PVTI_synthetic_upstream_pr", "PVTI_synthetic_draft", "PVTI_synthetic_home_issue", "PVTI_synthetic_redacted"],
+      [
+        "PVTI_synthetic_upstream_pr",
+        "PVTI_synthetic_draft",
+        "PVTI_synthetic_home_issue",
+        "PVTI_synthetic_redacted",
+        "PVTI_synthetic_epic",
+        "PVTI_synthetic_question",
+        "PVTI_synthetic_upstream_question",
+        "PVTI_synthetic_closed_question",
+      ],
     );
   });
 
@@ -41,7 +80,6 @@ describe("queueItems", () => {
     assert.deepEqual(pr?.ref, { owner: "example-upstream", repo: "widget", number: 42 });
     assert.equal(pr?.priority, "P1");
     assert.equal(pr?.org, "other");
-    assert.equal(pr?.isPrivate, false);
     assert.equal(pr?.state, "open");
     assert.match(pr?.why ?? "", /^CI is red/);
   });
@@ -57,6 +95,15 @@ describe("queueItems", () => {
     assert.deepEqual(d?.gist, ["https://gist.github.com/cgwalters-bot/0123abcd"]);
   });
 
+  it("parses a tracker question and its parent", () => {
+    const q = byId.get("PVTI_synthetic_question");
+    assert.deepEqual(q?.labels, ["question"]);
+    assert.equal(q?.comments, 2);
+    assert.deepEqual(q?.parent, { owner: "cgwalters-forge", repo: "tracker", number: 20 });
+    assert.equal(q?.subIssues, undefined);
+    assert.deepEqual(byId.get("PVTI_synthetic_epic")?.subIssues, { total: 3, completed: 1, percent_completed: 33 });
+  });
+
   it("survives an item it can't see", () => {
     const r = byId.get("PVTI_synthetic_redacted");
     assert.equal(r?.kind, "unknown");
@@ -65,43 +112,84 @@ describe("queueItems", () => {
   });
 });
 
-describe("answerTarget", () => {
+describe("questions", () => {
   const items = new Map(queueItems(rawItems()).map((i) => [i.nodeId, i]));
   const get = (id: string) => items.get(id) as Item;
 
-  it("asks before commenting on a public upstream PR", () => {
-    assert.deepEqual(answerTarget(get("PVTI_synthetic_upstream_pr"), HOME_OWNERS, false), {
-      kind: "comment",
-      ref: { owner: "example-upstream", repo: "widget", number: 42 },
-      confirmPublic: true,
+  it("are tracker issues labelled question, open or closed", () => {
+    const questions = [...items.values()].filter((i) => isQuestion(i)).map((i) => i.nodeId);
+    assert.deepEqual(questions, ["PVTI_synthetic_question", "PVTI_synthetic_upstream_question", "PVTI_synthetic_closed_question"]);
+  });
+
+  const tracker = { owner: "cgwalters-forge", repo: "tracker", number: 21 };
+  const open: QuestionFacts = { kind: "issue", ref: tracker, state: "open", labels: ["question"] };
+  const problems: [string, QuestionFacts, string | undefined, RegExp | undefined][] = [
+    ["an open question", open, undefined, undefined],
+    ["any case of the repository name", { ...open, ref: { ...tracker, owner: "CGWalters-Forge" } }, undefined, undefined],
+    ["no issue", { kind: "draft", labels: [] }, undefined, /no issue/],
+    ["a PR", { ...open, kind: "pr" }, undefined, /is not an issue/],
+    ["an upstream issue", { ...open, ref: { owner: "example-upstream", repo: "widget", number: 1 } }, undefined, /not in cgwalters-forge\/tracker/],
+    ["no label", { ...open, labels: ["bug"] }, undefined, /not labelled "question"/],
+    ["closed", { ...open, state: "closed" }, undefined, /is closed/],
+    ["the sandbox, overridden", { ...open, ref: { owner: "cgwalters-bot", repo: "review-sandbox", number: 4 } }, "cgwalters-bot/review-sandbox", undefined],
+    ["the tracker, when overridden", open, "cgwalters-bot/review-sandbox", /not in cgwalters-bot\/review-sandbox/],
+  ];
+  for (const [name, facts, repo, want] of problems) {
+    it(`questionProblem: ${name}`, () => {
+      const got = questionProblem(facts, repo);
+      if (want) assert.match(got ?? "", want);
+      else assert.equal(got, undefined);
     });
+  }
+
+  it("answer only by comment on an open question", () => {
+    assert.deepEqual(answerTarget(get("PVTI_synthetic_question")), { kind: "question", ref: tracker });
+    const none: [string, RegExp][] = [
+      ["PVTI_synthetic_upstream_pr", /not an issue/],
+      ["PVTI_synthetic_home_issue", /not in cgwalters-forge\/tracker/],
+      ["PVTI_synthetic_epic", /not labelled/],
+      ["PVTI_synthetic_closed_question", /is closed/],
+      ["PVTI_synthetic_draft", /no issue/],
+      ["PVTI_synthetic_redacted", /no issue/],
+    ];
+    for (const [id, reason] of none) {
+      const t = answerTarget(get(id));
+      assert.equal(t.kind, "none", id);
+      if (t.kind === "none") assert.match(t.reason, reason, id);
+    }
   });
-  it("treats unknown visibility upstream as public", () => {
-    const t = answerTarget(get("PVTI_synthetic_upstream_pr"), HOME_OWNERS, undefined);
-    assert.equal(t.kind === "comment" && t.confirmPublic, true);
+
+  it("are parsed only from question issues", () => {
+    const letters = (item: Item) => questionOf(item).options.map((o) => `${o.letter}${o.recommended ? "*" : ""}`).join(" ");
+    assert.equal(letters(get("PVTI_synthetic_question")), "A* B");
+    // The upstream PR's Why and a legacy draft's body offer options, but aren't questions.
+    assert.equal(letters({ ...get("PVTI_synthetic_upstream_pr"), why: "Options:\nA) x\nB) y" }), "");
+    assert.equal(letters({ ...get("PVTI_synthetic_draft"), body: "Options:\nA) x\nB) y" }), "");
   });
-  it("doesn't ask on a private repository", () => {
-    const t = answerTarget(get("PVTI_synthetic_upstream_pr"), HOME_OWNERS, true);
-    assert.equal(t.kind === "comment" && t.confirmPublic, false);
-  });
-  it("doesn't ask in the bot's own repositories", () => {
-    const t = answerTarget(get("PVTI_synthetic_home_issue"), HOME_OWNERS, undefined);
-    assert.equal(t.kind === "comment" && t.confirmPublic, false);
-  });
-  it("refuses an item with nowhere to answer", () => {
-    for (const id of ["PVTI_synthetic_redacted", "PVTI_synthetic_draft"]) assert.equal(answerTarget(get(id), HOME_OWNERS).kind, "none", id);
+
+  it("block their parent, else their Blocks: item", () => {
+    const blocked = (id: string) => blockedBy(get(id));
+    assert.deepEqual(blocked("PVTI_synthetic_question"), { owner: "cgwalters-forge", repo: "tracker", number: 20 });
+    assert.deepEqual(blocked("PVTI_synthetic_upstream_question"), { owner: "example-upstream", repo: "widget", number: 42 });
+    assert.deepEqual(blockedBy({ ...get("PVTI_synthetic_question"), body: "Blocks: https://github.com/o/r/issues/9" }), {
+      owner: "cgwalters-forge",
+      repo: "tracker",
+      number: 20,
+    });
+    assert.equal(blocked("PVTI_synthetic_epic"), undefined);
   });
 });
 
-describe("questionOf", () => {
-  const base = queueItems(rawItems()).find((i) => i.nodeId === "PVTI_synthetic_draft") as Item;
-  const pr = queueItems(rawItems()).find((i) => i.kind === "pr") as Item;
-  const letters = (item: Item) => questionOf(item).options.map((o) => o.letter).join("");
-  const cases: [string, Item, string][] = [
-    ["options in Why", { ...pr, why: "rerun? Options: A) yes B) no" }, "AB"],
-    ["draft body when Why has none", base, "AB"],
-    ["Why before the draft body", { ...base, why: "Options: A) x B) y C) z" }, "ABC"],
-    ["never a PR body", { ...pr, why: "No question", body: "Options: A) a B) b" }, ""],
+describe("answeredPending", () => {
+  const c = (author: string): CommentFacts => ({ author, createdAt: "2026-01-01T00:00:00Z" });
+  const cases: [string, CommentFacts[], boolean][] = [
+    ["no comments", [], false],
+    ["only the bot", [c("cgwalters-bot")], false],
+    ["his answer", [c("cgwalters")], true],
+    ["his answer after the bot's", [c("cgwalters-bot"), c("someone"), c("cgwalters")], true],
+    ["the bot replied since", [c("cgwalters"), c("cgwalters-bot")], false],
+    ["someone else is not him", [c("cgwalters-bot"), c("someone")], false],
+    ["answered again after a follow-up", [c("cgwalters"), c("cgwalters-bot"), c("cgwalters")], true],
   ];
-  for (const [name, item, want] of cases) it(name, () => assert.equal(letters(item), want));
+  for (const [name, comments, want] of cases) it(name, () => assert.equal(answeredPending(comments), want));
 });

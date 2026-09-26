@@ -2,8 +2,8 @@
 // the app's item model. Pure functions over JSON, so tests feed them
 // synthetic payloads.
 
-import { type Option, parseOptions } from "../answer.ts";
-import { FIELD, QUEUE_STATUSES } from "./config.ts";
+import { parseQuestion, type Question } from "../answer.ts";
+import { BOT_LOGIN, FIELD, OPERATOR, QUESTION_LABEL, QUEUE_STATUSES, TRACKER_REPO } from "./config.ts";
 
 /** The subset of a project field the app uses. */
 export interface RawField {
@@ -22,7 +22,18 @@ interface RawUser {
   login?: string;
 }
 
-interface RawContent {
+/** GitHub's sub-issue progress on an issue. */
+export interface SubIssueSummary {
+  total: number;
+  completed: number;
+  percent_completed: number;
+}
+
+/** An issue's labels: objects from the API, strings in some payloads. */
+export type RawLabel = { name?: string } | string;
+
+/** The subset of an issue or PR (as a board item's content, or from the issues API) the app uses. */
+export interface RawContent {
   node_id?: string;
   title?: string;
   body?: string | null;
@@ -32,7 +43,14 @@ interface RawContent {
   merged_at?: string | null;
   updated_at?: string;
   user?: RawUser | null;
-  base?: { repo?: { private?: boolean } };
+  labels?: RawLabel[];
+  /** Number of comments, on issues. */
+  comments?: number;
+  sub_issues_summary?: SubIssueSummary | null;
+  /** The API URL of the parent issue, when this is a sub-issue. */
+  parent_issue_url?: string | null;
+  /** Present on an issue that is a PR, from the issues API. */
+  pull_request?: unknown;
 }
 
 /** The subset of a project item the app uses. */
@@ -66,10 +84,16 @@ export interface Item {
   /** The issue or PR page; absent for drafts. */
   url?: string;
   ref?: IssueRef;
-  /** True or false when the payload says; unknown for issues until fetched. */
-  isPrivate?: boolean;
   /** Issue/PR state, e.g. "open", "closed", "merged". */
   state?: string;
+  /** Label names, on issues and PRs. */
+  labels: string[];
+  /** Number of comments, when the payload says. */
+  comments?: number;
+  /** Sub-issue progress, on issues that have sub-issues. */
+  subIssues?: SubIssueSummary;
+  /** The parent issue, on a sub-issue. */
+  parent?: IssueRef;
   body: string;
   status?: string;
   priority?: string;
@@ -88,12 +112,33 @@ export const PRIORITY_ORDER: readonly string[] = ["P0", "P1", "P2", "P3"];
 export const NO_PRIORITY = "No priority";
 
 const ISSUE_URL_RE = /^https:\/\/github\.com\/([A-Za-z0-9-]+)\/([A-Za-z0-9._-]+)\/(?:issues|pull)\/(\d+)$/;
+const API_ISSUE_URL_RE = /^https:\/\/api\.github\.com\/repos\/([A-Za-z0-9-]+)\/([A-Za-z0-9._-]+)\/issues\/(\d+)$/;
+
+function refFrom(m: RegExpExecArray | null): IssueRef | undefined {
+  return m ? { owner: m[1] as string, repo: m[2] as string, number: Number(m[3]) } : undefined;
+}
 
 /** Parse a github.com issue or PR URL. */
 export function parseIssueUrl(url: string): IssueRef | undefined {
-  const m = ISSUE_URL_RE.exec(url);
-  if (!m) return undefined;
-  return { owner: m[1] as string, repo: m[2] as string, number: Number(m[3]) };
+  return refFrom(ISSUE_URL_RE.exec(url));
+}
+
+/** Parse an api.github.com issue URL, e.g. `parent_issue_url`. */
+export function parseApiIssueUrl(url: string): IssueRef | undefined {
+  return refFrom(API_ISSUE_URL_RE.exec(url));
+}
+
+/** `owner/repo`, lowercased: GitHub names are case-insensitive. */
+export function repoOf(ref: IssueRef): string {
+  return `${ref.owner}/${ref.repo}`.toLowerCase();
+}
+
+/** Label names, whichever shape the payload uses. */
+export function labelNames(labels: readonly RawLabel[] | undefined): string[] {
+  return (labels ?? []).flatMap((l) => {
+    const name = typeof l === "string" ? l : l.name;
+    return name ? [name] : [];
+  });
 }
 
 /** Field ids for the fields the app reads, failing clearly if one is gone. */
@@ -153,6 +198,7 @@ export function parseItem(raw: RawItem): Item {
     why: fields.get(FIELD.why) ?? "",
     branch: urls(fields.get(FIELD.branch)),
     gist: urls(fields.get(FIELD.gist)),
+    labels: labelNames(c.labels),
   };
   const opt = <K extends keyof Item>(key: K, value: Item[K] | undefined) => {
     if (value !== undefined) item[key] = value;
@@ -165,9 +211,11 @@ export function parseItem(raw: RawItem): Item {
   if (kind !== "draft" && c.html_url) {
     item.url = c.html_url;
     opt("ref", parseIssueUrl(c.html_url));
-    opt("isPrivate", c.base?.repo?.private);
     opt("state", c.merged_at ? "merged" : c.state);
   }
+  if (typeof c.comments === "number") item.comments = c.comments;
+  if (c.sub_issues_summary && c.sub_issues_summary.total > 0) item.subIssues = c.sub_issues_summary;
+  if (c.parent_issue_url) opt("parent", parseApiIssueUrl(c.parent_issue_url));
   return item;
 }
 
@@ -179,34 +227,73 @@ export function queueItems(raw: readonly RawItem[]): Item[] {
     .filter((i) => i.status !== undefined && QUEUE_STATUSES.includes(i.status));
 }
 
-/** The question an item asks, as the bot wrote it. */
-export interface Question {
-  options: Option[];
+/** What postAnswer and answerTarget check an issue against. */
+export interface QuestionFacts {
+  kind: ItemKind;
+  ref?: IssueRef;
+  state?: string;
+  labels: readonly string[];
 }
 
 /**
- * The bot asks in Why, or in a draft's body; options come from the first
- * of those that has them. Issue and PR bodies are someone else's text, so
- * they never supply options.
+ * Why this can't take an answer, or undefined if it can: only an open
+ * issue in the tracker repository (`repo`, overridable for tests against
+ * a sandbox) labelled `question` does. Anything else, above all an
+ * upstream issue or PR, is acted on in GitHub: a bare "B" there is noise
+ * to its maintainers.
  */
+export function questionProblem(q: QuestionFacts, repo: string = TRACKER_REPO): string | undefined {
+  if (!q.ref) return "this item has no issue to comment on";
+  const where = `${q.ref.owner}/${q.ref.repo}#${q.ref.number}`;
+  if (q.kind !== "issue") return `${where} is not an issue`;
+  if (repoOf(q.ref) !== repo.toLowerCase()) return `${where} is not in ${repo}, where the bot's questions are`;
+  if (!q.labels.includes(QUESTION_LABEL)) return `${where} is not labelled "${QUESTION_LABEL}"`;
+  if (q.state !== "open") return `${where} is closed`;
+  return undefined;
+}
+
+/** A question issue in the tracker, open or closed. */
+export function isQuestion(item: Item, repo: string = TRACKER_REPO): boolean {
+  return item.kind === "issue" && item.ref !== undefined && repoOf(item.ref) === repo.toLowerCase() && item.labels.includes(QUESTION_LABEL);
+}
+
+/** The question an item asks: parsed from a question issue's body, else none. */
 export function questionOf(item: Item): Question {
-  const sources = [item.why];
-  if (item.kind === "draft") sources.push(item.body);
-  const optionSource = sources.find((t) => parseOptions(t).length > 0);
-  return { options: optionSource ? parseOptions(optionSource) : [] };
+  return isQuestion(item) ? parseQuestion(item.body) : { options: [] };
 }
 
-/** Where an answer to this item goes, and whether to ask first. */
-export type AnswerTarget = { kind: "comment"; ref: IssueRef; confirmPublic: boolean } | { kind: "none"; reason: string };
+/** The item a question blocks: its parent issue, else its `Blocks:` line. */
+export function blockedBy(item: Item): IssueRef | undefined {
+  if (!isQuestion(item)) return undefined;
+  if (item.parent) return item.parent;
+  const url = questionOf(item).blocks;
+  return url ? parseIssueUrl(url) : undefined;
+}
+
+/** Where an answer to this item goes: a comment on its question issue, or nowhere. */
+export type AnswerTarget = { kind: "question"; ref: IssueRef } | { kind: "none"; reason: string };
+
+/** Decide the answer channel. This is the one place that picks it. */
+export function answerTarget(item: Item): AnswerTarget {
+  const problem = questionProblem(item);
+  if (problem !== undefined || !item.ref) return { kind: "none", reason: problem ?? "no issue" };
+  return { kind: "question", ref: item.ref };
+}
+
+/** The subset of a comment that decides whether he has answered. */
+export interface CommentFacts {
+  author: string;
+  createdAt: string;
+}
 
 /**
- * Decide the answer channel. This is the one place that picks it.
- *
- * `isPrivate` is the repository's visibility when known; unknown is
- * treated as public, which only adds a question.
+ * Has he answered this question and the bot not yet acted? True if he
+ * commented after the bot's last comment (the bot's reply to an earlier
+ * answer, or a follow-up question), comments in the API's oldest-first
+ * order.
  */
-export function answerTarget(item: Item, homeOwners: readonly string[], isPrivate?: boolean): AnswerTarget {
-  if (!item.ref) return { kind: "none", reason: "this item has no issue or PR to comment on" };
-  const home = homeOwners.includes(item.ref.owner);
-  return { kind: "comment", ref: item.ref, confirmPublic: !home && isPrivate !== true };
+export function answeredPending(comments: readonly CommentFacts[]): boolean {
+  const last = (login: string) => comments.findLastIndex((c) => c.author === login);
+  const mine = last(OPERATOR);
+  return mine >= 0 && mine > last(BOT_LOGIN);
 }

@@ -1,10 +1,10 @@
 // The two views, queue and item, built with plain DOM calls. Rendered
 // markdown comes from the sanitizing renderer as a DocumentFragment.
 
-import { type Answer, parseAnswer } from "../answer.ts";
+import { type Answer, parseAnswer, type Question } from "../answer.ts";
 import { h, link } from "../dom.ts";
 import type { Renderer } from "../markdown.ts";
-import type { AnswerTarget, Item, Question } from "./board.ts";
+import { type AnswerTarget, isQuestion, type Item, questionOf } from "./board.ts";
 import type { Context } from "./backend.ts";
 import { BOARD_URL, OPERATOR } from "./config.ts";
 import { type Entry, type EntryKind, groupRanked } from "./queue.ts";
@@ -51,15 +51,23 @@ export function pill(priority: string | undefined): HTMLElement {
   return h("span", { class: `pill ${/^P[0-3]$/.test(p) ? p.toLowerCase() : "pn"}` }, p);
 }
 
-export type AnswerState = "answered" | undefined;
+export type AnswerState = "answered" | "done" | undefined;
 
-/** Has this item been answered? Yes if sent from this tab. */
-export function answerState(item: Item, sent: ReadonlySet<string>): AnswerState {
-  return sent.has(item.nodeId) ? "answered" : undefined;
+/**
+ * Where a question stands: done once the bot closed it; answered once
+ * sent from this tab or he commented after the bot last did (`answered`,
+ * by node id), until the bot acts. Other items take no answers, so have
+ * no state.
+ */
+export function answerState(item: Item, sent: ReadonlySet<string>, answered: ReadonlySet<string>): AnswerState {
+  if (!isQuestion(item)) return undefined;
+  if (item.state === "closed") return "done";
+  return sent.has(item.nodeId) || answered.has(item.nodeId) ? "answered" : undefined;
 }
 
 export const STATE_LABEL: Record<NonNullable<AnswerState>, string> = {
-  answered: "answered",
+  answered: "answered, waiting on the bot",
+  done: "closed by the bot",
 };
 
 /** A short status shown on a queue row, e.g. "answered". */
@@ -75,6 +83,37 @@ const KIND_TITLE: Record<EntryKind, string> = { pr: "forge PR to review", questi
 export const ROW_CLASS = "row";
 export const ROW_KEY_ATTR = "data-key";
 
+/** The row's one-line summary: a question's ask, else Why. */
+function rowText(e: Entry): string {
+  const text = (e.item ? questionOf(e.item).ask : undefined) ?? e.item?.why ?? "";
+  return text ? excerpt(text, WHY_EXCERPT) : "";
+}
+
+function row(e: Entry, labelOf: (e: Entry) => RowLabel | undefined, now: number, child: boolean): HTMLElement {
+  const label = labelOf(e);
+  const why = rowText(e);
+  const where = [e.item?.org, e.where, e.blocks ? `blocks ${e.blocks}` : undefined].filter(Boolean).join(" · ");
+  return h(
+    "a",
+    { class: `${ROW_CLASS} k-${e.kind}${child ? " child" : ""}${label ? ` ${label.cls}` : ""}`, href: e.href, [ROW_KEY_ATTR]: e.key },
+    h("span", { class: `kind k-${e.kind}`, title: KIND_TITLE[e.kind] }, KIND_LABEL[e.kind]),
+    h(
+      "span",
+      { class: "main" },
+      h("span", { class: "title" }, e.title),
+      h(
+        "span",
+        { class: "sub" },
+        pill(e.priority),
+        h("span", { class: "tag" }, where),
+        label ? h("span", { class: `state ${label.cls}` }, label.text) : null,
+      ),
+      why ? h("span", { class: "why" }, why) : null,
+    ),
+    h("span", { class: "age", title: e.since ? `waiting since ${time(e.since)}` : "" }, age(e.since, now)),
+  );
+}
+
 export function queueView(
   entries: readonly Entry[],
   labelOf: (e: Entry) => RowLabel | undefined,
@@ -86,36 +125,15 @@ export function queueView(
     return root;
   }
   const counts = { pr: 0, question: 0, chore: 0 };
-  for (const e of entries) counts[e.kind]++;
+  for (const e of entries) for (const x of [e, ...(e.children ?? [])]) if (!x.settled) counts[x.kind]++;
   root.append(
     h("p", { class: "summary" }, `${counts.pr} PRs to review · ${counts.question} questions · ${counts.chore} other · j/k to move, o to open, ? for keys`),
   );
   for (const group of groupRanked(entries)) {
     const section = h("section", { class: "group" }, h("h2", { class: "group-h" }, `${group.priority} · ${group.entries.length}`));
     for (const e of group.entries) {
-      const label = labelOf(e);
-      const why = e.item?.why ? excerpt(e.item.why, WHY_EXCERPT) : "";
-      section.append(
-        h(
-          "a",
-          { class: `${ROW_CLASS} k-${e.kind}${label ? ` ${label.cls}` : ""}`, href: e.href, [ROW_KEY_ATTR]: e.key },
-          h("span", { class: `kind k-${e.kind}`, title: KIND_TITLE[e.kind] }, KIND_LABEL[e.kind]),
-          h(
-            "span",
-            { class: "main" },
-            h("span", { class: "title" }, e.title),
-            h(
-              "span",
-              { class: "sub" },
-              pill(e.priority),
-              h("span", { class: "tag" }, [e.item?.org, e.where].filter(Boolean).join(" · ")),
-              label ? h("span", { class: `state ${label.cls}` }, label.text) : null,
-            ),
-            why ? h("span", { class: "why" }, why) : null,
-          ),
-          h("span", { class: "age", title: e.since ? `waiting since ${time(e.since)}` : "" }, age(e.since, now)),
-        ),
-      );
+      section.append(row(e, labelOf, now, false));
+      for (const c of e.children ?? []) section.append(row(c, labelOf, now, true));
     }
     root.append(section);
   }
@@ -129,24 +147,16 @@ export interface ItemViewHandlers {
 
 export function describeTarget(target: AnswerTarget): string {
   switch (target.kind) {
-    case "comment": {
+    case "question": {
       const r = target.ref;
-      const where = `${r.owner}/${r.repo}#${r.number}`;
-      return target.confirmPublic
-        ? `Posts a public comment as you on ${where}, which is outside the bot's repositories. You'll be asked to confirm.`
-        : `Posts a comment as you on ${where}.`;
+      return `Posts a comment as you on ${r.owner}/${r.repo}#${r.number}; the bot acts on it and closes the issue.`;
     }
     case "none":
-      return `Can't answer here: ${target.reason}.`;
+      return `Nothing to answer here: ${target.reason}.`;
   }
 }
 
-interface FormOptions {
-  /** An answer was already sent from this tab; confirm another. */
-  alreadySent: boolean;
-}
-
-function answerForm(target: AnswerTarget, question: Question, opts: FormOptions, handlers: ItemViewHandlers): HTMLElement {
+function answerForm(target: AnswerTarget & { kind: "question" }, question: Question, answered: boolean, handlers: ItemViewHandlers): HTMLElement {
   const { options } = question;
   const form = h("form", { class: "answer" });
   const status = h("p", { class: "status", role: "status" });
@@ -172,19 +182,11 @@ function answerForm(target: AnswerTarget, question: Question, opts: FormOptions,
     "aria-label": "Answer text",
   });
   const button = h("button", { type: "submit", class: "primary" }, "Send answer");
-  let sent = opts.alreadySent;
-  const blocked = target.kind === "none";
-  button.disabled = blocked;
-  form.append(
-    text,
-    h("p", { class: "target" }, describeTarget(target)),
-    h("div", { class: "actions" }, button),
-    status,
-  );
+  let sent = answered;
+  form.append(text, h("p", { class: "target" }, describeTarget(target)), h("div", { class: "actions" }, button), status);
 
   form.addEventListener("submit", (ev) => {
     ev.preventDefault();
-    if (blocked) return;
     const picked = form.querySelector<HTMLInputElement>("input[name=choice]:checked");
     const answer: Answer = { text: text.value };
     if (picked) answer.choice = picked.value;
@@ -193,11 +195,7 @@ function answerForm(target: AnswerTarget, question: Question, opts: FormOptions,
       text.focus();
       return;
     }
-    if (sent && !window.confirm("You already answered this from here. Send another answer?")) return;
-    if (target.kind === "comment" && target.confirmPublic) {
-      const r = target.ref;
-      if (!window.confirm(`Post this as a public comment on ${r.owner}/${r.repo}#${r.number}?`)) return;
-    }
+    if (sent && !window.confirm("You already answered this. Send another answer?")) return;
     button.disabled = true;
     status.textContent = "Sending…";
     handlers
@@ -216,12 +214,19 @@ function answerForm(target: AnswerTarget, question: Question, opts: FormOptions,
   return form;
 }
 
-function commentView(c: Context["comments"][number], render: Renderer): HTMLElement {
-  const isAnswer = c.author === OPERATOR && parseAnswer(c.body) !== null;
+/** "your answer", or "your answer: B" when it picks an option. */
+function answerLabel(body: string): string {
+  const { choice } = parseAnswer(body);
+  return choice ? ` · your answer: ${choice}` : " · your answer";
+}
+
+function commentView(c: Context["comments"][number], render: Renderer, onQuestion: boolean): HTMLElement {
+  // On a question issue, every comment of his is an answer.
+  const isAnswer = onQuestion && c.author === OPERATOR;
   return h(
     "article",
     { class: `comment${isAnswer ? " your-answer" : ""}` },
-    h("div", { class: "meta" }, link(c.url, `${c.author} · ${time(c.createdAt)}`), isAnswer ? " · your answer" : ""),
+    h("div", { class: "meta" }, link(c.url, `${c.author} · ${time(c.createdAt)}`), isAnswer ? answerLabel(c.body) : ""),
     h("div", { class: "md" }, render(c.body)),
   );
 }
@@ -247,7 +252,7 @@ export function contextView(item: Item, context: Context | undefined, render: Re
   }
   if (context.comments.length) {
     const s = h("section", { class: "comments" }, h("h3", {}, "Latest comments"));
-    for (const c of context.comments) s.append(commentView(c, render));
+    for (const c of context.comments) s.append(commentView(c, render, isQuestion(item)));
     out.append(s);
   }
   return out;
@@ -256,20 +261,39 @@ export function contextView(item: Item, context: Context | undefined, render: Re
 /** The class of the element contextView fills, so it can be refreshed alone. */
 export const CONTEXT_CLASS = "context";
 
-export function itemView(
-  item: Item,
-  target: AnswerTarget,
-  question: Question,
-  context: Context | undefined,
-  render: Renderer,
-  alreadySent: boolean,
-  handlers: ItemViewHandlers,
-): HTMLElement {
+/** What the item view shows besides the item. */
+export interface ItemViewData {
+  target: AnswerTarget;
+  context: Context | undefined;
+  state: AnswerState;
+  /** The questions nested under this item in the queue. */
+  questions?: readonly Entry[];
+}
+
+const STATE_NOTE: Record<NonNullable<AnswerState>, string> = {
+  answered: "You answered; the question stays in the queue until the bot acts on it and closes the issue.",
+  done: "The bot acted on this question and closed it.",
+};
+
+export function itemView(item: Item, data: ItemViewData, render: Renderer, handlers: ItemViewHandlers): HTMLElement {
+  const { target, context, state } = data;
+  const question = questionOf(item);
+  const onQuestion = isQuestion(item);
   const links = h("div", { class: "links" });
-  if (item.url) links.append(link(item.url, refLabel(item)));
+  if (item.url) links.append(link(item.url, onQuestion || !item.ref ? refLabel(item) : `${refLabel(item)}: act on GitHub`));
+  if (question.blocks) links.append(link(question.blocks, "blocks"));
   for (const u of item.branch) links.append(link(u, "branch"));
   for (const u of item.gist) links.append(link(u, "gist"));
   links.append(link(BOARD_URL, "board"));
+
+  const questions = data.questions?.length
+    ? h(
+        "section",
+        { class: "questions" },
+        h("h3", {}, "Questions about this"),
+        h("ul", {}, ...data.questions.map((q) => h("li", {}, h("a", { href: q.href }, q.title)))),
+      )
+    : null;
 
   return h(
     "main",
@@ -279,15 +303,18 @@ export function itemView(
       "div",
       { class: "hdr" },
       pill(item.priority),
-      h("span", { class: "tag" }, [item.org, item.kind, item.state].filter(Boolean).join(" · ")),
+      h("span", { class: "tag" }, [item.org, onQuestion ? "question" : item.kind, item.state].filter(Boolean).join(" · ")),
     ),
     h("h2", {}, item.title),
     links,
     h("section", {}, h("h3", {}, "Why"), h("div", { class: "md" }, render(item.why || "(empty)"))),
-    alreadySent ? h("p", { class: "note" }, "Your answer was sent from here; the item stays in the queue until the bot acts on it.") : null,
-    answerForm(target, question, { alreadySent }, handlers),
+    questions,
+    state ? h("p", { class: "note" }, STATE_NOTE[state]) : null,
+    target.kind === "question"
+      ? answerForm(target, question, state === "answered", handlers)
+      : h("p", { class: "target" }, describeTarget(target)),
     item.body.trim()
-      ? h("section", {}, h("h3", {}, item.kind === "draft" ? "Draft" : "Description"), h("div", { class: "md" }, render(item.body)))
+      ? h("section", {}, h("h3", {}, onQuestion ? "Question" : item.kind === "draft" ? "Draft" : "Description"), h("div", { class: "md" }, render(item.body)))
       : null,
     h("div", { class: CONTEXT_CLASS }, contextView(item, context, render)),
   );

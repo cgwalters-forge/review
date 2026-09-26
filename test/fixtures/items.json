@@ -93,5 +93,101 @@
       {"id": 104, "name": "Priority", "data_type": "single_select", "value": {"id": "p2", "name": {"raw": "P2"}}}
     ],
     "archived_at": null
+  },
+  {
+    "id": 9007,
+    "node_id": "PVTI_synthetic_epic",
+    "content_type": "Issue",
+    "content": {
+      "node_id": "I_synthetic_tracker_20",
+      "title": "Composefs stable",
+      "body": "Tracking the stable format.",
+      "html_url": "https://github.com/cgwalters-forge/tracker/issues/20",
+      "state": "open",
+      "updated_at": "2026-01-05T00:00:00Z",
+      "user": {"login": "cgwalters-bot"},
+      "labels": [],
+      "comments": 0,
+      "sub_issues_summary": {"total": 3, "completed": 1, "percent_completed": 33}
+    },
+    "fields": [
+      {"id": 102, "name": "Status", "data_type": "single_select", "value": {"id": "x1", "name": {"raw": "Needs human"}}},
+      {"id": 104, "name": "Priority", "data_type": "single_select", "value": {"id": "p", "name": {"raw": "P1"}}},
+      {"id": 103, "name": "Why", "data_type": "text", "value": {"raw": "Needs a naming decision."}}
+    ],
+    "created_at": "2026-01-05T00:00:00Z",
+    "archived_at": null
+  },
+  {
+    "id": 9008,
+    "node_id": "PVTI_synthetic_question",
+    "content_type": "Issue",
+    "content": {
+      "node_id": "I_synthetic_tracker_21",
+      "title": "Which prefix for the stable format?",
+      "body": "Blocks: https://github.com/cgwalters-forge/tracker/issues/20\nThe stable format needs a name before v1.\n\nQ: Which prefix?\nOptions:\nA) org.example\nB) io.example\nRecommended: A, because it is registered\n",
+      "html_url": "https://github.com/cgwalters-forge/tracker/issues/21",
+      "state": "open",
+      "updated_at": "2026-01-06T00:00:00Z",
+      "user": {"login": "cgwalters-bot"},
+      "labels": [{"name": "question"}],
+      "comments": 2,
+      "sub_issues_summary": {"total": 0, "completed": 0, "percent_completed": 0},
+      "parent_issue_url": "https://api.github.com/repos/cgwalters-forge/tracker/issues/20"
+    },
+    "fields": [
+      {"id": 102, "name": "Status", "data_type": "single_select", "value": {"id": "x1", "name": {"raw": "Needs human"}}},
+      {"id": 104, "name": "Priority", "data_type": "single_select", "value": {"id": "p", "name": {"raw": "P0"}}},
+      {"id": 103, "name": "Why", "data_type": "text", "value": {"raw": "Question for cgwalters."}}
+    ],
+    "created_at": "2026-01-06T00:00:00Z",
+    "archived_at": null
+  },
+  {
+    "id": 9009,
+    "node_id": "PVTI_synthetic_upstream_question",
+    "content_type": "Issue",
+    "content": {
+      "node_id": "I_synthetic_tracker_22",
+      "title": "Rerun or rebase widget#42?",
+      "body": "Blocks: https://github.com/example-upstream/widget/pull/42\nCI is red on an infra flake.\nQ: Rerun or rebase?\nOptions:\nA) Rerun the job\nB) Rebase onto main\nRecommended: A, because it is cheaper\n",
+      "html_url": "https://github.com/cgwalters-forge/tracker/issues/22",
+      "state": "open",
+      "updated_at": "2026-01-07T00:00:00Z",
+      "user": {"login": "cgwalters-bot"},
+      "labels": ["question"],
+      "comments": 0,
+      "sub_issues_summary": {"total": 0, "completed": 0, "percent_completed": 0}
+    },
+    "fields": [
+      {"id": 102, "name": "Status", "data_type": "single_select", "value": {"id": "x1", "name": {"raw": "Needs human"}}},
+      {"id": 104, "name": "Priority", "data_type": "single_select", "value": {"id": "p", "name": {"raw": "P1"}}},
+      {"id": 103, "name": "Why", "data_type": "text", "value": {"raw": "Question for cgwalters."}}
+    ],
+    "created_at": "2026-01-07T00:00:00Z",
+    "archived_at": null
+  },
+  {
+    "id": 9010,
+    "node_id": "PVTI_synthetic_closed_question",
+    "content_type": "Issue",
+    "content": {
+      "node_id": "I_synthetic_tracker_23",
+      "title": "Keep the old name?",
+      "body": "Blocks: https://github.com/cgwalters-bot/elsewhere/issues/5\nQ: Keep it?\n",
+      "html_url": "https://github.com/cgwalters-forge/tracker/issues/23",
+      "state": "closed",
+      "updated_at": "2026-01-08T00:00:00Z",
+      "user": {"login": "cgwalters-bot"},
+      "labels": [{"name": "question"}],
+      "comments": 3,
+      "sub_issues_summary": {"total": 0, "completed": 0, "percent_completed": 0}
+    },
+    "fields": [
+      {"id": 102, "name": "Status", "data_type": "single_select", "value": {"id": "x1", "name": {"raw": "Needs human"}}},
+      {"id": 103, "name": "Why", "data_type": "text", "value": {"raw": "Question for cgwalters."}}
+    ],
+    "created_at": "2026-01-08T00:00:00Z",
+    "archived_at": null
   }
 ]
