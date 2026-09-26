@@ -2,7 +2,7 @@
 // the app's item model. Pure functions over JSON, so tests feed them
 // synthetic payloads.
 
-import { AnswerError, type Option, parseOptions, questionId, withoutDraftSection } from "../answer.ts";
+import { type Option, parseOptions } from "../answer.ts";
 import { FIELD, QUEUE_STATUSES } from "./config.ts";
 
 /** The subset of a project field the app uses. */
@@ -66,8 +66,6 @@ export interface Item {
   /** The issue or PR page; absent for drafts. */
   url?: string;
   ref?: IssueRef;
-  /** DI_... node id of a draft's content, for editing its body. */
-  draftId?: string;
   /** True or false when the payload says; unknown for issues until fetched. */
   isPrivate?: boolean;
   /** Issue/PR state, e.g. "open", "closed", "merged". */
@@ -164,9 +162,7 @@ export function parseItem(raw: RawItem): Item {
   opt("org", fields.get(FIELD.org));
   opt("createdAt", raw.created_at);
   opt("updatedAt", c.updated_at ?? raw.updated_at);
-  if (kind === "draft") {
-    opt("draftId", c.node_id);
-  } else if (c.html_url) {
+  if (kind !== "draft" && c.html_url) {
     item.url = c.html_url;
     opt("ref", parseIssueUrl(c.html_url));
     opt("isPrivate", c.base?.repo?.private);
@@ -186,59 +182,30 @@ export function queueItems(raw: readonly RawItem[]): Item[] {
 /** The question an item asks, as the bot wrote it. */
 export interface Question {
   options: Option[];
-  /** Its id, e.g. "Q#3", if the bot gave one. */
-  id?: string;
-  /** Why it can't be answered as asked, e.g. several ids. */
-  error?: string;
 }
 
 /**
- * The bot asks in Why, or in a draft's body (minus any answer section).
- * Options come from the first of those that has them; the id is looked
- * for in both, and two different ids make the question ambiguous. Issue
- * and PR bodies are someone else's text, so they never supply options or
- * an id.
+ * The bot asks in Why, or in a draft's body; options come from the first
+ * of those that has them. Issue and PR bodies are someone else's text, so
+ * they never supply options.
  */
 export function questionOf(item: Item): Question {
   const sources = [item.why];
-  if (item.kind === "draft") sources.push(withoutDraftSection(item.body));
+  if (item.kind === "draft") sources.push(item.body);
   const optionSource = sources.find((t) => parseOptions(t).length > 0);
-  const q: Question = { options: optionSource ? parseOptions(optionSource) : [] };
-  try {
-    const id = questionId(...sources);
-    if (id) q.id = id;
-  } catch (e) {
-    q.error = e instanceof AnswerError ? e.message : String(e);
-  }
-  return q;
+  return { options: optionSource ? parseOptions(optionSource) : [] };
 }
 
 /** Where an answer to this item goes, and whether to ask first. */
-export type AnswerTarget =
-  | { kind: "comment"; ref: IssueRef; confirmPublic: boolean }
-  | { kind: "draft"; draftId: string; boardPublic: boolean }
-  | { kind: "none"; reason: string };
+export type AnswerTarget = { kind: "comment"; ref: IssueRef; confirmPublic: boolean } | { kind: "none"; reason: string };
 
 /**
- * Decide the answer channel. This is the one place that picks it, so a
- * different channel for upstream items (e.g. a private receipt plus a
- * board field) only changes this function and postAnswer.
+ * Decide the answer channel. This is the one place that picks it.
  *
  * `isPrivate` is the repository's visibility when known; unknown is
- * treated as public, which only adds a question. `boardPublic` says
- * whether anyone can read a draft's body.
+ * treated as public, which only adds a question.
  */
-export function answerTarget(
-  item: Item,
-  homeOwners: readonly string[],
-  isPrivate?: boolean,
-  boardPublic = true,
-): AnswerTarget {
-  if (item.kind === "draft") {
-    return item.draftId
-      ? { kind: "draft", draftId: item.draftId, boardPublic }
-      : { kind: "none", reason: "this draft item has no content id" };
-  }
+export function answerTarget(item: Item, homeOwners: readonly string[], isPrivate?: boolean): AnswerTarget {
   if (!item.ref) return { kind: "none", reason: "this item has no issue or PR to comment on" };
   const home = homeOwners.includes(item.ref.owner);
   return { kind: "comment", ref: item.ref, confirmPublic: !home && isPrivate !== true };

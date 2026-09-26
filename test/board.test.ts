@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { setDraftSection } from "../src/answer.ts";
 import { answerTarget, fieldIds, type Item, parseIssueUrl, questionOf, queueItems } from "../src/github/board.ts";
 import { HOME_OWNERS } from "../src/github/config.ts";
 import { fields, rawItems } from "./helpers.ts";
@@ -54,7 +53,6 @@ describe("queueItems", () => {
   it("parses a draft item", () => {
     const d = byId.get("PVTI_synthetic_draft");
     assert.equal(d?.kind, "draft");
-    assert.equal(d?.draftId, "DI_synthetic_draft");
     assert.equal(d?.url, undefined);
     assert.deepEqual(d?.gist, ["https://gist.github.com/cgwalters-bot/0123abcd"]);
   });
@@ -90,42 +88,20 @@ describe("answerTarget", () => {
     const t = answerTarget(get("PVTI_synthetic_home_issue"), HOME_OWNERS, undefined);
     assert.equal(t.kind === "comment" && t.confirmPublic, false);
   });
-  it("writes drafts through the draft body", () => {
-    assert.deepEqual(answerTarget(get("PVTI_synthetic_draft"), HOME_OWNERS), {
-      kind: "draft",
-      draftId: "DI_synthetic_draft",
-      boardPublic: true,
-    });
-    const t = answerTarget(get("PVTI_synthetic_draft"), HOME_OWNERS, undefined, false);
-    assert.equal(t.kind === "draft" && t.boardPublic, false);
-  });
   it("refuses an item with nowhere to answer", () => {
-    assert.equal(answerTarget(get("PVTI_synthetic_redacted"), HOME_OWNERS).kind, "none");
+    for (const id of ["PVTI_synthetic_redacted", "PVTI_synthetic_draft"]) assert.equal(answerTarget(get(id), HOME_OWNERS).kind, "none", id);
   });
 });
 
 describe("questionOf", () => {
   const base = queueItems(rawItems()).find((i) => i.nodeId === "PVTI_synthetic_draft") as Item;
   const pr = queueItems(rawItems()).find((i) => i.kind === "pr") as Item;
-  const summary = (item: Item) => {
-    const q = questionOf(item);
-    return { letters: q.options.map((o) => o.letter).join(""), id: q.id, error: q.error };
-  };
-  const several = "the question names several ids (Q#1, Q#2); ask the bot to fix it";
-  const cases: [string, Item, ReturnType<typeof summary>][] = [
-    ["options in Why", { ...pr, why: "Q#5: rerun? Options: A) yes B) no" }, { letters: "AB", id: "Q#5", error: undefined }],
-    ["draft body when Why has none", base, { letters: "AB", id: undefined, error: undefined }],
-    [
-      "draft body id, ignoring the answer section's",
-      { ...base, body: setDraftSection("Q#7: which?\n- A) x\n- B) y", { choice: "A", question: "Q#6", text: "" }, "https://gist.github.com/1") },
-      { letters: "AB", id: "Q#7", error: undefined },
-    ],
-    ["options in Why, id in the draft body", { ...base, why: "Options: A) x B) y", body: "Q#5: which?" }, { letters: "AB", id: "Q#5", error: undefined }],
-    ["the same id in both", { ...base, why: "Q#5: which? Options: A) x B) y", body: "Q#5: details" }, { letters: "AB", id: "Q#5", error: undefined }],
-    ["different ids in Why and body", { ...base, why: "Q#1: which? Options: A) x B) y", body: "Q#2: other" }, { letters: "AB", id: undefined, error: several }],
-    ["never a PR body", { ...pr, why: "No question", body: "Q#9: Options: A) a B) b" }, { letters: "", id: undefined, error: undefined }],
-    ["several ids in Why", { ...pr, why: "Q#1: this?\nQ#2: or that? Options: A) a B) b" }, { letters: "AB", id: undefined, error: several }],
-    ["an id mid-line doesn't count", { ...pr, why: "Flaky. Q#3: rerun? Options: A) a B) b" }, { letters: "AB", id: undefined, error: undefined }],
+  const letters = (item: Item) => questionOf(item).options.map((o) => o.letter).join("");
+  const cases: [string, Item, string][] = [
+    ["options in Why", { ...pr, why: "rerun? Options: A) yes B) no" }, "AB"],
+    ["draft body when Why has none", base, "AB"],
+    ["Why before the draft body", { ...base, why: "Options: A) x B) y C) z" }, "ABC"],
+    ["never a PR body", { ...pr, why: "No question", body: "Options: A) a B) b" }, ""],
   ];
-  for (const [name, item, want] of cases) it(name, () => assert.deepEqual(summary(item), want));
+  for (const [name, item, want] of cases) it(name, () => assert.equal(letters(item), want));
 });

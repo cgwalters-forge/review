@@ -69,7 +69,7 @@ function itemWhere(item: Item): string {
  *   second one. One whose Branch holds only forge PRs, none of them open
  *   and waiting, is stale (promoted or closed) and dropped.
  * - Other Draft items (a gist to read) are chores, and so are Needs human
- *   items that ask no question with options or an id.
+ *   items that ask no question with options.
  *
  * Until the forge has been read once (`forgeKnown`), nothing is stale:
  * forge-only Draft items are listed as chores rather than dropped.
@@ -109,8 +109,7 @@ export function buildEntries(
       if (forgeOnly && forgeKnown) continue;
       kind = "chore";
     } else if (item.status === NEEDS_HUMAN) {
-      const q = questionOf(item);
-      kind = q.options.length > 0 || q.id !== undefined ? "question" : "chore";
+      kind = questionOf(item).options.length > 0 ? "question" : "chore";
     } else {
       continue;
     }

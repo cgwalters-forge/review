@@ -173,19 +173,6 @@ export class GitHub {
     return (res.status === 204 ? undefined : await res.json()) as T;
   }
 
-  /** One GraphQL request, for the few things REST can't do. */
-  async graphql<T>(query: string, variables: Record<string, unknown>): Promise<T> {
-    const res = await this.send<{ data?: T; errors?: { message: string }[] }>("POST", "/graphql", {
-      query,
-      variables,
-    });
-    if (res.errors?.length) {
-      throw new GitHubError(200, `GraphQL: ${res.errors.map((e) => e.message).join("; ")}`);
-    }
-    if (!res.data) throw new GitHubError(200, "GraphQL: empty response");
-    return res.data;
-  }
-
   /** True when the rate budget is below `fraction` of its limit. */
   rateLow(fraction: number): boolean {
     return this.rate !== undefined && this.rate.remaining < this.rate.limit * fraction;
