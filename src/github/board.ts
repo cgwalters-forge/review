@@ -3,7 +3,7 @@
 // synthetic payloads.
 
 import { AnswerError, type Option, parseOptions, questionId, withoutDraftSection } from "../answer.ts";
-import { FIELD, NEEDS_HUMAN } from "./config.ts";
+import { FIELD, QUEUE_STATUSES } from "./config.ts";
 
 /** The subset of a project field the app uses. */
 export interface RawField {
@@ -42,6 +42,7 @@ export interface RawItem {
   content_type: string;
   content?: RawContent | null;
   fields?: RawFieldValue[];
+  created_at?: string;
   updated_at?: string;
   archived_at?: string | null;
 }
@@ -78,6 +79,8 @@ export interface Item {
   org?: string;
   branch: string[];
   gist: string[];
+  /** When the item was added to the board. */
+  createdAt?: string;
   updatedAt?: string;
 }
 
@@ -159,6 +162,7 @@ export function parseItem(raw: RawItem): Item {
   opt("status", fields.get(FIELD.status));
   opt("priority", fields.get(FIELD.priority));
   opt("org", fields.get(FIELD.org));
+  opt("createdAt", raw.created_at);
   opt("updatedAt", c.updated_at ?? raw.updated_at);
   if (kind === "draft") {
     opt("draftId", c.node_id);
@@ -171,12 +175,12 @@ export function parseItem(raw: RawItem): Item {
   return item;
 }
 
-/** The queue: unarchived items needing a human. */
+/** The board's part of the queue: unarchived items needing a human, or Draft (ready for review). */
 export function queueItems(raw: readonly RawItem[]): Item[] {
   return raw
     .filter((r) => !r.archived_at)
     .map(parseItem)
-    .filter((i) => i.status === NEEDS_HUMAN);
+    .filter((i) => i.status !== undefined && QUEUE_STATUSES.includes(i.status));
 }
 
 export interface PriorityGroup {

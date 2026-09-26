@@ -11,8 +11,12 @@ export const BOARD_URL = `https://github.com/users/${BOARD_OWNER}/projects/${BOA
 /** The only login whose answers the bot acts on. */
 export const OPERATOR = "cgwalters";
 
-/** The Status value that puts an item in the queue. */
+/** The Status of an item blocked on his decision or action. */
 export const NEEDS_HUMAN = "Needs human";
+/** The Status of an item ready for his review (a forge PR or a gist). */
+export const DRAFT = "Draft";
+/** The Statuses that put an item in the queue (the board's "Needs cgwalters" view). */
+export const QUEUE_STATUSES: readonly string[] = [NEEDS_HUMAN, DRAFT];
 
 /** Board fields the app reads, by name; their ids are looked up at runtime. */
 export const FIELD = {

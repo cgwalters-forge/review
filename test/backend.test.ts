@@ -42,7 +42,7 @@ describe("loadQueue", () => {
     assert.equal(first.items.length, 4);
     const itemsUrl = new URL(calls[2]?.url ?? "");
     assert.equal(itemsUrl.searchParams.get("fields"), "102,104,103,105,106,107");
-    assert.equal(itemsUrl.searchParams.get("q"), 'status:"Needs human"');
+    assert.equal(itemsUrl.searchParams.get("q"), 'status:"Needs human","Draft"');
 
     assert.equal((await loadQueue(gh)).changed, false);
     boardPublic = false;
