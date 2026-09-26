@@ -45,11 +45,19 @@ export function nextLink(link: string | null): string | undefined {
   return undefined;
 }
 
+/** A message, or an error entry's message (GitHub sends strings or objects). */
+function errorText(e: unknown): string {
+  if (typeof e === "string") return e;
+  const m = (e as { message?: unknown } | null)?.message;
+  return typeof m === "string" ? m : "";
+}
+
 async function errorMessage(res: Response, what: string): Promise<string> {
   let detail = "";
   try {
-    const body = (await res.json()) as { message?: unknown };
-    if (typeof body.message === "string") detail = `: ${body.message}`;
+    const body = (await res.json()) as { message?: unknown; errors?: unknown };
+    const parts = [body.message, ...(Array.isArray(body.errors) ? body.errors : [])].map(errorText).filter(Boolean);
+    if (parts.length) detail = `: ${parts.join("; ")}`;
   } catch {
     // Not JSON; the status is enough.
   }

@@ -44,6 +44,15 @@ describe("GitHub.get", () => {
     });
   });
 
+  it("includes GitHub's error details", async () => {
+    const { fetchImpl } = scriptedFetch(() => ({
+      status: 422,
+      body: { message: "Unprocessable Entity", errors: ["Can not approve your own pull request", { message: "second" }, { code: "x" }] },
+    }));
+    const gh = new GitHub(token, fetchImpl);
+    await assert.rejects(gh.send("POST", "/x"), /HTTP 422: Unprocessable Entity; Can not approve your own pull request; second$/);
+  });
+
   it("refuses paths that would leave the API origin", async () => {
     const gh = new GitHub(token, scriptedFetch(() => ({})).fetchImpl);
     await assert.rejects(gh.get("https://evil.example/x"), /refusing to send the token outside/);
