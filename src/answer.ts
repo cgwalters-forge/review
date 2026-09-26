@@ -14,9 +14,14 @@
 //     B) io.example
 //     Recommended: A, because it is already registered
 //
-// The first line always names the board item it blocks. `Q:`, `Options:`
-// and `Recommended:` count only after the context, outside fenced code
-// blocks: `Options:` and `Recommended:` only after the `Q:` line. Each
+// The first line always names the board item it blocks, by its URL: bare
+// for a tracker issue, in a code span for an upstream one, so that the
+// mention doesn't show on the upstream timeline:
+//
+//     Blocks: `https://github.com/example/widget/pull/42`
+//
+// `Q:`, `Options:` and `Recommended:` count only outside fenced code
+// blocks, and `Options:` and `Recommended:` only after the `Q:` line. Each
 // option is exactly one line, `A) text`, lettered from A without gaps,
 // at least two; an option wrapped onto a second line, or a lone option,
 // makes the list unreadable, and the app says so rather than guess.
@@ -135,7 +140,10 @@ export interface Question {
   optionsProblem?: string;
 }
 
-const BLOCKS_RE = /^Blocks:[ \t]*(https:\/\/\S+)[ \t]*$/;
+// The URL bare, or in a code span: a bare upstream URL in a public issue
+// adds a "mentioned this" entry to the upstream timeline, so the bot
+// writes those in backticks.
+const BLOCKS_RE = /^Blocks:[ \t]*(`?)(https:\/\/[^\s`]+)\1[ \t]*$/;
 const ASK_RE = /^Q:[ \t]*(.+)$/;
 const OPTIONS_RE = /^Options:[ \t]*$/;
 // "A) text", also as a markdown list item or with "(A)".
@@ -213,7 +221,7 @@ export function parseQuestion(body: string): Question {
   const lines = unfencedLines(body);
   const q: Question = { options: [] };
   const blocks = BLOCKS_RE.exec(lines[0] ?? "");
-  if (blocks) q.blocks = blocks[1] as string;
+  if (blocks) q.blocks = blocks[2] as string;
   const askAt = lines.findIndex((l) => ASK_RE.test(l));
   if (askAt < 0) return q;
   q.ask = (ASK_RE.exec(lines[askAt] as string)?.[1] as string).trim();
