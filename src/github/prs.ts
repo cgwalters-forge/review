@@ -4,6 +4,7 @@
 
 import type { GitHub } from "./api.ts";
 import type { IssueRef } from "./board.ts";
+import { findGuide, type GuideState } from "./guide.ts";
 import { BOT_LOGIN, FETCH_CONCURRENCY, FORGE_ORG, OPERATOR, PAGE_SIZE } from "./config.ts";
 import {
   type CiCheck,
@@ -181,6 +182,8 @@ export interface PrDetail {
   files: FileDiff[];
   checks: CiCheck[];
   verdict: Verdict;
+  /** The bot's review guide for this PR, if it posted one. */
+  guide: GuideState;
   /**
    * False when the commit list doesn't end at the head: right after a
    * push GitHub can serve the old commits and diff with the new head, and
@@ -280,6 +283,7 @@ export async function loadPrDetail(gh: GitHub, ref: IssueRef): Promise<PrDetail>
     files: files.map(fileDiff),
     checks: ciChecks(runs, status),
     verdict: reviewVerdict(decisions.reviews, head, OPERATOR, decisions.comments),
+    guide: findGuide(decisions.reviews, ref, head),
     consistent,
     warnings,
   };

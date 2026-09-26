@@ -21,6 +21,7 @@ export type Command =
   | "prev-hunk"
   | "viewed"
   | "comment"
+  | "guide"
   | "layout"
   | "prev-commit"
   | "next-commit";
@@ -49,6 +50,7 @@ const BY_ROUTE: Record<Route, Record<string, Command>> = {
     x: "fold",
     a: "approve",
     c: "comment",
+    g: "guide",
     s: "layout",
     "[": "prev-commit",
     "]": "next-commit",
@@ -72,7 +74,7 @@ export const HELP: Record<Route, string> = {
   queue: "j/k or ↓/↑ move · o or Enter open · n news · r refresh · ? keys",
   news: "u, Esc or n back to the queue · r refresh",
   item: "u or Esc back to the queue · c write an answer · r refresh",
-  pr: "n/p next/previous file · j/k next/previous hunk · v mark viewed · x fold · c comment on the focused line (or write the review) · s unified/split · [/] previous/next commit · a approve · u or Esc back · r reload",
+  pr: "n/p next/previous file · j/k next/previous hunk · v mark viewed · x fold · c comment on the focused line (or write the review) · s unified/split · [/] previous/next commit · g guided review (then n/p between hotspots, Esc leaves) · a approve · u or Esc back · r reload",
 };
 
 export type RouteInfo =

@@ -1,13 +1,14 @@
 // The review pane shows untrusted PR text (body, commit messages, file
-// names, diffs): check it lands as text, that
+// names, diffs, the bot's review guide): check it lands as text, that
 // the diff viewer lays it out right, and that its buttons submit what
 // the bot keys on.
 
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { DraftComment, ReviewAction } from "../src/github/forge.ts";
+import type { GuideState } from "../src/github/guide.ts";
 import type { PrDetail } from "../src/github/prs.ts";
-import { buildTree, canReview, type PrViewHandlers, prView, rangeEnds, unseenNote } from "../src/github/prview.ts";
+import { buildTree, canReview, hotspotsFor, type PrViewHandlers, prView, rangeEnds, unseenNote } from "../src/github/prview.ts";
 import { createRenderer } from "../src/markdown.ts";
 import { installDom } from "./helpers.ts";
 
@@ -45,6 +46,7 @@ function detail(over: Partial<PrDetail> = {}): PrDetail {
     ],
     checks: [],
     verdict: { state: "none" },
+    guide: { state: "none" },
     consistent: true,
     updatedAt: "2026-01-01T00:00:00Z",
     warnings: [],
@@ -348,6 +350,102 @@ describe("prView", () => {
   });
 });
 
+describe("the review guide", () => {
+  const PATH = "src/lib.rs";
+  const lines = Array.from({ length: 60 }, (_, i) => `l${i + 1}`);
+  const files = [
+    { filename: PATH, sha: "5".repeat(40), status: "modified", additions: 1, deletions: 1, patch: "@@ -10,3 +10,3 @@\n l10\n-old\n+l11\n l12" },
+    { filename: "Cargo.lock", sha: "6".repeat(40), status: "modified", additions: 1, deletions: 1, patch: "@@ -1 +1 @@\n-a\n+b" },
+  ];
+  const guideState = (over: Partial<GuideState> = {}): GuideState =>
+    ({
+      state: "current",
+      url: "https://github.com/cgwalters-forge/widget/pull/7#pullrequestreview-1",
+      guide: {
+        repo: "cgwalters-forge/widget",
+        pr: 7,
+        head: HEAD,
+        summary: `Summary ${EVIL}`,
+        hotspots: [
+          { path: PATH, commit: HEAD, start: 11, end: 11, severity: "risky", category: "logic", reason: `Reason ${EVIL}` },
+          { path: PATH, commit: C1, start: 40, end: 42, severity: "note", category: "test-gap", reason: "Outside the hunks." },
+        ],
+        skim: [{ path: "Cargo.lock", reason: "generated" }],
+      },
+      ...over,
+    }) as GuideState;
+  const withGuide = (g: GuideState = guideState()) => detail({ files, guide: g });
+
+  it("shows the guide as text, tints the hotspot's lines and puts its reason under them", () => {
+    const { el } = pane(withGuide(), handlers({ loadLines: async () => lines }));
+    assertNoActiveContent(el);
+    const panel = el.querySelector("section.guide");
+    assert.ok(panel?.textContent?.includes(`Summary ${EVIL}`));
+    assert.match(panel?.textContent ?? "", /0\/2 hotspots seen/);
+    assert.equal(panel?.querySelector("details.skim")?.hasAttribute("open"), false);
+    const tinted = [...el.querySelectorAll("tr.hs")].map((tr) => [tr.className, tr.querySelector("td.code")?.textContent]);
+    assert.deepEqual(tinted, [["del hs sev-risky", "-old"], ["add hs sev-risky", "+l11"]]);
+    const callout = el.querySelector('tr.callout[data-hs="0"]');
+    assert.equal(callout?.nextElementSibling?.querySelector("td.code")?.textContent, "-old", "the reason comes before the lines");
+    assert.ok(callout?.textContent?.includes(`Reason ${EVIL}`));
+    assert.match(el.querySelector('details.file[data-path="Cargo.lock"] summary')?.textContent ?? "", /skim/);
+  });
+
+  it("walks the hotspots in order, expanding context, and counts what was seen", async () => {
+    const confirms: string[] = [];
+    win.confirm = (m?: string) => (confirms.push(m ?? ""), false);
+    const p = pane(withGuide(), handlers({ loadLines: async () => lines }));
+    p.command("guide");
+    await tick();
+    assert.ok(p.el.querySelector('tr.callout.on[data-hs="0"]'));
+    assert.match(p.el.querySelector(".guided-bar")?.textContent ?? "", /hotspot 1 of 2/);
+    p.command("next-file"); // n walks hotspots while guided
+    await tick();
+    await tick();
+    assert.ok(p.el.querySelector('tr.callout.on[data-hs="1"]'));
+    assert.deepEqual([...p.el.querySelectorAll("tr.hs.sev-note td.code")].map((td) => td.textContent), [" l40", " l41", " l42"]);
+    assert.match(p.el.querySelector("section.guide")?.textContent ?? "", /2\/2 hotspots seen/);
+    assert.equal(p.command("back"), true, "Esc leaves guided review first");
+    assert.equal(p.el.querySelector(".guided-bar")?.hasAttribute("hidden"), true);
+    assert.equal(p.command("back"), false);
+    (p.el.querySelector('button[data-action="approve"]') as HTMLButtonElement).click();
+    assert.doesNotMatch(confirms[0] ?? "", /hotspots/);
+  });
+
+  it("names unseen hotspots when approving", () => {
+    const confirms: string[] = [];
+    win.confirm = (m?: string) => (confirms.push(m ?? ""), false);
+    const { el } = pane(withGuide());
+    (el.querySelector('button[data-action="approve"]') as HTMLButtonElement).click();
+    assert.match(confirms[0] ?? "", /2 of 2 review-guide hotspots/);
+  });
+
+  it("can be turned off", () => {
+    const { el } = pane(withGuide());
+    const on = el.querySelector<HTMLInputElement>("#guide-on") as HTMLInputElement;
+    on.checked = false;
+    on.dispatchEvent(new win.Event("change"));
+    assert.equal(el.querySelectorAll("tr.hs, tr.callout").length, 0);
+    assert.equal(el.querySelector("ol.hotspots"), null);
+    on.checked = true;
+    on.dispatchEvent(new win.Event("change"));
+    assert.ok(el.querySelectorAll("tr.hs").length > 0);
+  });
+
+  it("says stale when the head moved, without tints or a walk", () => {
+    const p = pane(withGuide(guideState({ state: "stale" } as Partial<GuideState>)));
+    assert.match(p.el.querySelector("section.guide")?.textContent ?? "", /stale.*head moved/s);
+    assert.equal(p.el.querySelectorAll("tr.hs, tr.callout").length, 0);
+    p.command("guide");
+    assert.equal(p.el.querySelector(".guided-bar")?.hasAttribute("hidden"), true);
+  });
+
+  it("says why an invalid guide isn't shown", () => {
+    const { el } = pane(withGuide({ state: "invalid", error: `bad ${EVIL}` }));
+    assert.match(el.querySelector("section.guide")?.textContent ?? "", /couldn't be read: bad </);
+    assertNoActiveContent(el);
+  });
+});
 
 describe("pane helpers", () => {
   it("rangeEnds diffs a range from its first commit's parent", () => {
@@ -355,6 +453,18 @@ describe("pane helpers", () => {
     assert.deepEqual(rangeEnds(commits, { from: 1, to: 1 }), { base: C1, to: HEAD });
     assert.deepEqual(rangeEnds(commits, { from: 0, to: 1 }), { base: BASE, to: HEAD });
     assert.equal(rangeEnds([{ ...commits[0], parent: undefined } as never], { from: 0, to: 0 }), undefined);
+  });
+
+  it("hotspotsFor keeps a range's own hotspots on files at the head's version", () => {
+    const g = { repo: "o/r", pr: 1, head: HEAD, summary: "s", skim: [], hotspots: [
+      { path: "a", commit: C1, start: 1, end: 1, severity: "note", category: "api", reason: "r" },
+      { path: "a", commit: HEAD, start: 2, end: 2, severity: "note", category: "api", reason: "r" },
+    ] } as never;
+    const file = { filename: "a", sha: "7".repeat(40), status: "modified", additions: 1, deletions: 0 };
+    const idx = (v: Parameters<typeof hotspotsFor>[2]) => hotspotsFor(g, file, v).map((p) => p.index);
+    assert.deepEqual(idx(undefined), [0, 1]);
+    assert.deepEqual(idx({ commits: [C1], headBlob: "7".repeat(40) }), [0]);
+    assert.deepEqual(idx({ commits: [C1], headBlob: "8".repeat(40) }), []);
   });
 
   it("buildTree joins single-child directories", () => {
