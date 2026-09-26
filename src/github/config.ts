@@ -60,6 +60,17 @@ export const PAGE_SIZE = 100;
 /** Comments shown in the item view. */
 export const RECENT_COMMENTS = 5;
 
+/** The repositories whose merged PRs the news pane shows: the bot, its runner and this app. */
+export const NEWS_REPOS: readonly string[] = [
+  "cgwalters-bot/homegit",
+  "cgwalters-forge/cgwalters-devspace-sandbox",
+  "bootc-dev/cgwalters-devspace-sandbox",
+  "cgwalters-forge/review",
+];
+/** Closed PRs read per repository (one page). */
+export const NEWS_PER_REPO = 30;
+/** News items shown. */
+export const NEWS_LIMIT = 40;
 
 /** localStorage key for the chosen theme (auto, light, dark). */
 export const THEME_KEY = "review.theme";

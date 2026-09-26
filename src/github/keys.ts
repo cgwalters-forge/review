@@ -1,7 +1,7 @@
 // Keyboard commands, as a pure mapping from a key press to a command so
 // tests can check it; main.ts carries them out.
 
-export type Route = "queue" | "item" | "pr";
+export type Route = "queue" | "item" | "pr" | "news";
 
 export type Command =
   | "next"
@@ -12,7 +12,8 @@ export type Command =
   | "approve"
   | "fold"
   | "compose"
-  | "help";
+  | "help"
+  | "news";
 
 export interface KeyPress {
   key: string;
@@ -26,7 +27,8 @@ export interface KeyPress {
 const COMMON: Record<string, Command> = { r: "refresh", "?": "help" };
 
 const BY_ROUTE: Record<Route, Record<string, Command>> = {
-  queue: { j: "next", k: "prev", ArrowDown: "next", ArrowUp: "prev", o: "open", Enter: "open" },
+  queue: { j: "next", k: "prev", ArrowDown: "next", ArrowUp: "prev", o: "open", Enter: "open", n: "news" },
+  news: { u: "back", Escape: "back", n: "back" },
   item: { u: "back", Escape: "back", c: "compose" },
   pr: { j: "next", k: "prev", x: "fold", a: "approve", c: "compose", u: "back", Escape: "back" },
 };
@@ -43,18 +45,21 @@ export function keyCommand(press: KeyPress, route: Route): Command | "blur" | un
 }
 
 export const HELP: Record<Route, string> = {
-  queue: "j/k or ↓/↑ move · o or Enter open · r refresh · ? keys",
+  queue: "j/k or ↓/↑ move · o or Enter open · n news · r refresh · ? keys",
+  news: "u, Esc or n back to the queue · r refresh",
   item: "u or Esc back to the queue · c write an answer · r refresh",
   pr: "j/k next/previous file · x fold file · a approve · c write a review · u or Esc back · r reload",
 };
 
 export type RouteInfo =
   | { route: "queue" }
+  | { route: "news" }
   | { route: "item"; id: string }
   | { route: "pr"; ref: { owner: string; repo: string; number: number } };
 
 /** The view a location hash asks for; anything unknown is the queue. */
 export function parseRoute(hash: string): RouteInfo {
+  if (hash === "#news") return { route: "news" };
   const item = /^#item\/(PVTI_[A-Za-z0-9_-]+)$/.exec(hash);
   if (item?.[1]) return { route: "item", id: item[1] };
   const pr = /^#pr\/([A-Za-z0-9-]+)\/([A-Za-z0-9._-]+)\/([1-9][0-9]{0,9})$/.exec(hash);

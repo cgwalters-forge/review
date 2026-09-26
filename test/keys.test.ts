@@ -12,6 +12,9 @@ describe("keyCommand", () => {
     ["o", "queue", {}, "open"],
     ["Enter", "queue", {}, "open"],
     ["a", "queue", {}, undefined],
+    ["n", "queue", {}, "news"],
+    ["n", "news", {}, "back"],
+    ["j", "news", {}, undefined],
     ["a", "pr", {}, "approve"],
     ["x", "pr", {}, "fold"],
     ["u", "pr", {}, "back"],
@@ -32,6 +35,8 @@ describe("parseRoute", () => {
   const cases: [string, ReturnType<typeof parseRoute>][] = [
     ["", { route: "queue" }],
     ["#", { route: "queue" }],
+    ["#news", { route: "news" }],
+    ["#news/x", { route: "queue" }],
     ["#item/PVTI_abc-_1", { route: "item", id: "PVTI_abc-_1" }],
     ["#pr/cgwalters-forge/bootc/30", { route: "pr", ref: { owner: "cgwalters-forge", repo: "bootc", number: 30 } }],
     ["#pr/o/r.s_t/1", { route: "pr", ref: { owner: "o", repo: "r.s_t", number: 1 } }],

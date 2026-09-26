@@ -12,6 +12,7 @@ import {
   FORGE_MIN_INTERVAL_MS,
   FORGE_POLL_INTERVAL_MS,
   HOME_OWNERS,
+  NEWS_LIMIT,
   OPERATOR,
   POLL_BACKOFF_FACTOR,
   POLL_INTERVAL_MS,
@@ -20,6 +21,8 @@ import {
 } from "./config.ts";
 import { composeReview, type ForgePr, refKey, VERDICT_LABEL } from "./forge.ts";
 import { type Command, HELP, keyCommand, parseRoute, type Route, type RouteInfo } from "./keys.ts";
+import { type HarnessCache, loadNews, type News } from "./news.ts";
+import { newsView } from "./newsview.ts";
 import { loadForgePrs, loadPrDetail, type PrDetail, refreshVerdicts, submitReview, type VerdictEntry } from "./prs.ts";
 import { APPROVE_ACTION, FILE_CLASS, prView, REVIEW_FORM_CLASS } from "./prview.ts";
 import { buildEntries, type Entry } from "./queue.ts";
@@ -67,6 +70,9 @@ interface State {
   shownPr?: { key: string; updatedAt: string };
   /** A note about the open item or PR, e.g. that it changed. */
   itemNote?: string;
+  /** The news pane's last read, and which merged PRs touched the harness. */
+  news?: News;
+  harness: HarnessCache;
   /** The file the keyboard is on in a PR. */
   fileIndex: number;
   help: boolean;
@@ -121,6 +127,8 @@ function renderMeta(state: State): void {
 function renderChrome(state: State): void {
   renderMeta(state);
   const r = route().route;
+  byId("nav-queue").classList.toggle("on", r !== "news");
+  byId("nav-news").classList.toggle("on", r === "news");
   const warnings = [state.error, state.forgeError, state.tokenWarning, r !== "queue" ? state.itemNote : undefined];
   if (state.login && state.login !== OPERATOR) {
     warnings.push(`You are signed in as ${state.login}; the bot acts only on answers and reviews from ${OPERATOR}.`);
@@ -182,6 +190,11 @@ function renderRoute(state: State): void {
   const r = route();
   if (r.route === "pr") {
     renderPr(state, r.ref);
+    return;
+  }
+  if (r.route === "news") {
+    showMain(newsView(state.news, render));
+    if (!state.news) void refreshNews(state);
     return;
   }
   const item = r.route === "item" ? state.items.find((i) => i.nodeId === r.id) : undefined;
@@ -289,6 +302,19 @@ async function refreshReceipts(state: State): Promise<void> {
   state.receipts = new Map(checks.flatMap(([id, r]) => (r ? [[id, r] as const] : [])));
 }
 
+/** Re-read the news (conditionally), and show it if the pane is open and it changed. */
+async function refreshNews(state: State): Promise<void> {
+  try {
+    const news = await loadNews(state.gh, state.harness, NEWS_LIMIT);
+    const first = !state.news;
+    state.news = news;
+    if ((news.changed || first) && route().route === "news") showMain(newsView(news, render));
+  } catch (e) {
+    state.error = `Couldn't read the news: ${message(e)}`;
+    renderChrome(state);
+  }
+}
+
 /** Re-search the forge when due; true if its list of PRs changed. Verdicts follow in the background. */
 async function pollForge(state: State): Promise<boolean> {
   const wait = state.forceForge ? FORGE_MIN_INTERVAL_MS : FORGE_POLL_INTERVAL_MS;
@@ -342,7 +368,9 @@ function rebuildEntries(state: State): void {
 function update(state: State, boardChanged: boolean, first: boolean): void {
   rebuildEntries(state);
   const r = route();
-  if (first || r.route === "queue") {
+  if (r.route === "news") {
+    renderChrome(state);
+  } else if (first || r.route === "queue") {
     renderRoute(state);
   } else if (r.route === "item") {
     const item = state.items.find((i) => i.nodeId === r.id);
@@ -367,6 +395,7 @@ async function poll(state: State): Promise<void> {
   if (state.polling) return;
   state.polling = true;
   clearTimeout(state.timer);
+  if (route().route === "news") void refreshNews(state);
   // The board and the forge load side by side; whichever answers first shows first.
   const forge = pollForge(state);
   try {
@@ -447,10 +476,17 @@ function run(state: State, cmd: Command, where: Route): void {
     case "back":
       window.location.hash = "#";
       return;
+    case "news":
+      window.location.hash = "#news";
+      return;
     case "refresh": {
       const r = route();
       if (r.route === "pr") {
         void loadPr(state, r.ref);
+        return;
+      }
+      if (r.route === "news") {
+        void refreshNews(state);
         return;
       }
       state.forceForge = true;
@@ -552,6 +588,7 @@ async function start(source: TokenSource): Promise<void> {
     fileIndex: -1,
     help: false,
     selected: undefined,
+    harness: new Map(),
   };
   byId("meta").textContent = "Checking the token…";
   try {
@@ -569,6 +606,7 @@ async function start(source: TokenSource): Promise<void> {
     state.tokenWarning = `This token lacks the ${lacking.map((n) => n.any.join(" or ")).join(", ")} scope${lacking.length > 1 ? "s" : ""}; some reads or answers will fail.`;
   }
   byId("signout").hidden = false;
+  byId("nav").hidden = false;
   byId("signout").onclick = () => {
     void source.signOut().finally(() => window.location.reload());
   };
