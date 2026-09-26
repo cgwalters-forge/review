@@ -11,6 +11,7 @@ import {
   loadRuns,
   loadSubIssues,
   postAnswer,
+  MaybeSentError,
   postAskComment,
   rerunFailedJobs,
   submitAskedReview,
@@ -320,7 +321,16 @@ const chore = {
   user: { login: "cgwalters-bot" },
   body: `Blocks: \`https://github.com/example-upstream/widget/issues/7\`\nAsk: Rerun the arm legs\nRerun: \`${RUN}\`\n`,
 };
-const failedRun = { id: 777, html_url: RUN, name: "CI", status: "completed", conclusion: "failure", run_attempt: 1, repository: { full_name: "example-upstream/widget" } };
+const failedRun = {
+  id: 777,
+  html_url: RUN,
+  name: "CI",
+  status: "completed",
+  conclusion: "failure",
+  run_attempt: 1,
+  head_sha: "1".repeat(40),
+  repository: { full_name: "example-upstream/widget" },
+};
 const jobs = {
   jobs: [
     { name: "build", status: "completed", conclusion: "success", html_url: `${RUN}/job/1` },
@@ -373,7 +383,26 @@ describe("loadRuns", () => {
     assert.deepEqual(r?.failed, [{ name: "uki (arm)", url: `${RUN}/job/2` }]);
     assert.match(r?.problem ?? "", /in_progress, not completed/);
     const ok = await loadRuns(new GitHub(token, rerunGitHub().fetchImpl), [{ url: RUN, owner: "example-upstream", repo: "widget", id: "777" }]);
-    assert.deepEqual([ok[0]?.problem, ok[0]?.status, ok[0]?.conclusion, ok[0]?.attempt], [undefined, "completed", "failure", 1]);
+    assert.deepEqual([ok[0]?.problem, ok[0]?.status, ok[0]?.conclusion, ok[0]?.attempt, ok[0]?.headSha, ok[0]?.prHead], [undefined, "completed", "failure", 1, "1".repeat(40), undefined]);
+  });
+
+  it("reads the head of the PR the chore blocks, when it blocks one", async () => {
+    const base = rerunGitHub();
+    const pulls: string[] = [];
+    const fetchImpl = async (url: string, init?: RequestInit) => {
+      if (url === `${API}/repos/example-upstream/widget/pulls/9`) {
+        pulls.push(url);
+        return new Response(JSON.stringify({ head: { sha: "2".repeat(40) } }), { status: 200 });
+      }
+      return base.fetchImpl(url, init);
+    };
+    const run = { url: RUN, owner: "example-upstream", repo: "widget", id: "777" };
+    const [r] = await loadRuns(new GitHub(token, fetchImpl), [run], "https://github.com/example-upstream/widget/pull/9");
+    assert.deepEqual([r?.headSha, r?.prHead], ["1".repeat(40), "2".repeat(40)]);
+    // An issue it blocks has no head to compare with, and nothing is read for it.
+    const [s] = await loadRuns(new GitHub(token, fetchImpl), [run], "https://github.com/example-upstream/widget/issues/7");
+    assert.equal(s?.prHead, undefined);
+    assert.equal(pulls.length, 1);
   });
 
   it("reports a run it can't read instead of failing", async () => {
@@ -433,6 +462,26 @@ describe("rerunFailedJobs", () => {
       const { fetchImpl, calls } = rerunGitHub(over);
       await assert.rejects(rerunFailedJobs(new GitHub(token, fetchImpl), CHORE, url), want);
       assert.equal(calls.filter((c) => c.method === "POST").length, 0);
+    });
+  }
+
+  const postFailures: [string, () => Response | Promise<Response>, RegExp, boolean][] = [
+    ["a refusal (403)", () => new Response(JSON.stringify({ message: "Must have admin rights" }), { status: 403 }), /rerun-failed-jobs failed with HTTP 403: Must have admin rights/, false],
+    ["a server error (502)", () => new Response(JSON.stringify({ message: "Bad gateway" }), { status: 502 }), /may or may not have gone out.*check the run on GitHub/, true],
+    ["a network error", () => Promise.reject(new TypeError("Failed to fetch")), /may or may not have gone out \(Failed to fetch\)/, true],
+  ];
+  for (const [name, respond, want, maybe] of postFailures) {
+    it(`says whether it reran after ${name}`, async () => {
+      const base = rerunGitHub();
+      const fetchImpl = async (url: string, init?: RequestInit) =>
+        init?.method === "POST" && url.endsWith("/rerun-failed-jobs") ? respond() : base.fetchImpl(url, init);
+      const err = await rerunFailedJobs(new GitHub(token, fetchImpl), CHORE, RUN).then(
+        () => undefined,
+        (e: unknown) => e,
+      );
+      assert.ok(err instanceof Error);
+      assert.match(err.message, want);
+      assert.equal(err instanceof MaybeSentError, maybe);
     });
   }
 

@@ -53,6 +53,8 @@ interface State {
   selected: string | undefined;
   /** Items answered from this tab, until the bot moves them on. */
   sent: Set<string>;
+  /** Run URLs whose rerun request is in flight. */
+  rerunning: Set<string>;
   /** Open questions he has answered on GitHub and the bot hasn't acted on, by node id. */
   answered: Set<string>;
   /** Bumped per board change, so an older answered read can't land over a newer one. */
@@ -247,19 +249,28 @@ function renderRoute(state: State): void {
   if (!ctx) void refreshContext(state, item);
 }
 
-/** Rerun a rerun chore's run, as its view asks. */
+/**
+ * Rerun a rerun chore's run, as its view asks; one request per run at a
+ * time, so a re-rendered view can't send a second while one is in flight.
+ */
 async function rerun(state: State, item: Item, url: string): Promise<string> {
   const action = itemAction(item, 0);
   if (action.kind !== "rerun") throw new Error("this chore asks for no reruns");
-  const posted = await rerunFailedJobs(state.gh, action.ref, url);
-  state.sent.add(item.nodeId);
-  void refreshContext(state, item);
-  return posted.url;
+  if (state.rerunning.has(url)) throw new Error("a rerun of this run is already in flight");
+  state.rerunning.add(url);
+  try {
+    const posted = await rerunFailedJobs(state.gh, action.ref, url);
+    state.sent.add(item.nodeId);
+    void refreshContext(state, item);
+    return posted.url;
+  } finally {
+    state.rerunning.delete(url);
+  }
 }
 
 /** What an item's loaded context acts through. */
 function contextHooks(state: State, item: Item): ContextHooks {
-  return { boardHref: boardHref(state), rerun: (url) => rerun(state, item, url) };
+  return { boardHref: boardHref(state), rerun: (url) => rerun(state, item, url), rerunning: (url) => state.rerunning.has(url) };
 }
 
 function prEntry(state: State, key: string): Entry | undefined {
@@ -644,6 +655,7 @@ async function start(source: TokenSource): Promise<void> {
     entries: [],
     sent: new Set(),
     answered: new Set(),
+    rerunning: new Set(),
     answeredSeq: 0,
     reviewed: new Set(),
     context: new Map(),

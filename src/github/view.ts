@@ -326,20 +326,32 @@ function subIssuesView(item: Item, subs: readonly SubIssue[], boardHref: BoardHr
 }
 
 /** One run a chore asks to rerun: its failed jobs, and the button, only when GitHub says it can be rerun. */
-function runView(r: RunStatus, rerun: ((url: string) => Promise<string>) | undefined): HTMLElement {
+/** A note when a run is on an older commit than the PR the chore blocks, else undefined. */
+export function oldHeadNote(r: RunStatus): string | undefined {
+  if (!r.headSha || !r.prHead || r.headSha === r.prHead) return undefined;
+  return `This run is on ${r.headSha.slice(0, 12)}, an older head: the PR is now at ${r.prHead.slice(0, 12)}. Rerunning it tests old code.`;
+}
+
+function runView(r: RunStatus, hooks: ContextHooks): HTMLElement {
   const { run } = r;
-  const state = [r.status, r.conclusion, r.attempt ? `attempt ${r.attempt}` : ""].filter(Boolean).join(", ");
+  const { rerun } = hooks;
+  const state = [r.status, r.conclusion, r.attempt ? `attempt ${r.attempt}` : "", r.headSha ? `on ${r.headSha.slice(0, 12)}` : ""].filter(Boolean).join(", ");
   const status = h("p", { class: "status", role: "status" });
   const button = h("button", { type: "button", class: "primary" }, "Rerun failed jobs");
-  button.disabled = r.problem !== undefined || !rerun;
+  // A rerun still in flight (this view may be a fresh render of it) stays off.
+  const inFlight = hooks.rerunning?.(run.url) === true;
+  button.disabled = r.problem !== undefined || !rerun || inFlight;
+  if (inFlight) status.textContent = "Rerunning…";
+  const old = oldHeadNote(r);
   const jobs = r.failed.length
     ? h("ul", { class: "jobs" }, ...r.failed.map((j) => h("li", {}, link(j.url, j.name))))
     : h("p", { class: "tag" }, "No failed jobs in its latest attempt.");
   button.addEventListener("click", () => {
-    if (!rerun || r.problem !== undefined) return;
+    if (!rerun || r.problem !== undefined || hooks.rerunning?.(run.url)) return;
     const names = r.failed.map((j) => j.name).join(", ");
+    const commit = r.headSha ? ` on ${r.headSha.slice(0, 12)}` : "";
     const ok = window.confirm(
-      `Rerun the ${r.failed.length} failed job${r.failed.length === 1 ? "" : "s"} (${names}) of ${run.url}?\n\nThis uses your token to write to ${run.owner}/${run.repo}, then comments on the chore so the bot knows.`,
+      `Rerun the ${r.failed.length} failed job${r.failed.length === 1 ? "" : "s"} (${names}) of ${run.url}${commit}?${old ? `\n\n${old}` : ""}\n\nThis uses your token to write to ${run.owner}/${run.repo}, then comments on the chore so the bot knows.`,
     );
     if (!ok) return;
     button.disabled = true;
@@ -350,7 +362,13 @@ function runView(r: RunStatus, rerun: ((url: string) => Promise<string>) | undef
         status.append(link(url, url));
       })
       .catch((e: unknown) => {
-        status.textContent = `Not rerun: ${e instanceof Error ? e.message : String(e)}`;
+        const why = e instanceof Error ? e.message : String(e);
+        // It may have gone out: say so, and don't offer a blind retry.
+        if (e instanceof Error && e.name === "MaybeSentError") {
+          status.textContent = `Unsure whether it reran: ${why}.`;
+          return;
+        }
+        status.textContent = `Not rerun: ${why}`;
         button.disabled = false;
       });
   });
@@ -361,6 +379,7 @@ function runView(r: RunStatus, rerun: ((url: string) => Promise<string>) | undef
     r.name ? ` · ${r.name}` : "",
     state ? h("span", { class: "tag" }, ` · ${state}`) : null,
     jobs,
+    old ? h("p", { class: "warn" }, old) : null,
     r.problem ? h("p", { class: "note" }, `Can't rerun: ${r.problem}.`) : null,
     h("div", { class: "actions" }, button),
     status,
@@ -373,6 +392,8 @@ export interface ContextHooks {
   boardHref?: BoardHref;
   /** Rerun a run's failed jobs (a rerun chore's runs). */
   rerun?: (runUrl: string) => Promise<string>;
+  /** Whether a rerun of this run is still in flight. */
+  rerunning?: (runUrl: string) => boolean;
 }
 
 /** The part of the item view that needs the loaded context. */
@@ -384,7 +405,7 @@ export function contextView(item: Item, context: Context | undefined, render: Re
   }
   for (const w of context.warnings) out.append(h("p", { class: "warn" }, w));
   if (context.runs?.length) {
-    out.append(h("section", { class: "runs" }, h("h3", {}, "Runs to rerun"), h("ul", {}, ...context.runs.map((r) => runView(r, hooks.rerun)))));
+    out.append(h("section", { class: "runs" }, h("h3", {}, "Runs to rerun"), h("ul", {}, ...context.runs.map((r) => runView(r, hooks)))));
   }
   if (context.subIssues?.length) out.append(subIssuesView(item, context.subIssues, hooks.boardHref ?? (() => undefined)));
   for (const g of context.gists) {

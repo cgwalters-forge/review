@@ -158,6 +158,13 @@ it.
   with failed jobs in its latest attempt; he confirms, and only then the
   app calls `POST .../actions/runs/{id}/rerun-failed-jobs`, built from the
   parsed URL's parts, and comments "Reran the failed jobs of <run URL>".
+  `cancelled` counts as failed: jobs that lost their runner end up so.
+  The confirmation names the commit the run is on, and warns when that
+  is older than the current head of the PR the chore blocks. One rerun
+  per run is in flight at a time, even across re-renders. A 4xx answer
+  means nothing happened; a network or server error after sending may
+  not, so the app says it may or may not have gone out and offers no
+  blind retry.
 - **Any other chore**, or a review or rerun the app can't read, shows its
   Ask text and a comment box, with the same refusal of bot command lines
   as an answer (the letter-first-line rule is only for questions).
