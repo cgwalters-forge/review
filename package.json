@@ -23,6 +23,7 @@
     "@types/markdown-it": "^14.1.2",
     "@types/node": "^24.0.0",
     "esbuild": "^0.25.0",
+    "fake-indexeddb": "^6.2.5",
     "jsdom": "^26.1.0",
     "typescript": "^5.9.2"
   }
