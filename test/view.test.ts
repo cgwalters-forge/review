@@ -221,6 +221,15 @@ describe("itemView", () => {
     assert.equal(lis[2]?.querySelector("a")?.textContent, EVIL);
   });
 
+  it("warns when the question's options don't read as one per line", () => {
+    const note = (item: Item) => [...view(item).querySelectorAll(".warn")].map((w) => w.textContent ?? "").filter((t) => /options can't/.test(t));
+    const wrapped = { ...fixture("PVTI_synthetic_question"), body: "Q: which?\nOptions:\nA) one\nB) the second,\nwrapped" };
+    assert.match(note(wrapped)[0] ?? "", /options can't all be offered: .*may be a wrapped option.*answer in your own words/);
+    const lone = { ...fixture("PVTI_synthetic_question"), body: "Q: which?\nOptions:\nA) the first,\nwrapped\nB) the second" };
+    assert.match(note(lone)[0] ?? "", /only one option/);
+    assert.deepEqual(note(fixture("PVTI_synthetic_question")), []);
+  });
+
   it("shows a closed question as done, with nothing to send", () => {
     const root = view(fixture("PVTI_synthetic_closed_question"), "done");
     assert.equal(root.querySelector("form"), null);
