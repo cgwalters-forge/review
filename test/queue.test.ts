@@ -189,10 +189,17 @@ describe("buildEntries", () => {
       tracked("PVTI_task", 30, { status: "Draft", priority: "P2", branch: ["https://github.com/cgwalters-forge/a/pull/1"] }),
       question("PVTI_sub", 31, `${TRACKER}/30`, { parent: { owner: "cgwalters-forge", repo: "tracker", number: 30 } }),
       question("PVTI_blocks", 32, `${TRACKER}/30`),
+      // Needs human, so not folded into its forge PR: its question nests
+      // under its own entry, not the PR's.
+      tracked("PVTI_nh", 40),
+      question("PVTI_nhq", 41, `${TRACKER}/40`, { parent: { owner: "cgwalters-forge", repo: "tracker", number: 40 } }),
     ];
-    const entries = buildEntries(items, [pr("cgwalters-forge", "a", 1)], verdicts([]));
+    const prs = [pr("cgwalters-forge", "a", 1), pr("cgwalters-forge", "b", 2, { body: meta("PVTI_nh") })];
+    const entries = buildEntries(items, prs, verdicts([]));
     assert.deepEqual(entries.map((e) => [e.key, e.item?.nodeId, e.children?.map((c) => c.key)]), [
       ["pr:cgwalters-forge/a#1", "PVTI_task", ["item:PVTI_blocks", "item:PVTI_sub"]],
+      ["pr:cgwalters-forge/b#2", "PVTI_nh", undefined],
+      ["item:PVTI_nh", "PVTI_nh", ["item:PVTI_nhq"]],
     ]);
   });
 
