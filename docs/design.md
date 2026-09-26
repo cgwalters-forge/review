@@ -99,16 +99,21 @@ authorship. It is gone. Instead:
   bot's last comment shows as answered and moves to the end until the bot
   acts; one the bot closed shows as done. A question is nested under the
   entry for the item it blocks (its parent issue, else its `Blocks:` URL)
-  when that item is in the queue. Parents show their `sub_issues_summary`
-  progress, and opening one lists its sub-issues (`GET
-  /repos/{o}/{r}/issues/{n}/sub_issues`, read only for tracker issues
-  whose summary is non-zero). Deciding "answered" reads a question's
-  comments, conditionally, only when the board changed.
+  when that item is in the queue, including a forge PR entry that folded
+  in the item's Draft board item. A parent ranks and groups by its most
+  urgent open question when that outranks it, keeping its own priority on
+  its pill. Parents show their `sub_issues_summary` progress, and opening
+  one lists its sub-issues (`GET /repos/{o}/{r}/issues/{n}/sub_issues`,
+  read only for tracker issues whose summary is non-zero). Deciding
+  "answered" reads a question's comments, conditionally, only when the
+  board changed, and after the queue is on screen, at most
+  FETCH_CONCURRENCY at a time.
 
 **What the bot checks** (in homegit, not in this repository): the comment
 is by `cgwalters` and was not edited by anyone else (people with write
 access can edit others' comments, so check `userContentEdits` editors, as
-`bot-pr` does for PR bodies), on an open question issue in the tracker.
+`bot-pr` does for PR bodies), on an open question issue in the tracker
+that is assigned to him.
 
 ### Auth changes
 
