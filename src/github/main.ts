@@ -24,8 +24,8 @@ import { type HarnessCache, loadNews, type News } from "./news.ts";
 import { newsView } from "./newsview.ts";
 import { loadForgePrs, loadPrDetail, type PrDetail, refreshVerdicts, submitReview, type VerdictEntry } from "./prs.ts";
 import { APPROVE_ACTION, FILE_CLASS, prView, REVIEW_FORM_CLASS } from "./prview.ts";
-import { buildEntries, type Entry } from "./queue.ts";
-import { answerState, CONTEXT_CLASS, contextView, itemView, queueView, ROW_CLASS, ROW_KEY_ATTR, type RowLabel, STATE_LABEL } from "./view.ts";
+import { buildEntries, type Entry, itemHref } from "./queue.ts";
+import { answerState, type BoardHref, CONTEXT_CLASS, contextView, itemView, queueView, ROW_CLASS, ROW_KEY_ATTR, type RowLabel, STATE_LABEL } from "./view.ts";
 
 const render = createRenderer(window);
 
@@ -149,6 +149,15 @@ function labelOf(state: State): (e: Entry) => RowLabel | undefined {
   };
 }
 
+/** Link issues that are in the queue to their item view. */
+function boardHref(state: State): BoardHref {
+  return (ref) => {
+    const key = refKey(ref).toLowerCase();
+    const item = state.items.find((i) => i.ref && refKey(i.ref).toLowerCase() === key);
+    return item ? itemHref(item) : undefined;
+  };
+}
+
 function rows(): HTMLElement[] {
   return [...byId("view").querySelectorAll<HTMLElement>(`.${ROW_CLASS}`)];
 }
@@ -207,7 +216,7 @@ function renderRoute(state: State): void {
   const answered = ctx?.answered ? new Set([...state.answered, item.nodeId]) : state.answered;
   const entry = state.entries.find((e) => e.item?.nodeId === item.nodeId);
   showMain(
-    itemView(item, { target, context: ctx, state: answerState(item, state.sent, answered), questions: entry?.children ?? [] }, render, {
+    itemView(item, { target, context: ctx, state: answerState(item, state.sent, answered), questions: entry?.children ?? [], boardHref: boardHref(state) }, render, {
       send: async (answer) => {
         if (target.kind !== "question") throw new Error(`can't answer here: ${target.reason}`);
         const posted = await postAnswer(state.gh, target.ref, answer);
@@ -293,7 +302,7 @@ async function refreshContext(state: State, item: Item): Promise<void> {
   state.context.set(item.nodeId, ctx);
   if (routeItemId() !== item.nodeId) return;
   const container = byId("view").querySelector(`.${CONTEXT_CLASS}`);
-  container?.replaceChildren(contextView(item, ctx, render));
+  container?.replaceChildren(contextView(item, ctx, render, boardHref(state)));
 }
 
 /** Re-read the news (conditionally), and show it if the pane is open and it changed. */
