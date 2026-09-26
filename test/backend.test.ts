@@ -172,7 +172,13 @@ describe("loadAnswered", () => {
 
 describe("postAnswer", () => {
   const ref = { owner: "cgwalters-forge", repo: "tracker", number: 21 };
-  const openQuestion = { html_url: "https://github.com/cgwalters-forge/tracker/issues/21", state: "open", labels: [{ name: "question" }] };
+  const openQuestion = {
+    html_url: "https://github.com/cgwalters-forge/tracker/issues/21",
+    state: "open",
+    labels: [{ name: "question" }],
+    assignees: [{ login: "cgwalters" }],
+    body: "Blocks: https://github.com/cgwalters-forge/tracker/issues/20\nQ: which?\nOptions:\nA) x\nB) y\nRecommended: A",
+  };
   const commentUrl = "https://github.com/cgwalters-forge/tracker/issues/21#issuecomment-1";
 
   function github(issue: unknown) {
@@ -202,6 +208,8 @@ describe("postAnswer", () => {
     ["a closed question", { ...openQuestion, state: "closed" }, /is closed/],
     ["an issue without the label", { ...openQuestion, labels: [] }, /not labelled "question"/],
     ["a PR", { ...openQuestion, pull_request: {} }, /not an issue/],
+    ["an issue not assigned to him", { ...openQuestion, assignees: [{ login: "cgwalters-bot" }] }, /not assigned to cgwalters/],
+    ["a letter when the options are gone", { ...openQuestion, body: "Q: just do it" }, /has no option A; it no longer offers options\. Reload it\./],
     ["a transferred issue", { ...openQuestion, html_url: "https://github.com/example-upstream/widget/issues/3" }, /is now https:\/\/github\.com\/example-upstream/],
   ];
   for (const [name, issue, want] of refusals) {
@@ -211,6 +219,15 @@ describe("postAnswer", () => {
       assert.deepEqual(calls.map((c) => c.method), ["GET"]);
     });
   }
+
+  it("refuses a letter the question no longer offers", async () => {
+    const { fetchImpl, calls } = github(openQuestion);
+    await assert.rejects(
+      postAnswer(new GitHub(token, fetchImpl), ref, { choice: "C", text: "" }),
+      /cgwalters-forge\/tracker#21 has no option C; it now offers A, B\. Reload it\./,
+    );
+    assert.deepEqual(calls.map((c) => c.method), ["GET"]);
+  });
 
   it("refuses an upstream issue or PR", async () => {
     const pr = { owner: "example-upstream", repo: "widget", number: 42 };
@@ -226,14 +243,22 @@ describe("postAnswer", () => {
     const base = `${API}/repos/cgwalters-bot/review-sandbox/issues/4`;
     const { fetchImpl, calls } = scriptedFetch((method, url) => {
       if (method === "GET" && url === base) {
-        return { body: { html_url: "https://github.com/cgwalters-bot/review-sandbox/issues/4", state: "open", labels: [{ name: "question" }] } };
+        return {
+          body: {
+            html_url: "https://github.com/cgwalters-bot/review-sandbox/issues/4",
+            state: "open",
+            labels: [{ name: "question" }],
+            assignees: [{ login: "cgwalters-bot" }],
+            body: "Q: ok?\nOptions:\nA) yes\nB) no",
+          },
+        };
       }
       if (method === "POST" && url === `${base}/comments`) return { status: 201, body: { html_url: `${base}#c` } };
       return undefined;
     });
     const gh = new GitHub(token, fetchImpl);
     await assert.rejects(postAnswer(gh, sandbox, { choice: "A", text: "" }), /not in cgwalters-forge\/tracker/);
-    await postAnswer(gh, sandbox, { choice: "A", text: "" }, "cgwalters-bot/review-sandbox");
+    await postAnswer(gh, sandbox, { choice: "A", text: "" }, { repo: "cgwalters-bot/review-sandbox", assignee: "cgwalters-bot" });
     assert.deepEqual(calls.at(-1)?.body, { body: "A\n" });
   });
 

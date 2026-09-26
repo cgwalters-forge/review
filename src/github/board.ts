@@ -44,6 +44,7 @@ export interface RawContent {
   updated_at?: string;
   user?: RawUser | null;
   labels?: RawLabel[];
+  assignees?: (RawUser | null)[] | null;
   /** Number of comments, on issues. */
   comments?: number;
   sub_issues_summary?: SubIssueSummary | null;
@@ -88,6 +89,8 @@ export interface Item {
   state?: string;
   /** Label names, on issues and PRs. */
   labels: string[];
+  /** Assignee logins, on issues and PRs. */
+  assignees: string[];
   /** Number of comments, when the payload says. */
   comments?: number;
   /** Sub-issue progress, on issues that have sub-issues. */
@@ -131,6 +134,11 @@ export function parseApiIssueUrl(url: string): IssueRef | undefined {
 /** `owner/repo`, lowercased: GitHub names are case-insensitive. */
 export function repoOf(ref: IssueRef): string {
   return `${ref.owner}/${ref.repo}`.toLowerCase();
+}
+
+/** Assignee logins. */
+export function assigneeLogins(assignees: RawContent["assignees"]): string[] {
+  return (assignees ?? []).flatMap((a) => (a?.login ? [a.login] : []));
 }
 
 /** Label names, whichever shape the payload uses. */
@@ -199,6 +207,7 @@ export function parseItem(raw: RawItem): Item {
     branch: urls(fields.get(FIELD.branch)),
     gist: urls(fields.get(FIELD.gist)),
     labels: labelNames(c.labels),
+    assignees: assigneeLogins(c.assignees),
   };
   const opt = <K extends keyof Item>(key: K, value: Item[K] | undefined) => {
     if (value !== undefined) item[key] = value;
@@ -233,21 +242,34 @@ export interface QuestionFacts {
   ref?: IssueRef;
   state?: string;
   labels: readonly string[];
+  assignees: readonly string[];
+}
+
+/** Where questions live and whom they ask. */
+export interface QuestionScope {
+  repo: string;
+  assignee: string;
 }
 
 /**
- * Why this can't take an answer, or undefined if it can: only an open
- * issue in the tracker repository (`repo`, overridable for tests against
- * a sandbox) labelled `question` does. Anything else, above all an
- * upstream issue or PR, is acted on in GitHub: a bare "B" there is noise
- * to its maintainers.
+ * The real scope: the tracker, asking him. Tests against a sandbox
+ * repository override both, since he can't be assigned there.
  */
-export function questionProblem(q: QuestionFacts, repo: string = TRACKER_REPO): string | undefined {
+export const TRACKER_SCOPE: QuestionScope = { repo: TRACKER_REPO, assignee: OPERATOR };
+
+/**
+ * Why this can't take an answer, or undefined if it can: only an open
+ * issue in the tracker labelled `question` and assigned to him does.
+ * Anything else, above all an upstream issue or PR, is acted on in
+ * GitHub: a bare "B" there is noise to its maintainers.
+ */
+export function questionProblem(q: QuestionFacts, scope: QuestionScope = TRACKER_SCOPE): string | undefined {
   if (!q.ref) return "this item has no issue to comment on";
   const where = `${q.ref.owner}/${q.ref.repo}#${q.ref.number}`;
   if (q.kind !== "issue") return `${where} is not an issue`;
-  if (repoOf(q.ref) !== repo.toLowerCase()) return `${where} is not in ${repo}, where the bot's questions are`;
+  if (repoOf(q.ref) !== scope.repo.toLowerCase()) return `${where} is not in ${scope.repo}, where the bot's questions are`;
   if (!q.labels.includes(QUESTION_LABEL)) return `${where} is not labelled "${QUESTION_LABEL}"`;
+  if (!q.assignees.some((a) => a.toLowerCase() === scope.assignee.toLowerCase())) return `${where} is not assigned to ${scope.assignee}`;
   if (q.state !== "open") return `${where} is closed`;
   return undefined;
 }

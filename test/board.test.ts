@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 import {
   answeredPending,
   answerTarget,
+  assigneeLogins,
   blockedBy,
   type CommentFacts,
   fieldIds,
@@ -12,6 +13,7 @@ import {
   parseApiIssueUrl,
   parseIssueUrl,
   type QuestionFacts,
+  type QuestionScope,
   questionOf,
   questionProblem,
   queueItems,
@@ -45,6 +47,13 @@ describe("parseApiIssueUrl", () => {
     ["https://api.github.com/repos/o/r/pulls/2", undefined],
   ];
   for (const [url, want] of cases) it(url, () => assert.deepEqual(parseApiIssueUrl(url), want));
+});
+
+describe("assigneeLogins", () => {
+  it("takes logins, skipping empty ones", () => {
+    assert.deepEqual(assigneeLogins([{ login: "cgwalters" }, null, {}]), ["cgwalters"]);
+    assert.deepEqual(assigneeLogins(null), []);
+  });
 });
 
 describe("labelNames", () => {
@@ -122,21 +131,26 @@ describe("questions", () => {
   });
 
   const tracker = { owner: "cgwalters-forge", repo: "tracker", number: 21 };
-  const open: QuestionFacts = { kind: "issue", ref: tracker, state: "open", labels: ["question"] };
-  const problems: [string, QuestionFacts, string | undefined, RegExp | undefined][] = [
+  const open: QuestionFacts = { kind: "issue", ref: tracker, state: "open", labels: ["question"], assignees: ["someone", "cgwalters"] };
+  const sandbox: QuestionScope = { repo: "cgwalters-bot/review-sandbox", assignee: "cgwalters-bot" };
+  const inSandbox: QuestionFacts = { ...open, ref: { owner: "cgwalters-bot", repo: "review-sandbox", number: 4 }, assignees: ["cgwalters-bot"] };
+  const problems: [string, QuestionFacts, QuestionScope | undefined, RegExp | undefined][] = [
     ["an open question", open, undefined, undefined],
     ["any case of the repository name", { ...open, ref: { ...tracker, owner: "CGWalters-Forge" } }, undefined, undefined],
-    ["no issue", { kind: "draft", labels: [] }, undefined, /no issue/],
+    ["not assigned to him", { ...open, assignees: ["cgwalters-bot"] }, undefined, /not assigned to cgwalters$/],
+    ["assigned to nobody", { ...open, assignees: [] }, undefined, /not assigned to cgwalters$/],
+    ["no issue", { kind: "draft", labels: [], assignees: [] }, undefined, /no issue/],
     ["a PR", { ...open, kind: "pr" }, undefined, /is not an issue/],
     ["an upstream issue", { ...open, ref: { owner: "example-upstream", repo: "widget", number: 1 } }, undefined, /not in cgwalters-forge\/tracker/],
     ["no label", { ...open, labels: ["bug"] }, undefined, /not labelled "question"/],
     ["closed", { ...open, state: "closed" }, undefined, /is closed/],
-    ["the sandbox, overridden", { ...open, ref: { owner: "cgwalters-bot", repo: "review-sandbox", number: 4 } }, "cgwalters-bot/review-sandbox", undefined],
-    ["the tracker, when overridden", open, "cgwalters-bot/review-sandbox", /not in cgwalters-bot\/review-sandbox/],
+    ["the sandbox, overridden", inSandbox, sandbox, undefined],
+    ["the sandbox, assigned to him only", { ...inSandbox, assignees: ["cgwalters"] }, sandbox, /not assigned to cgwalters-bot/],
+    ["the tracker, when overridden", open, sandbox, /not in cgwalters-bot\/review-sandbox/],
   ];
-  for (const [name, facts, repo, want] of problems) {
+  for (const [name, facts, scope, want] of problems) {
     it(`questionProblem: ${name}`, () => {
-      const got = questionProblem(facts, repo);
+      const got = questionProblem(facts, scope);
       if (want) assert.match(got ?? "", want);
       else assert.equal(got, undefined);
     });
