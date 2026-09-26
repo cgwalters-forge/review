@@ -1,6 +1,7 @@
 // One file's diff in the review pane: unified or split, syntax colored,
-// with word-level changes, expandable context, and his draft line
-// comments. Everything from the PR (code, paths) goes in as text nodes.
+// with word-level changes, expandable context, review-guide hotspots
+// tinted with their callouts, and his draft line comments. Everything
+// from the PR (code, paths, the guide's reasons) goes in as text nodes.
 //
 // A file builds its table only when it is open and near the viewport,
 // so a PR with thousands of changed lines opens as fast as a small one.
@@ -8,6 +9,7 @@
 import { h, kids, link } from "../dom.ts";
 import {
   displayItems,
+  hiddenParts,
   hunkStarts,
   type Hunk,
   type Item,
@@ -17,11 +19,13 @@ import {
   pairs,
   parseHunks,
   type Row,
+  rowsInRange,
   splitRows,
   wordDiff,
 } from "./diff.ts";
 import { DIFF_COLLAPSE_LINES } from "./config.ts";
 import type { DraftComment } from "./forge.ts";
+import { type Hotspot, SEVERITY_LABEL, type Skim, worst } from "./guide.ts";
 import { highlightLines, overlay, type Seg } from "./highlight.ts";
 import type { FileDiff } from "./prs.ts";
 import type { DiffLayout } from "./store.ts";
@@ -37,6 +41,13 @@ const PLACEHOLDER_ROW_PX = 18;
 
 export type Side = "LEFT" | "RIGHT";
 
+/** A hotspot of the guide, with its place in the guide's order. */
+export interface PlacedHotspot {
+  index: number;
+  total: number;
+  hotspot: Hotspot;
+}
+
 /** Where a line comment can go, and what the pane does with it. */
 export interface FileHooks {
   /** The layout to draw. */
@@ -50,6 +61,8 @@ export interface FileHooks {
   /** Save a new or edited draft comment (replacing `old` if given). */
   saveDraft(c: DraftComment, old?: DraftComment): void;
   deleteDraft(c: DraftComment): void;
+  /** A hotspot's callout was on screen. */
+  sawHotspot(index: number): void;
   /** A row was clicked: it becomes the focused line. */
   focused(file: FileView, item: number, side: Side, extend: boolean): void;
   /** Toggle the viewed mark. */
@@ -62,10 +75,14 @@ export interface FileHooks {
 
 export interface FileInit {
   file: FileDiff;
+  hotspots: readonly PlacedHotspot[];
+  skim: readonly Skim[];
   viewed: boolean;
   hooks: FileHooks;
   /** Observer shared by the pane, for building near the viewport. */
   lazy?: IntersectionObserver;
+  /** Observer shared by the pane, for noticing hotspot callouts on screen. */
+  seen?: IntersectionObserver;
 }
 
 const BIDI_RE = /[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/;
@@ -147,8 +164,11 @@ export class FileView {
   readonly file: FileDiff;
   readonly hunks: Hunk[] | undefined;
   readonly generated: boolean;
+  readonly hotspots: readonly PlacedHotspot[];
+  readonly skim: readonly Skim[];
   #hooks: FileHooks;
   #lazy: IntersectionObserver | undefined;
+  #seenObs: IntersectionObserver | undefined;
   #body: HTMLElement;
   #viewedBox: HTMLInputElement;
   #expanded: LineRange[] = [];
@@ -167,6 +187,9 @@ export class FileView {
     this.file = f;
     this.#hooks = init.hooks;
     this.#lazy = init.lazy;
+    this.#seenObs = init.seen;
+    this.hotspots = init.hotspots;
+    this.skim = init.skim;
     this.hunks = f.patch === undefined ? undefined : parseHunks(f.patch);
     this.generated = isGenerated(f.filename);
     this.items = this.hunks ? displayItems(this.hunks, [], this.#noContext() ? [] : undefined) : [];
@@ -175,6 +198,8 @@ export class FileView {
     this.#viewedBox.checked = init.viewed;
     this.#viewedBox.addEventListener("click", (ev) => ev.stopPropagation());
     this.#viewedBox.addEventListener("change", () => this.#hooks.setViewed(this, this.#viewedBox.checked));
+    const sev = worst(init.hotspots.map((p) => p.hotspot));
+    const skimAll = init.skim.find((s) => s.start === undefined);
     this.el = h(
       "details",
       { class: FILE_CLASS, "data-path": f.filename },
@@ -183,7 +208,9 @@ export class FileView {
         {},
         h("span", { class: `fstatus s-${f.status}` }, f.status),
         h("span", { class: "fname" }, name),
+        sev ? h("span", { class: `hs-badge sev-${sev}`, title: "Hotspots from the review guide" }, `${init.hotspots.length} hotspot${init.hotspots.length > 1 ? "s" : ""}`) : null,
         this.generated ? h("span", { class: "badge", title: "Generated, vendored, a lock file or test data: collapsed by default" }, "generated") : null,
+        skimAll ? h("span", { class: "badge skim", title: `The review guide says: ${skimAll.reason}` }, "skim") : null,
         h("span", { class: "counts" }, h("span", { class: "plus" }, `+${f.additions}`), " ", h("span", { class: "minus" }, `−${f.deletions}`)),
         h("label", { class: "viewed-l", title: "Mark viewed (v); cleared when the file changes" }, this.#viewedBox, " Viewed"),
       ),
@@ -250,6 +277,7 @@ export class FileView {
   render(): void {
     if (!this.#built) return;
     this.#rowEls.clear();
+    for (const tr of this.#body.querySelectorAll("tr.callout")) this.#seenObs?.unobserve(tr);
     if (!this.hunks || !this.hasDiff) {
       this.#body.replaceChildren(h("p", { class: "note nodiff" }, "No diff to show (binary, too large, or a rename only). ", link(this.file.url, "View the file")));
       return;
@@ -267,19 +295,47 @@ export class FileView {
     return languageFor(this.file.filename, first);
   }
 
+  /**
+   * Per item: the hotspots covering it, and before which item each
+   * callout goes (its first row, so the reason is read before the lines,
+   * or the gap hiding them).
+   */
+  #hotspotLayout(): { cover: Map<number, PlacedHotspot[]>; before: Map<number, PlacedHotspot[]>; top: PlacedHotspot[] } {
+    const cover = new Map<number, PlacedHotspot[]>();
+    const before = new Map<number, PlacedHotspot[]>();
+    const top: PlacedHotspot[] = [];
+    const add = (m: Map<number, PlacedHotspot[]>, k: number, p: PlacedHotspot) => m.set(k, [...(m.get(k) ?? []), p]);
+    for (const p of this.hotspots) {
+      const idx = rowsInRange(this.items, [p.hotspot.start, p.hotspot.end]);
+      for (const i of idx) add(cover, i, p);
+      const first = idx[0];
+      if (first !== undefined) {
+        add(before, first, p);
+        continue;
+      }
+      const gap = this.items.findIndex((it) => it.t === "gap" && it.newStart <= p.hotspot.start && (it.newEnd === undefined || it.newEnd >= p.hotspot.start));
+      if (gap >= 0) add(before, gap, p);
+      else top.push(p);
+    }
+    return { cover, before, top };
+  }
+
   #cols(): number {
     return this.#hooks.layout() === "split" ? 4 : 3;
   }
 
   #unified(): HTMLTableElement {
     const segs = rowSegments(this.items, this.#lang());
+    const { cover, before, top } = this.#hotspotLayout();
     const body = h("tbody");
+    for (const p of top) body.append(this.#callout(p, true));
     this.items.forEach((it, i) => {
+      for (const p of before.get(i) ?? []) body.append(this.#callout(p, false));
       if (it.t === "gap") {
         body.append(this.#gapRow(it, i));
       } else {
         const r = it.row;
-        const tr = h("tr", { class: this.#rowClass(r), "data-i": String(i) });
+        const tr = h("tr", { class: this.#rowClass(r, cover.get(i)), "data-i": String(i) });
         const leftSide: Side = r.kind === "del" ? "LEFT" : "RIGHT";
         tr.append(
           this.#ln(r.old, i, "LEFT", r),
@@ -296,7 +352,9 @@ export class FileView {
 
   #split(): HTMLTableElement {
     const segs = rowSegments(this.items, this.#lang());
+    const { cover, before, top } = this.#hotspotLayout();
     const body = h("tbody");
+    for (const p of top) body.append(this.#callout(p, true));
     const idxOf = new Map<Row, number>();
     this.items.forEach((it, i) => {
       if (it.t === "row") idxOf.set(it.row, i);
@@ -305,6 +363,7 @@ export class FileView {
     while (i < this.items.length) {
       const it = this.items[i] as Item;
       if (it.t === "gap") {
+        for (const p of before.get(i) ?? []) body.append(this.#callout(p, false));
         body.append(this.#gapRow(it, i));
         i++;
         continue;
@@ -316,7 +375,10 @@ export class FileView {
         const li = s.left ? (idxOf.get(s.left) as number) : undefined;
         const ri = s.right ? (idxOf.get(s.right) as number) : undefined;
         const main = ri ?? (li as number);
-        const tr = h("tr", { class: "split", "data-i": String(main) });
+        const hs = [...(li !== undefined ? (cover.get(li) ?? []) : []), ...(ri !== undefined && ri !== li ? (cover.get(ri) ?? []) : [])];
+        const calls = new Set<PlacedHotspot>([...(li !== undefined ? (before.get(li) ?? []) : []), ...(ri !== undefined ? (before.get(ri) ?? []) : [])]);
+        for (const p of calls) body.append(this.#callout(p, false));
+        const tr = h("tr", { class: `split${this.#hsClass(hs)}`, "data-i": String(main) });
         if (s.left && li !== undefined) tr.append(this.#ln(s.left.old, li, "LEFT", s.left, s.left.kind), this.#code(s.left, segs.get(li) ?? [], li, "LEFT", s.left.kind));
         else tr.append(h("td", { class: "ln empty" }), h("td", { class: "code empty" }));
         if (s.right && ri !== undefined) tr.append(this.#ln(s.right.new, ri, "RIGHT", s.right, s.right.kind), this.#code(s.right, segs.get(ri) ?? [], ri, "RIGHT", s.right.kind));
@@ -339,8 +401,13 @@ export class FileView {
     return h("table", { class: "diff split" }, body);
   }
 
-  #rowClass(r: Row): string {
-    return `${r.kind}${r.expanded ? " expanded" : ""}`;
+  #hsClass(hs: readonly PlacedHotspot[] | undefined): string {
+    const sev = hs?.length ? worst(hs.map((p) => p.hotspot)) : undefined;
+    return sev ? ` hs sev-${sev}` : "";
+  }
+
+  #rowClass(r: Row, hs: readonly PlacedHotspot[] | undefined): string {
+    return `${r.kind}${r.expanded ? " expanded" : ""}${this.#hsClass(hs)}`;
   }
 
   #ln(n: number | undefined, item: number, side: Side, row: Row, kind?: Row["kind"]): HTMLTableCellElement {
@@ -469,6 +536,31 @@ export class FileView {
     );
   }
 
+  #callout(p: PlacedHotspot, top: boolean): HTMLTableRowElement {
+    const hs = p.hotspot;
+    const show = h("button", { type: "button", class: "small" }, "Show these lines");
+    show.addEventListener("click", () => void this.reveal([hs.start, hs.end]));
+    const hidden = hiddenParts(this.items, [hs.start, hs.end]).length > 0;
+    const tr = h(
+      "tr",
+      { class: `callout sev-${hs.severity}`, "data-hs": String(p.index) },
+      h(
+        "td",
+        { colspan: String(this.#cols()) },
+        h(
+          "div",
+          { class: "box" },
+          h("span", { class: `chip sev-${hs.severity}` }, SEVERITY_LABEL[hs.severity]),
+          h("span", { class: "tag" }, ` ${hs.category} · hotspot ${p.index + 1} of ${p.total} · lines ${hs.start}–${hs.end}`),
+          h("p", { class: "reason" }, hs.reason),
+          top ? h("p", { class: "note" }, "These lines aren't in this file's diff.") : hidden ? show : null,
+        ),
+      ),
+    );
+    this.#seenObs?.observe(tr);
+    return tr;
+  }
+
   #gapRow(it: Extract<Item, { t: "gap" }>, i: number): HTMLTableRowElement {
     const count = it.newEnd === undefined ? undefined : it.newEnd - it.newStart + 1;
     const td = h("td", { colspan: String(this.#cols()) });
@@ -529,6 +621,26 @@ export class FileView {
       this.#composer = i >= 0 ? { item: i, side: this.#composer.side, ...(start >= 0 ? { start } : {}), ...(this.#composer.old ? { old: this.#composer.old } : {}) } : undefined;
     }
     this.render();
+  }
+
+  /**
+   * Make a head-side range visible: open and build the file, and expand
+   * any part of it hidden between hunks. Resolves to its first row.
+   */
+  async reveal(range: LineRange): Promise<HTMLTableRowElement | undefined> {
+    this.el.open = true;
+    this.build();
+    const hidden = hiddenParts(this.items, range);
+    if (hidden.length && !this.#noContext()) {
+      for (const part of hidden) await this.expand(part);
+    }
+    const first = rowsInRange(this.items, range)[0];
+    return first === undefined ? undefined : this.#rowEls.get(first);
+  }
+
+  /** The callout row of a hotspot, if drawn. */
+  calloutEl(index: number): HTMLTableRowElement | null {
+    return this.#body.querySelector<HTMLTableRowElement>(`tr.callout[data-hs="${index}"]`);
   }
 
   /** Item indexes where hunks start, for j/k. */

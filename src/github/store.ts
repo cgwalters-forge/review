@@ -1,5 +1,6 @@
-// Per-viewer conveniences kept in localStorage: the diff layout, which
-// files he marked viewed, and his unsent line comments. Storage can be
+// Per-viewer conveniences kept in localStorage: the diff layout, whether
+// the review guide is shown, which files he marked viewed, which guide
+// hotspots he has seen, and his unsent line comments. Storage can be
 // missing, full or blocked (private windows, tests), so every access is
 // guarded and the app works the same without it, only forgetting more.
 
@@ -50,6 +51,14 @@ export function saveLayout(l: DiffLayout): void {
   save("diff.layout", l);
 }
 
+export function loadGuideOn(): boolean {
+  return load("guide.on", true, (v): v is boolean => typeof v === "boolean");
+}
+
+export function saveGuideOn(on: boolean): void {
+  save("guide.on", on);
+}
+
 /**
  * The key a viewed mark is stored under: the file's blob, so the mark
  * goes away by itself when the file changes.
@@ -74,6 +83,16 @@ export class ViewedMarks {
     this.#keys = keys.slice(-MAX_VIEWED);
     save("diff.viewed", this.#keys);
   }
+}
+
+/** Hotspots seen, by index, for one guide (a PR and the head it names). */
+export function loadSeen(guideKey: string): Set<number> {
+  const v = load(`guide.seen.${guideKey}`, [], (x): x is number[] => Array.isArray(x) && x.every((n) => Number.isInteger(n)));
+  return new Set(v);
+}
+
+export function saveSeen(guideKey: string, seen: ReadonlySet<number>): void {
+  save(`guide.seen.${guideKey}`, [...seen]);
 }
 
 export { isString, isStringList };

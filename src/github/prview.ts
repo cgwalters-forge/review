@@ -1,12 +1,13 @@
 // The review pane for one forge PR: description, commits with their full
-// messages, CI, the diff, and the review form. Commit messages and
-// diffs are untrusted too, and go in as text nodes only.
+// messages, CI, the diff, the bot's review guide, and the review form.
+// Commit messages, diffs and the guide are untrusted too, and go in as
+// text nodes only.
 
 import { h, kids, link, scrollTo } from "../dom.ts";
 import type { Renderer } from "../markdown.ts";
 import { BOARD_URL, BOT_LOGIN, FORGE_ORG } from "./config.ts";
 import type { Row } from "./diff.ts";
-import { FILE_CLASS, type FileHooks, FileView, type Side } from "./diffview.ts";
+import { FILE_CLASS, type FileHooks, FileView, type PlacedHotspot, type Side } from "./diffview.ts";
 import {
   type CiState,
   ciSummary,
@@ -18,15 +19,20 @@ import {
   VERDICT_LABEL,
   withoutBotMeta,
 } from "./forge.ts";
+import { type Guide, type GuideState, SEVERITY_LABEL, worst } from "./guide.ts";
 import type { Command } from "./keys.ts";
 import { type Commit, type FileDiff, MAX_COMPARE_FILES, type PrDetail } from "./prs.ts";
 import type { Entry } from "./queue.ts";
 import {
   type DiffLayout,
   load,
+  loadGuideOn,
   loadLayout,
+  loadSeen,
   save,
+  saveGuideOn,
   saveLayout,
+  saveSeen,
   ViewedMarks,
   viewedKey,
 } from "./store.ts";
@@ -38,6 +44,8 @@ export const REVIEW_FORM_CLASS = "review";
 export const APPROVE_ACTION = "approve";
 /** Files named in the approval's confirmation at most. */
 const UNSEEN_NAMES = 6;
+/** Hotspot callouts count as seen when this much of them is on screen. */
+const SEEN_THRESHOLD = 0.6;
 
 export interface PrViewHandlers {
   /**
@@ -85,6 +93,8 @@ export interface Unseen {
   noDiff: number;
   /** Files or commits beyond what the API lists. */
   truncated: boolean;
+  /** Hotspots of a current review guide never on screen, of how many. */
+  hotspots?: { unseen: number; total: number };
 }
 
 export function unseenNote(u: Unseen): string {
@@ -93,6 +103,7 @@ export function unseenNote(u: Unseen): string {
     u.unopened.length ? `${u.unopened.length} file${u.unopened.length > 1 ? "s" : ""} never expanded (${names})` : "",
     u.noDiff ? `${u.noDiff} without a diff here` : "",
     u.truncated ? "files or commits beyond what GitHub lists" : "",
+    u.hotspots?.unseen ? `${u.hotspots.unseen} of ${u.hotspots.total} review-guide hotspots` : "",
   ].filter(Boolean);
   return parts.length ? ` Not seen here: ${parts.join(", ")}.` : "";
 }
@@ -293,6 +304,23 @@ export function rangeEnds(commits: readonly Commit[], r: CommitRange): { base: s
   return { base: first.parent, to: last.sha };
 }
 
+/**
+ * The hotspots to show on a file in a view. In the whole PR's diff, all
+ * of its. In a range of commits, those a commit in the range introduced,
+ * and only when the file there is the head's (same blob), since the
+ * guide's lines are the head's.
+ */
+export function hotspotsFor(guide: Guide, file: FileDiff, view: { commits: readonly string[]; headBlob: string | undefined } | undefined): PlacedHotspot[] {
+  const total = guide.hotspots.length;
+  return guide.hotspots
+    .map((hotspot, index) => ({ index, total, hotspot }))
+    .filter(({ hotspot }) => {
+      if (hotspot.path !== file.filename) return false;
+      if (!view) return true;
+      return view.commits.includes(hotspot.commit) && file.sha !== undefined && file.sha === view.headBlob;
+    });
+}
+
 /** A tree of paths, directories first, with single-child directories joined. */
 interface TreeNode {
   name: string;
@@ -341,7 +369,12 @@ class Pane implements PrPane {
   #seenBlobs = new Set<string>();
   #lines = new Map<string, Promise<string[]>>();
   #drafts: DraftComment[];
+  #guide: GuideState;
+  #guideOn = loadGuideOn();
+  #seen: Set<number>;
+  #guided: number | undefined;
   #lazy: IntersectionObserver | undefined;
+  #seenObs: IntersectionObserver | undefined;
   #scrollObs: IntersectionObserver | undefined;
   #byEl = new Map<Element, FileView>();
   #loading = 0;
@@ -349,6 +382,8 @@ class Pane implements PrPane {
   #list = h("div", { class: "file-list" });
   #tree = h("nav", { class: "tree", "aria-label": "Files" });
   #toolbar = h("div", { class: "toolbar" });
+  #bar = h("div", { class: "guided-bar", role: "status" });
+  #guidePanel = h("section", { class: "guide" });
   #filesTitle = h("h3", {});
   #form: { form: HTMLElement; refresh(): void } | undefined;
 
@@ -356,9 +391,15 @@ class Pane implements PrPane {
     this.#d = d;
     this.#handlers = handlers;
     this.#canReview = canReview(d);
+    this.#guide = d.guide;
+    this.#seen = loadSeen(this.#guideKey());
     this.#drafts = load(this.#draftsKey(), [], (v): v is DraftComment[] => Array.isArray(v) && v.every(isDraft));
     if (typeof IntersectionObserver !== "undefined") {
       this.#lazy = new IntersectionObserver((es) => es.forEach((e) => e.isIntersecting && this.#byEl.get(e.target)?.near()), { rootMargin: "1500px 0px" });
+      this.#seenObs = new IntersectionObserver(
+        (es) => es.forEach((e) => e.isIntersecting && this.#sawHotspot(Number((e.target as HTMLElement).dataset.hs))),
+        { threshold: SEEN_THRESHOLD },
+      );
       // The file whose header is near the top is the current one, for n/p and v.
       this.#scrollObs = new IntersectionObserver(
         (es) => {
@@ -390,6 +431,7 @@ class Pane implements PrPane {
       { class: "files" },
       h("div", { class: "files-h" }, this.#filesTitle),
       this.#toolbar,
+      this.#bar,
       h("div", { class: "files-layout" }, this.#tree, this.#list),
     );
     this.el = h(
@@ -412,9 +454,16 @@ class Pane implements PrPane {
       h("section", {}, h("h3", {}, "Description"), h("div", { class: "md" }, render(withoutBotMeta(d.body) || "(empty)"))),
       checksSection(d),
       commitsSection(d),
+      this.#guide.state === "none" ? null : this.#guidePanel,
       files,
     );
     this.#showFiles(d.files);
+    this.#drawGuide();
+  }
+
+  #guideKey(): string {
+    const g = this.#guide;
+    return `${this.#d.ref.owner}/${this.#d.ref.repo}#${this.#d.ref.number}@${g.state === "current" || g.state === "stale" ? g.guide.head : "none"}`;
   }
 
   #inPr(c: DraftComment): boolean {
@@ -439,10 +488,19 @@ class Pane implements PrPane {
     for (const f of this.#files) if (path === undefined || f.file.filename === path) f.render();
   }
 
+  /** The current guide, if it is shown: current, and not turned off. */
+  #activeGuide(): Guide | undefined {
+    return this.#guideOn && this.#guide.state === "current" ? this.#guide.guide : undefined;
+  }
+
   /** The view's end commit: the head, or the last commit of the range. */
   #viewEnd(): string {
     const r = this.#range;
     return r ? (this.#d.commits[r.to]?.sha ?? this.#d.head) : this.#d.head;
+  }
+
+  #headBlob(path: string): string | undefined {
+    return this.#d.files.find((f) => f.filename === path)?.sha;
   }
 
   /** Hooks shared by the files of the current view; loadLines and drafts are per file. */
@@ -456,6 +514,7 @@ class Pane implements PrPane {
       commentable: (row: Row, side: Side) => this.#canReview && !row.expanded && (fromBase || (row.kind === "add" && side === "RIGHT")),
       saveDraft: (c, old) => this.#setDrafts([...this.#drafts.filter((x) => x !== old), c], c.path),
       deleteDraft: (c) => this.#setDrafts(this.#drafts.filter((x) => x !== c), c.path),
+      sawHotspot: (i) => this.#sawHotspot(i),
       focused: (file, item, side) => {
         if (this.#focusFile && this.#focusFile !== file) this.#focusFile.setFocus(undefined);
         this.#focusFile = file;
@@ -481,10 +540,13 @@ class Pane implements PrPane {
   #showFiles(files: readonly FileDiff[]): void {
     for (const f of this.#files) this.#lazy?.unobserve(f.el);
     this.#scrollObs?.disconnect();
+    this.#seenObs?.disconnect();
     this.#byEl.clear();
     this.#focusFile = undefined;
     const r = this.#range;
+    const guide = this.#activeGuide();
     const end = this.#viewEnd();
+    const inRange = r ? this.#d.commits.slice(r.from, r.to + 1).map((c) => c.sha) : undefined;
     const viewBase = this.#viewBase();
     const base = this.#hooks();
     const repo = `${this.#d.ref.owner}/${this.#d.ref.repo}`;
@@ -496,9 +558,12 @@ class Pane implements PrPane {
       };
       const fv = new FileView({
         file,
+        hotspots: guide ? hotspotsFor(guide, file, inRange ? { commits: inRange, headBlob: this.#headBlob(file.filename) } : undefined) : [],
+        skim: guide?.skim.filter((s) => s.path === file.filename) ?? [],
         viewed: file.sha !== undefined && this.#viewed.has(viewedKey(repo, file.filename, file.sha)),
         hooks,
         ...(this.#lazy ? { lazy: this.#lazy } : {}),
+        ...(this.#seenObs ? { seen: this.#seenObs } : {}),
       });
       this.#byEl.set(fv.el, fv);
       this.#scrollObs?.observe(fv.el);
@@ -514,6 +579,7 @@ class Pane implements PrPane {
     this.#drawTitle();
     this.#drawTree();
     this.#drawToolbar();
+    this.#drawBar();
   }
 
   /** Remember which file versions were shown, for the approval's note. */
@@ -551,6 +617,7 @@ class Pane implements PrPane {
           "button",
           { type: "button", class: `tfile s-${f.file.status}${f.viewed ? " viewed" : ""}${i === this.#current ? " sel" : ""}`, title: f.file.filename, "data-i": String(i) },
           h("span", { class: "tname" }, name),
+          f.hotspots.length ? h("span", { class: `hs-dot sev-${worst(f.hotspots.map((p) => p.hotspot))}`, title: `${f.hotspots.length} hotspot(s)` }) : null,
           h("span", { class: "tcounts" }, h("span", { class: "plus" }, `+${f.file.additions}`), " ", h("span", { class: "minus" }, `−${f.file.deletions}`)),
         );
         b.addEventListener("click", () => this.#goFile(i, true));
@@ -596,6 +663,116 @@ class Pane implements PrPane {
     ));
   }
 
+  #drawBar(): void {
+    const g = this.#activeGuide();
+    const i = this.#guided;
+    this.#bar.parentElement?.classList.toggle("guided", g !== undefined && i !== undefined);
+    if (!g || i === undefined) {
+      this.#bar.hidden = true;
+      this.#bar.replaceChildren();
+      return;
+    }
+    const hs = g.hotspots[i];
+    this.#bar.hidden = false;
+    const prev = h("button", { type: "button", class: "small" }, "← p");
+    const next = h("button", { type: "button", class: "small" }, "n →");
+    const leave = h("button", { type: "button", class: "small" }, "Leave (Esc)");
+    prev.addEventListener("click", () => void this.#goHotspot(i - 1));
+    next.addEventListener("click", () => void this.#goHotspot(i + 1));
+    leave.addEventListener("click", () => this.#leaveGuided());
+    this.#bar.replaceChildren(...kids(
+      h("strong", {}, "Guided review"),
+      h("span", { class: "tag" }, ` hotspot ${i + 1} of ${g.hotspots.length} · ${this.#seen.size}/${g.hotspots.length} seen · `),
+      hs ? h("span", { class: `chip sev-${hs.severity}` }, SEVERITY_LABEL[hs.severity]) : null,
+      hs ? h("span", { class: "tag" }, ` ${hs.path}:${hs.start}–${hs.end}`) : null,
+      h("span", { class: "group" }, prev, next, leave),
+    ));
+  }
+
+  #drawGuide(): void {
+    const g = this.#guide;
+    const p = this.#guidePanel;
+    if (g.state === "none") return;
+    const head = h("div", { class: "guide-h" }, h("h3", {}, "Review guide"));
+    if (g.state === "invalid") {
+      p.replaceChildren(head, h("p", { class: "warn" }, `${BOT_LOGIN}'s latest review guide couldn't be read: ${g.error}. `, link(g.url, "the review")));
+      return;
+    }
+    const guide = g.guide;
+    const stale = g.state === "stale";
+    const on = h("input", { type: "checkbox", id: "guide-on" });
+    on.checked = this.#guideOn;
+    on.addEventListener("change", () => this.#setGuideOn(on.checked));
+    const start = h("button", { type: "button", class: "small primary" }, "Guided review (g)");
+    start.disabled = stale || !this.#guideOn || guide.hotspots.length === 0;
+    start.addEventListener("click", () => this.#startGuided());
+    head.append(...kids(
+      h("span", { class: `state ${stale ? "v-approved-older" : ""}` }, stale ? "stale" : "current"),
+      stale ? null : h("label", { class: "check", for: "guide-on" }, on, " Show in the diff"),
+      stale ? null : start,
+    ));
+    const seen = guide.hotspots.filter((_, i) => this.#seen.has(i)).length;
+    const note = h(
+      "p",
+      { class: "note" },
+      `Advice from ${BOT_LOGIN}'s reviewer, written for ${short(guide.head)}${g.at ? ` (${time(g.at)})` : ""}: where it thinks this PR needs a close read. It doesn't replace reading the diff. `,
+      link(g.url, "the review"),
+    );
+    const children: HTMLElement[] = [head, note];
+    if (stale) children.push(h("p", { class: "warn" }, `The head moved to ${short(this.#d.head)} since, so its lines may be off: tints and guided review stay off until the bot posts a guide for this head.`));
+    if (!this.#guideOn && !stale) {
+      p.replaceChildren(...children);
+      return;
+    }
+    children.push(h("p", { class: "summary-text" }, guide.summary));
+    if (guide.hotspots.length) {
+      children.push(h("p", { class: "tag progress" }, `${seen}/${guide.hotspots.length} hotspots seen`));
+      const ol = h("ol", { class: "hotspots" });
+      guide.hotspots.forEach((hs, i) => {
+        const b = h(
+          "button",
+          { type: "button", class: `hotspot${this.#seen.has(i) ? " seen" : ""}${this.#guided === i ? " on" : ""}`, "data-hs": String(i) },
+          h("span", { class: `chip sev-${hs.severity}` }, SEVERITY_LABEL[hs.severity]),
+          h("span", { class: "tag" }, ` ${hs.category} · `),
+          h("code", {}, `${hs.path}:${hs.start}–${hs.end}`),
+          this.#seen.has(i) ? h("span", { class: "tag" }, " · seen") : null,
+          h("span", { class: "reason" }, hs.reason),
+        );
+        b.disabled = stale;
+        b.addEventListener("click", () => {
+          this.#guided = i;
+          void this.#goHotspot(i);
+        });
+        ol.append(h("li", {}, b));
+      });
+      children.push(ol);
+    } else {
+      children.push(h("p", { class: "note" }, "No hotspots: the reviewer found nothing that needs a closer read than the rest."));
+    }
+    if (guide.skim.length) {
+      const ul = h("ul", { class: "skim" });
+      for (const s of guide.skim) ul.append(h("li", {}, h("code", {}, s.start !== undefined ? `${s.path}:${s.start}–${s.end}` : s.path), h("span", { class: "tag" }, ` ${s.reason}`)));
+      children.push(h("details", { class: "skim" }, h("summary", {}, `Safe to skim · ${guide.skim.length}`), ul));
+    }
+    p.replaceChildren(...children);
+  }
+
+  #sawHotspot(i: number): void {
+    const g = this.#activeGuide();
+    if (!g || !Number.isInteger(i) || i < 0 || i >= g.hotspots.length || this.#seen.has(i)) return;
+    this.#seen.add(i);
+    saveSeen(this.#guideKey(), this.#seen);
+    this.#drawGuide();
+    this.#drawBar();
+  }
+
+  #setGuideOn(on: boolean): void {
+    this.#guideOn = on;
+    saveGuideOn(on);
+    if (!on) this.#guided = undefined;
+    this.#drawGuide();
+    this.#showFiles(this.#files.map((f) => f.file));
+  }
 
   #setLayout(l: DiffLayout): void {
     if (l === this.#layout) return;
@@ -620,6 +797,7 @@ class Pane implements PrPane {
     try {
       const files = await this.#handlers.loadRange(ends.base, ends.to);
       this.#range = r;
+      this.#guided = undefined;
       this.#showFiles(files);
       return true;
     } catch (e) {
@@ -688,6 +866,56 @@ class Pane implements PrPane {
     }
   }
 
+  #startGuided(): void {
+    const g = this.#activeGuide();
+    if (!g || g.hotspots.length === 0) return;
+    // From the top: "seen" only means it was on screen, not that it was read.
+    void this.#goHotspot(0);
+  }
+
+  #leaveGuided(): void {
+    this.#guided = undefined;
+    for (const el of this.#list.querySelectorAll(".callout.on")) el.classList.remove("on");
+    this.#drawBar();
+    this.#drawGuide();
+  }
+
+  async #goHotspot(i: number): Promise<void> {
+    const g = this.#activeGuide();
+    if (!g) return;
+    const n = g.hotspots.length;
+    if (i < 0 || i >= n) return;
+    const hs = g.hotspots[i] as Guide["hotspots"][number];
+    this.#guided = i;
+    // The guide's lines are the head's: walk it in the whole PR's diff.
+    if (this.#range) await this.#setRange(undefined);
+    const fi = this.#files.findIndex((f) => f.file.filename === hs.path);
+    const f = this.#files[fi];
+    if (!f) {
+      this.#drawBar();
+      this.#bar.append(h("span", { class: "warn" }, ` ${hs.path} isn't among the files shown.`));
+      return;
+    }
+    const row = await f.reveal([hs.start, hs.end]);
+    if (this.#guided !== i) return;
+    for (const el of this.#list.querySelectorAll(".callout.on")) el.classList.remove("on");
+    const callout = f.calloutEl(i);
+    callout?.classList.add("on");
+    this.#select(fi, false);
+    // The callout sits right above the lines: bring both to the top.
+    scrollTo(callout ?? row ?? f.el, callout ? "start" : "center");
+    if (row) {
+      const item = Number(row.dataset.i);
+      if (this.#focusFile && this.#focusFile !== f) this.#focusFile.setFocus(undefined);
+      this.#focusFile = f;
+      f.setFocus(item);
+    }
+    this.#seen.add(i);
+    saveSeen(this.#guideKey(), this.#seen);
+    this.#noteSeen();
+    this.#drawBar();
+    this.#drawGuide();
+  }
 
   async #jumpToDraft(c: DraftComment): Promise<void> {
     if (c.commit !== this.#viewEnd()) {
@@ -716,15 +944,22 @@ class Pane implements PrPane {
       noDiff: d.files.length - withDiff.length,
       truncated: d.files.length < d.changedFiles || d.commits.length < d.commitCount,
     };
+    const g = this.#guide;
+    if (g.state === "current" && g.guide.hotspots.length) {
+      const total = g.guide.hotspots.length;
+      out.hotspots = { unseen: total - g.guide.hotspots.filter((_, i) => this.#seen.has(i)).length, total };
+    }
     return out;
   }
 
   command(cmd: Command): boolean {
+    const guided = this.#guided !== undefined && this.#activeGuide() !== undefined;
     switch (cmd) {
       case "next-file":
       case "prev-file": {
         const step = cmd === "next-file" ? 1 : -1;
-        this.#goFile(Math.max(0, Math.min(this.#files.length - 1, this.#current + step)), false);
+        if (guided) void this.#goHotspot((this.#guided as number) + step);
+        else this.#goFile(Math.max(0, Math.min(this.#files.length - 1, this.#current + step)), false);
         return true;
       }
       case "next-hunk":
@@ -754,6 +989,10 @@ class Pane implements PrPane {
       case "layout":
         this.#setLayout(this.#layout === "unified" ? "split" : "unified");
         return true;
+      case "guide":
+        if (guided) this.#leaveGuided();
+        else this.#startGuided();
+        return true;
       case "prev-commit":
       case "next-commit": {
         const n = this.#d.commits.length;
@@ -764,6 +1003,10 @@ class Pane implements PrPane {
         void this.#setRange(next === undefined || next < 0 || next >= n ? undefined : { from: next, to: next });
         return true;
       }
+      case "back":
+        if (!guided) return false;
+        this.#leaveGuided();
+        return true;
       default:
         return false;
     }
@@ -771,6 +1014,7 @@ class Pane implements PrPane {
 
   dispose(): void {
     this.#lazy?.disconnect();
+    this.#seenObs?.disconnect();
     this.#scrollObs?.disconnect();
   }
 }

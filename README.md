@@ -34,7 +34,7 @@ queue too.
   diff. **Approve** submits an approving review of the head you were
   shown, which is what `bot-pr promote` acts on; if the head moved
   meanwhile, nothing is sent, and the confirmation names the files you
-  never expanded. A
+  never expanded and the review guide's hotspots you never saw. A
   checkbox adds the `/draft` line that asks promote for a draft upstream
   PR. **Request changes** and **Comment** submit reviews with your text.
 - **The diff** is unified or split (remembered per browser), syntax
@@ -47,6 +47,14 @@ queue too.
   focused line) writes a line comment, shift-click a range; comments wait
   in the form and go out with your review, those written on an earlier
   commit viewed alone in a comment-only review of that commit.
+- **The review guide**, when the bot's reviewer posted one
+  (`bin/bot-review-guide` in homegit), lists where it thinks the PR
+  needs a close read: a summary, hotspots in reading order with a
+  severity and a reason, and what is safe to skim. Hotspot lines are
+  tinted in the diff with the reason right above them, and `g` walks
+  them in order. Only the bot's own COMMENT reviews count, only for the
+  head they name: after a push the guide shows as stale. Its text is
+  shown as plain text, and it is advice: it doesn't replace reading.
 - **A board item** shows its Why, links, description, gist and latest
   comments, rendered from markdown and sanitized. A parent issue in
   cgwalters-forge/tracker also shows its sub-issues and their progress.
@@ -67,7 +75,8 @@ touching `agent.yml`, `bot-harness` or a `harness/` tree.
 Keys: `j`/`k` move, `o` opens, `u` goes back, `r` reloads; in a PR,
 `n`/`p` step through files and `j`/`k` through hunks, `v` marks a file
 viewed, `x` folds one, `s` switches unified and split, `[`/`]` step
-through the commits, `c` comments on the focused line (or jumps
+through the commits, `g` starts (or leaves) the guided review, whose
+hotspots `n`/`p` then walk, `c` comments on the focused line (or jumps
 to the review text), `a` approves (after a confirmation); `?` lists
 them. Your text never goes out with a line the bot would read as a
 command (`/promote`, `/draft`, `/ready`).
