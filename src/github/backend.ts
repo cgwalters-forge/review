@@ -4,10 +4,11 @@
 // them with a scripted fetch.
 
 import { type Answer, formatAnswer, formatComment, parseQuestion } from "../answer.ts";
-import type { GitHub } from "./api.ts";
+import { type GitHub, GitHubError } from "./api.ts";
 import {
   failedJobs,
   parseAskBody,
+  parsePrUrl,
   parseRunUrl,
   type RawJob,
   type RawRun,
@@ -176,7 +177,7 @@ export async function loadContext(gh: GitHub, item: Item): Promise<Context> {
   const reruns = askKind(item) === "chore" && item.state === "open" ? parseAskBody(item.body) : undefined;
   if (reruns && reruns.problems.length === 0 && reruns.reruns.length > 0) {
     tasks.push(
-      loadRuns(gh, reruns.reruns).then((runs) => {
+      loadRuns(gh, reruns.reruns, reruns.blocks).then((runs) => {
         ctx.runs = runs;
       }),
     );
@@ -337,6 +338,14 @@ export async function submitAskedReview(
   return submitReview(gh, pr, reviews, onSent);
 }
 
+/**
+ * The rerun request went out, or may have: the network failed, or GitHub
+ * answered with a server error, after it was sent. Don't retry blindly.
+ */
+export class MaybeSentError extends Error {
+  override name = "MaybeSentError";
+}
+
 /** A run a chore asks to rerun, as last read. */
 export interface RunStatus {
   run: RunRef;
@@ -344,6 +353,10 @@ export interface RunStatus {
   status?: string;
   conclusion?: string;
   attempt?: number;
+  /** The commit the run ran on. */
+  headSha?: string;
+  /** The current head of the PR the chore blocks, when it blocks one and it could be read. */
+  prHead?: string;
   /** The latest attempt's failed jobs. */
   failed: { name: string; url?: string }[];
   /** Why its failed jobs can't be rerun now, if they can't. */
@@ -357,8 +370,24 @@ async function readRun(gh: GitHub, run: RunRef): Promise<{ raw: RawRun; jobs: Ra
   return { raw, jobs: jobs.jobs ?? [] };
 }
 
-/** Read the runs a chore names, and whether each one's failed jobs can be rerun. */
-export async function loadRuns(gh: GitHub, runs: readonly RunRef[]): Promise<RunStatus[]> {
+/** The current head of a PR, or undefined if it can't be read. */
+async function prHead(gh: GitHub, pr: IssueRef): Promise<string | undefined> {
+  try {
+    const r = await gh.get<{ head?: { sha?: string } }>(`/repos/${pr.owner}/${pr.repo}/pulls/${pr.number}`);
+    return r.data.head?.sha;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Read the runs a chore names, and whether each one's failed jobs can be
+ * rerun. When the chore blocks a PR (`blocks`), its current head is read
+ * too, so a run on an older head can be pointed out.
+ */
+export async function loadRuns(gh: GitHub, runs: readonly RunRef[], blocks?: string): Promise<RunStatus[]> {
+  const pr = blocks ? parsePrUrl(blocks) : undefined;
+  const head = pr ? await prHead(gh, pr) : undefined;
   return mapLimit(runs, FETCH_CONCURRENCY, async (run) => {
     try {
       const { raw, jobs } = await readRun(gh, run);
@@ -370,6 +399,8 @@ export async function loadRuns(gh: GitHub, runs: readonly RunRef[]): Promise<Run
       if (raw.status) out.status = raw.status;
       if (raw.conclusion) out.conclusion = raw.conclusion;
       if (typeof raw.run_attempt === "number") out.attempt = raw.run_attempt;
+      if (raw.head_sha) out.headSha = raw.head_sha;
+      if (head) out.prHead = head;
       const problem = rerunProblem(run, raw, jobs);
       if (problem) out.problem = problem;
       return out;
@@ -398,7 +429,14 @@ export async function rerunFailedJobs(gh: GitHub, ask: IssueRef, runUrl: string,
   const { raw, jobs } = await readRun(gh, run);
   const problem = rerunProblem(run, raw, jobs);
   if (problem) throw new Error(`not rerunning ${run.url}: ${problem}`);
-  await gh.send("POST", `/repos/${run.owner}/${run.repo}/actions/runs/${run.id}/rerun-failed-jobs`);
+  try {
+    await gh.send("POST", `/repos/${run.owner}/${run.repo}/actions/runs/${run.id}/rerun-failed-jobs`);
+  } catch (e) {
+    // A clear refusal (4xx) means nothing happened; anything else may have.
+    if (e instanceof GitHubError && e.status < 500) throw e;
+    const why = e instanceof Error ? e.message : String(e);
+    throw new MaybeSentError(`the rerun request for ${run.url} may or may not have gone out (${why}); check the run on GitHub before trying again`);
+  }
   try {
     return await comment(gh, ask, formatComment(rerunComment(run)));
   } catch (e) {

@@ -280,9 +280,10 @@ describe("itemView", () => {
       failed: [{ name: "uki (arm)", url: `${RUN}/job/2` }, { name: EVIL }],
       ...over,
     });
-    function runs(r: RunStatus, rerun?: (url: string) => Promise<string>) {
+    function runs(r: RunStatus, rerun?: (url: string) => Promise<string>, rerunning?: (url: string) => boolean) {
       const item = fixture("PVTI_synthetic_chore_ask");
-      const frag = contextView(item, { comments: [], gists: [], warnings: [], runs: [r] }, render, rerun ? { rerun } : {});
+      const hooks = { ...(rerun ? { rerun } : {}), ...(rerunning ? { rerunning } : {}) };
+      const frag = contextView(item, { comments: [], gists: [], warnings: [], runs: [r] }, render, hooks);
       const root = win.document.createElement("div");
       root.append(frag);
       win.document.body.replaceChildren(root);
@@ -319,6 +320,47 @@ describe("itemView", () => {
       const { root, button } = runs(run({ status: "in_progress", problem: "the run is in_progress, not completed" }), async () => "x");
       assert.equal(button.disabled, true);
       assert.match(root.textContent ?? "", /Can't rerun: the run is in_progress, not completed/);
+    });
+
+    it("keeps a rerun in flight disabled, even in a fresh render", async () => {
+      let asked = 0;
+      Object.assign(win, { confirm: () => (asked++, true) });
+      const { button, status } = runs(run(), async () => "x", (u) => u === RUN);
+      assert.equal(button.disabled, true);
+      assert.equal(status(), "Rerunning…");
+      button.click();
+      await new Promise((r) => setTimeout(r, 0));
+      assert.equal(asked, 0);
+    });
+
+    it("names the run's commit, and warns when it is older than the PR's head", () => {
+      const confirms: string[] = [];
+      Object.assign(win, { confirm: (m: string) => (confirms.push(m), false) });
+      const current = runs(run({ headSha: "1".repeat(40), prHead: "1".repeat(40) }), async () => "x");
+      assert.equal(current.root.querySelector(".runs .warn"), null);
+      assert.match(current.root.querySelector(".runs .tag")?.textContent ?? "", /on 111111111111/);
+      current.button.click();
+      assert.match(confirms[0] ?? "", /of .*runs\/777 on 111111111111\?/);
+      assert.doesNotMatch(confirms[0] ?? "", /older head/);
+      const old = runs(run({ headSha: "1".repeat(40), prHead: "2".repeat(40) }), async () => "x");
+      assert.match(old.root.querySelector(".runs .warn")?.textContent ?? "", /This run is on 111111111111, an older head: the PR is now at 222222222222/);
+      old.button.click();
+      assert.match(confirms[1] ?? "", /an older head: the PR is now at 222222222222/);
+    });
+
+    it("says it may have rerun, and offers no blind retry, when unsure", async () => {
+      Object.assign(win, { confirm: () => true });
+      const unsure = Object.assign(new Error("the rerun request for x may or may not have gone out (Failed to fetch); check the run on GitHub before trying again"), { name: "MaybeSentError" });
+      const { button, status } = runs(run(), async () => Promise.reject(unsure));
+      button.click();
+      await new Promise((r) => setTimeout(r, 0));
+      assert.match(status(), /^Unsure whether it reran: .*check the run on GitHub/);
+      assert.equal(button.disabled, true);
+      const refused = runs(run(), async () => Promise.reject(new Error("POST x failed with HTTP 403")));
+      refused.button.click();
+      await new Promise((r) => setTimeout(r, 0));
+      assert.match(refused.status(), /^Not rerun: POST x failed with HTTP 403/);
+      assert.equal(refused.button.disabled, false);
     });
 
     it("offers no rerun without a handler", () => {
