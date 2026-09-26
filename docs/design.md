@@ -87,8 +87,8 @@ authorship. It is gone. Instead:
     `/promote` line in an answer would promote a fork PR. Backticks or
     other wording get around it on purpose. It also refuses free text
     whose first line is a single letter, which would read as a pick.
-- **Only open question issues in the tracker, assigned to him, get an
-  answer box.** `postAnswer` reads the issue fresh and refuses anything
+- **Only open question issues in the tracker, opened by the bot and
+  assigned to him, get an answer box** (reviews and chores are below). `postAnswer` reads the issue fresh and refuses anything
   else before writing, and also a picked letter that the question's body
   no longer offers. Upstream issues and PRs are never answered from the app, not
   even with a confirmation: a bare "B" on an upstream PR is noise to its
@@ -114,6 +114,53 @@ is by `cgwalters` and was not edited by anyone else (people with write
 access can edit others' comments, so check `userContentEdits` editors, as
 `bot-pr` does for PR bodies), on an open question issue in the tracker
 that is assigned to him.
+
+### Reviews and chores: every Needs human item has an ask (2026-09-26)
+
+cgwalters opened an upstream Needs human item (bootc-dev/bootc#2256)
+and the app said "Nothing to answer here": its Why held two asks, to
+re-approve a PR at a new head and to rerun two CI legs that lost their
+runner, and neither was a question. So every Needs human item now gets
+a tracker issue per ask, of one of three kinds, told apart by exactly one
+label: `question` (as above), `review` or `chore`. Each is an open issue
+in the tracker, opened by the bot, assigned to him, with the same
+`Blocks:` first line and sub-issue rule. He finishes any of them with a
+comment on it; only his login counts, and the bot then acts and closes
+it.
+
+- **A review** has `Ask: <one line>` and, per PR, `` Review:
+  `https://github.com/OWNER/REPO/pull/N` at <40-hex head> ``. The app
+  opens that PR in its review pane, including an upstream PR he is asked
+  to approve. The pane offers a review form for any PR an open review
+  ask names, besides the bot's own forge PRs; a PR nothing asks about
+  still gets none, so a crafted link can't make the page a one-click
+  approval. The pane shows the head the bot asked about and warns when
+  the PR has moved since: a review is always of the head shown, and when
+  that isn't the one asked about he must confirm reviewing the new head
+  first, in its own question. After an approval or change request, the
+  app comments on the review ask ("Approved OWNER/REPO#N at <sha>: <review
+  URL>") so the bot sees it; a plain comment review settles nothing and
+  posts nothing.
+- **A chore** has `Ask: <one line>` and zero or more `` Rerun:
+  `https://github.com/OWNER/REPO/actions/runs/ID` `` lines. With reruns,
+  the app lists each run's failed jobs (`GET .../actions/runs/{id}` and
+  `.../jobs?filter=latest`) with a "Rerun failed jobs" button. That writes
+  upstream with his token, so it is strict: the URL must parse exactly as
+  a run (not a job or an attempt), the chore is read fresh and must still
+  name exactly that URL (any `Rerun:` line it can't read disables them
+  all), the run is read fresh and must be that run in that repository,
+  completed, failed (failure, cancelled, timed out or a startup failure)
+  with failed jobs in its latest attempt; he confirms, and only then the
+  app calls `POST .../actions/runs/{id}/rerun-failed-jobs`, built from the
+  parsed URL's parts, and comments "Reran the failed jobs of <run URL>".
+- **Any other chore**, or a review or rerun the app can't read, shows its
+  Ask text and a comment box, with the same refusal of bot command lines
+  as an answer (the letter-first-line rule is only for questions).
+- **No Needs human item says "nothing to do".** An upstream or tracker
+  Needs human item shows its open asks (nested by parent or `Blocks:`)
+  as actions. One with none is a bot bug, flagged as such in the queue
+  and the item view ("the bot left this without an ask"), with its Why
+  and links.
 
 ### Auth changes
 
