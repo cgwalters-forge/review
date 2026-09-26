@@ -279,3 +279,5 @@ button.linkish { border: 0; background: none; padding: 0; color: var(--accent); 
 @media (max-width: 600px) {
   details.file > summary, .guided-bar, nav.tree { position: static; }
 }
+/* Data shown from the browser's cache until GitHub confirms it. */
+.meta .cached { color: var(--ink); background: var(--p1-soft); border: 1px solid var(--p1); border-radius: 4px; padding: 0 5px; }

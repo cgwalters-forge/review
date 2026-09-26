@@ -1,7 +1,9 @@
-// A small GitHub REST client: conditional GETs with ETags (a 304 costs no
-// rate budget when authorised), pagination by Link header, and rate-limit
+// A small GitHub REST client: conditional GETs with ETags or
+// Last-Modified (a 304 costs no rate budget when authorised) against one
+// response cache (cache.ts), pagination by Link header, and rate-limit
 // tracking. `fetch` is injected so tests can script responses.
 
+import { type CachedResponse, ResponseCache, staleAfterWrite } from "./cache.ts";
 import { API_ROOT } from "./config.ts";
 
 export type Fetch = (input: string, init?: RequestInit) => Promise<Response>;
@@ -23,10 +25,9 @@ export interface RateLimit {
   reset: number;
 }
 
-interface CacheEntry {
-  etag: string;
-  data: unknown;
-  next: string | undefined;
+/** A cache-only read found nothing cached. */
+export class CacheMiss extends Error {
+  override name = "CacheMiss";
 }
 
 export interface Fetched<T> {
@@ -73,14 +74,34 @@ async function errorMessage(res: Response, what: string): Promise<string> {
 export class GitHub {
   #fetch: Fetch;
   #token: TokenGetter;
-  #cache = new Map<string, CacheEntry>();
+  readonly cache: ResponseCache;
+  /** Answer GETs from the cache only, never the network (see cacheOnly). */
+  #cacheOnly = false;
+  #oldest: number | undefined;
   rate: RateLimit | undefined;
   /** A classic token's scopes, from X-OAuth-Scopes; unset for other tokens. */
   scopes: string | undefined;
 
-  constructor(token: TokenGetter, fetchImpl: Fetch = (i, init) => fetch(i, init)) {
+  constructor(token: TokenGetter, fetchImpl: Fetch = (i, init) => fetch(i, init), cache: ResponseCache = new ResponseCache()) {
     this.#token = token;
     this.#fetch = fetchImpl;
+    this.cache = cache;
+  }
+
+  /**
+   * A client over the same cache that never touches the network: GETs
+   * answer from the cache or throw CacheMiss, and writes are refused. The
+   * same loaders then render the last known state before revalidating.
+   */
+  cacheOnly(): GitHub {
+    const gh = new GitHub(this.#token, () => Promise.reject(new Error("cache-only client")), this.cache);
+    gh.#cacheOnly = true;
+    return gh;
+  }
+
+  /** On a cache-only client: when the oldest response it served was fetched (epoch ms). */
+  get oldest(): number | undefined {
+    return this.#oldest;
   }
 
   /** The API URL for PATH; the token never goes anywhere else. */
@@ -125,18 +146,33 @@ export class GitHub {
     return res;
   }
 
-  /** GET one page, conditionally if we have its ETag. */
-  async #getPage(url: string): Promise<{ entry: CacheEntry; changed: boolean }> {
-    const cached = this.#cache.get(url);
-    const res = await this.#send("GET", url, cached ? { "If-None-Match": cached.etag } : {});
-    if (res.status === 304 && cached) return { entry: cached, changed: false };
+  /** GET one page, conditionally if we have it cached with a validator. */
+  async #getPage(url: string): Promise<{ entry: CachedResponse; changed: boolean }> {
+    const cached = await this.cache.get(url);
+    if (this.#cacheOnly) {
+      if (!cached) throw new CacheMiss(`not cached: GET ${url}`);
+      this.#oldest = Math.min(this.#oldest ?? cached.fetchedAt, cached.fetchedAt);
+      return { entry: cached, changed: true };
+    }
+    const validators: Record<string, string> = {};
+    if (cached?.etag) validators["If-None-Match"] = cached.etag;
+    else if (cached?.lastModified) validators["If-Modified-Since"] = cached.lastModified;
+    const generation = this.cache.generation;
+    const res = await this.#send("GET", url, validators);
+    if (res.status === 304 && cached) {
+      this.cache.refreshed(url);
+      return { entry: cached, changed: false };
+    }
     if (!res.ok) throw new GitHubError(res.status, await errorMessage(res, `GET ${url}`));
-    const entry: CacheEntry = {
-      etag: res.headers.get("etag") ?? "",
-      data: await res.json(),
-      next: nextLink(res.headers.get("link")),
-    };
-    if (entry.etag) this.#cache.set(url, entry);
+    const text = await res.text();
+    const entry: CachedResponse = { data: JSON.parse(text) as unknown, fetchedAt: this.cache.now() };
+    const etag = res.headers.get("etag");
+    const lastModified = res.headers.get("last-modified");
+    const next = nextLink(res.headers.get("link"));
+    if (etag) entry.etag = etag;
+    if (lastModified) entry.lastModified = lastModified;
+    if (next) entry.next = next;
+    this.cache.put(url, entry, text.length, generation);
     return { entry, changed: true };
   }
 
@@ -165,11 +201,21 @@ export class GitHub {
     return { data: out, changed };
   }
 
-  /** An unconditional request, with an optional JSON body. */
+  /**
+   * An unconditional request, with an optional JSON body. It never reads
+   * or fills the cache, so a GET here is always the server's current
+   * answer: guards before a write (the approve's head check) use it. A
+   * successful write drops the cached responses it may have changed.
+   */
   async send<T>(method: string, path: string, body?: unknown): Promise<T> {
+    if (this.#cacheOnly) throw new Error(`cache-only client: not sending ${method} ${path}`);
     const url = this.#url(path);
+    // A write may land even if its response is lost, so invalidate first.
+    if (method !== "GET") this.cache.invalidate(staleAfterWrite(url));
     const res = await this.#send(method, url, {}, body);
     if (!res.ok) throw new GitHubError(res.status, await errorMessage(res, `${method} ${path}`));
+    // And again: a GET that raced the write may have cached the old state.
+    if (method !== "GET") this.cache.invalidate(staleAfterWrite(url));
     return (res.status === 204 ? undefined : await res.json()) as T;
   }
 

@@ -56,6 +56,11 @@ export const POLL_BACKOFF_FACTOR = 4;
 /** Below this fraction of the hourly budget, back off. */
 export const RATE_LOW_FRACTION = 0.1;
 
+/** The persistent response cache's size cap, in characters of JSON; least recently used entries go first. */
+export const CACHE_MAX_BYTES = 50 * 1024 * 1024;
+/** Cached responses the server hasn't confirmed for this long are dropped. */
+export const CACHE_MAX_AGE_MS = 7 * 24 * 3600_000;
+
 /** Items per page when listing the board (the API maximum). */
 export const PAGE_SIZE = 100;
 /** Comments shown in the item view. */
