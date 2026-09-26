@@ -70,7 +70,7 @@ interface RawPull {
   created_at?: string;
   updated_at?: string;
   head: { sha: string; ref?: string; repo?: { full_name?: string } | null };
-  base: { ref?: string; repo?: { full_name?: string; private?: boolean; parent?: { full_name?: string } } };
+  base: { sha?: string; ref?: string; repo?: { full_name?: string; private?: boolean; parent?: { full_name?: string } } };
   additions?: number;
   deletions?: number;
   changed_files?: number;
@@ -133,6 +133,8 @@ async function readDecisions(gh: GitHub, ref: IssueRef): Promise<{ reviews: RawR
 
 export interface Commit {
   sha: string;
+  /** Its first parent: the base of its own diff. */
+  parent?: string;
   url: string;
   message: string;
   author: string;
@@ -145,6 +147,8 @@ export interface FileDiff {
   status: string;
   additions: number;
   deletions: number;
+  /** The file's blob at the diff's end (for a removed file, GitHub's placeholder). */
+  sha?: string;
   /** Absent when GitHub omits it (binary, or too large). */
   patch?: string;
   url?: string;
@@ -161,6 +165,8 @@ export interface PrDetail {
   state: string;
   draft: boolean;
   head: string;
+  /** The base commit the PR's diff starts from, as GitHub last computed it. */
+  baseSha?: string;
   headRef?: string;
   baseRef?: string;
   /** The fork's parent repository, `owner/repo`. */
@@ -187,6 +193,7 @@ export interface PrDetail {
 
 interface RawCommit {
   sha: string;
+  parents?: { sha: string }[];
   html_url: string;
   commit: { message?: string; author?: { name?: string; date?: string } | null };
   author?: { login?: string } | null;
@@ -194,6 +201,7 @@ interface RawCommit {
 
 interface RawFile {
   filename: string;
+  sha?: string | null;
   previous_filename?: string;
   status?: string;
   additions?: number;
@@ -209,6 +217,15 @@ const MAX_LISTED_COMMITS = 250;
 
 function pullPath(ref: IssueRef): string {
   return `/repos/${ref.owner}/${ref.repo}/pulls/${ref.number}`;
+}
+
+function fileDiff(f: RawFile): FileDiff {
+  const out: FileDiff = { filename: f.filename, status: f.status ?? "modified", additions: f.additions ?? 0, deletions: f.deletions ?? 0 };
+  if (f.previous_filename) out.previous = f.previous_filename;
+  if (f.sha) out.sha = f.sha;
+  if (f.patch !== undefined) out.patch = f.patch;
+  if (f.blob_url) out.url = f.blob_url;
+  return out;
 }
 
 /** Everything the review pane shows about one PR. */
@@ -256,21 +273,17 @@ export async function loadPrDetail(gh: GitHub, ref: IssueRef): Promise<PrDetail>
     commitCount,
     commits: commits.map((c) => {
       const out: Commit = { sha: c.sha, url: c.html_url, message: c.commit.message ?? "", author: c.author?.login ?? c.commit.author?.name ?? "unknown" };
+      if (c.parents?.[0]?.sha) out.parent = c.parents[0].sha;
       if (c.commit.author?.date) out.date = c.commit.author.date;
       return out;
     }),
-    files: files.map((f) => {
-      const out: FileDiff = { filename: f.filename, status: f.status ?? "modified", additions: f.additions ?? 0, deletions: f.deletions ?? 0 };
-      if (f.previous_filename) out.previous = f.previous_filename;
-      if (f.patch !== undefined) out.patch = f.patch;
-      if (f.blob_url) out.url = f.blob_url;
-      return out;
-    }),
+    files: files.map(fileDiff),
     checks: ciChecks(runs, status),
     verdict: reviewVerdict(decisions.reviews, head, OPERATOR, decisions.comments),
     consistent,
     warnings,
   };
+  if (pull.base.sha) detail.baseSha = pull.base.sha;
   if (pull.head.ref) detail.headRef = pull.head.ref;
   if (pull.base.ref) detail.baseRef = pull.base.ref;
   if (repoInfo.parent?.full_name) detail.parent = repoInfo.parent.full_name;
@@ -278,20 +291,76 @@ export async function loadPrDetail(gh: GitHub, ref: IssueRef): Promise<PrDetail>
   return detail;
 }
 
+const SHA_RE = /^[0-9a-f]{40}$/;
+
+/** Files a compare lists at most; past it, the view says so. */
+export const MAX_COMPARE_FILES = 300;
+
 /**
- * Submit a review of the head he was shown. The PR is re-read first,
- * unconditionally, and a moved head refuses: an approval must name the
- * commit he read (bot-pr's promote only honours it for the head), and
- * a change request on stale code confuses the bot.
+ * The files changed between two commits of the PR (`base` an ancestor of
+ * `to`), for viewing one commit or a range of them.
  */
-export async function submitReview(gh: GitHub, ref: IssueRef, review: ReviewRequest): Promise<string> {
+export async function loadRangeFiles(gh: GitHub, ref: IssueRef, base: string, to: string): Promise<FileDiff[]> {
+  if (!SHA_RE.test(base) || !SHA_RE.test(to)) throw new Error(`not a commit range: ${base}...${to}`);
+  const r = await gh.get<{ files?: RawFile[] }>(`/repos/${ref.owner}/${ref.repo}/compare/${base}...${to}?per_page=1`);
+  return (r.data.files ?? []).map(fileDiff);
+}
+
+/** Files larger than this aren't fetched for context. */
+export const MAX_CONTEXT_FILE_BYTES = 1_000_000;
+
+/** A file's lines at a commit, for expanding the unchanged context around the diff. */
+export async function loadFileLines(gh: GitHub, ref: IssueRef, path: string, sha: string): Promise<string[]> {
+  if (!SHA_RE.test(sha)) throw new Error(`not a commit id: ${sha}`);
+  // Git has no such path components; in a URL they would climb the API path.
+  if (path.split("/").some((p) => p === "" || p === "." || p === "..")) throw new Error(`not a repository path: ${path}`);
+  const enc = path.split("/").map(encodeURIComponent).join("/");
+  const r = await gh.get<{ type?: string; encoding?: string; content?: string; size?: number }>(`/repos/${ref.owner}/${ref.repo}/contents/${enc}?ref=${sha}`);
+  const f = r.data;
+  if (f.type !== "file") throw new Error(`${path} is not a file at ${sha.slice(0, 10)}`);
+  if ((f.size ?? 0) > MAX_CONTEXT_FILE_BYTES || f.encoding !== "base64" || f.content === undefined) {
+    throw new Error(`${path} is too large to show its context here`);
+  }
+  const bin = atob(f.content.replace(/\s/g, ""));
+  const bytes = Uint8Array.from(bin, (ch) => ch.charCodeAt(0));
+  const text = new TextDecoder("utf-8").decode(bytes).replace(/\r\n?/g, "\n");
+  const lines = text.split("\n");
+  if (lines.at(-1) === "") lines.pop();
+  return lines;
+}
+
+/**
+ * Submit his reviews of the head he was shown (the last request; any
+ * before it carry line comments on earlier commits). The PR is re-read
+ * first, unconditionally, and a moved head refuses: an approval must
+ * name the commit he read (bot-pr's promote only honours it for the
+ * head), and a change request on stale code confuses the bot.
+ */
+export async function submitReview(
+  gh: GitHub,
+  ref: IssueRef,
+  review: ReviewRequest | readonly ReviewRequest[],
+  onSent: (index: number) => void = () => {},
+): Promise<string> {
+  const reviews = Array.isArray(review) ? (review as readonly ReviewRequest[]) : [review as ReviewRequest];
+  const main = reviews.at(-1);
+  if (!main) throw new Error("nothing to send");
   const fresh = await gh.send<RawPull>("GET", pullPath(ref));
   if (fresh.state !== "open") throw new Error(`the PR is ${fresh.merged_at ? "merged" : (fresh.state ?? "not open")}; nothing was sent`);
-  if (fresh.head.sha !== review.commit_id) {
+  if (fresh.head.sha !== main.commit_id) {
     throw new Error(
       `the PR's head moved to ${fresh.head.sha.slice(0, 12)} since you opened it; nothing was sent. Reload (r) to review the new commits.`,
     );
   }
-  const r = await gh.send<{ html_url?: string }>("POST", `${pullPath(ref)}/reviews`, review);
-  return r.html_url ?? fresh.html_url;
+  let url = fresh.html_url;
+  for (const [i, r] of reviews.entries()) {
+    try {
+      url = (await gh.send<{ html_url?: string }>("POST", `${pullPath(ref)}/reviews`, r)).html_url ?? url;
+    } catch (e) {
+      const sent = i === 0 ? "nothing was sent" : `the comments on ${i} earlier commit${i > 1 ? "s" : ""} went out, the rest didn't`;
+      throw new Error(`${e instanceof Error ? e.message : String(e)} (${sent})`);
+    }
+    onSent(i);
+  }
+  return url;
 }

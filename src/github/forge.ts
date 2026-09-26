@@ -214,47 +214,6 @@ export const VERDICT_LABEL: Record<VerdictState, string> = {
   promoted: "/promote sent; bot-pr decides",
 };
 
-export type DiffKind = "hunk" | "add" | "del" | "ctx" | "note";
-
-export interface DiffLine {
-  kind: DiffKind;
-  text: string;
-  /** Line number in the old file (del, ctx). */
-  old?: number;
-  /** Line number in the new file (add, ctx). */
-  new?: number;
-}
-
-const HUNK_RE = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/;
-
-/**
- * Parse the unified diff GitHub gives per file (the `patch` of a PR file:
- * hunks only, no file headers) into numbered lines.
- */
-export function parsePatch(patch: string): DiffLine[] {
-  const out: DiffLine[] = [];
-  let oldNo = 0;
-  let newNo = 0;
-  const lines = patch.replace(/\r\n?/g, "\n").split("\n");
-  if (lines.at(-1) === "") lines.pop();
-  for (const line of lines) {
-    const hunk = HUNK_RE.exec(line);
-    if (hunk) {
-      oldNo = Number(hunk[1]);
-      newNo = Number(hunk[2]);
-      out.push({ kind: "hunk", text: line });
-      continue;
-    }
-    const mark = line[0];
-    const text = line.slice(1);
-    if (mark === "+") out.push({ kind: "add", text, new: newNo++ });
-    else if (mark === "-") out.push({ kind: "del", text, old: oldNo++ });
-    else if (mark === "\\") out.push({ kind: "note", text: line });
-    else out.push({ kind: "ctx", text, old: oldNo++, new: newNo++ });
-  }
-  return out;
-}
-
 export type CiState = "success" | "failure" | "pending" | "none";
 
 export interface CiCheck {
@@ -314,11 +273,35 @@ export function ciSummary(checks: readonly CiCheck[]): CiState {
 
 export type ReviewAction = "approve" | "request-changes" | "comment";
 
+/** A comment on a line (or lines) of the diff at a commit, as the reviews API takes it. */
+export interface LineComment {
+  path: string;
+  /** The last line commented on, in the side's file. */
+  line: number;
+  side: "LEFT" | "RIGHT";
+  /** For a range: its first line and side. */
+  start_line?: number;
+  start_side?: "LEFT" | "RIGHT";
+  body: string;
+}
+
+/** A line comment he wrote, anchored to the commit whose diff showed it. */
+export interface DraftComment extends LineComment {
+  /** The commit the comment's diff ends at: the head, or a commit of the PR viewed alone. */
+  commit: string;
+  /** Where that diff starts: a commit, or PR_BASE for the PR's own base. Only for showing it. */
+  base?: string;
+}
+
+/** A draft's base when written on the PR's whole diff. */
+export const PR_BASE = "pr";
+
 /** The body of POST /repos/{o}/{r}/pulls/{n}/reviews. */
 export interface ReviewRequest {
   commit_id: string;
   event: "APPROVE" | "REQUEST_CHANGES" | "COMMENT";
   body: string;
+  comments?: LineComment[];
 }
 
 const EVENT: Record<ReviewAction, ReviewRequest["event"]> = {
@@ -327,23 +310,69 @@ const EVENT: Record<ReviewAction, ReviewRequest["event"]> = {
   comment: "COMMENT",
 };
 
-/**
- * Compose the review to submit. His text may not contain a line that
- * bot-pr would read as a command (a `/draft` in a change request would
- * still count), so the only command the app writes is the `/draft` line
- * of an approval he asked for with the checkbox.
- */
-export function composeReview(action: ReviewAction, text: string, head: string, opts: { draft?: boolean } = {}): ReviewRequest {
-  if (!/^[0-9a-f]{40}$/.test(head)) throw new AnswerError(`not a commit id: ${JSON.stringify(head)}`);
+const SHA_RE = /^[0-9a-f]{40}$/;
+
+/** His text, trimmed, refusing lines bot-pr would read as commands. */
+function cleanText(text: string, what: string): string {
   const clean = text.replace(/\r\n?/g, "\n").trim();
   const bad = clean.split("\n").find(isCommandLine);
   if (bad !== undefined) {
-    throw new AnswerError(`the line ${JSON.stringify(bad.trim())} would be read as a bot command; reword it (e.g. put it in backticks)`);
+    throw new AnswerError(`the line ${JSON.stringify(bad.trim())} in ${what} would be read as a bot command; reword it (e.g. put it in backticks)`);
   }
-  if (action !== "approve" && !clean) {
+  return clean;
+}
+
+/**
+ * Compose the reviews to submit. His text may not contain a line that
+ * bot-pr would read as a command (a `/draft` in a change request would
+ * still count), so the only command the app writes is the `/draft` line
+ * of an approval he asked for with the checkbox.
+ *
+ * Line comments go in the review of the commit whose diff he wrote them
+ * on. Those on the head's diff ride along with his review; those written
+ * on an earlier commit viewed alone go first, in a comment-only review
+ * of that commit each. The last request is always the head's review.
+ */
+export function composeReviews(
+  action: ReviewAction,
+  text: string,
+  head: string,
+  opts: { draft?: boolean; comments?: readonly DraftComment[] } = {},
+): ReviewRequest[] {
+  if (!SHA_RE.test(head)) throw new AnswerError(`not a commit id: ${JSON.stringify(head)}`);
+  const clean = cleanText(text, "the review");
+  const comments = opts.comments ?? [];
+  const byCommit = new Map<string, LineComment[]>();
+  for (const c of comments) {
+    if (!SHA_RE.test(c.commit)) throw new AnswerError(`not a commit id: ${JSON.stringify(c.commit)}`);
+    const body = cleanText(c.body, `the comment on ${c.path}:${c.line}`);
+    if (!body) throw new AnswerError(`the comment on ${c.path}:${c.line} is empty`);
+    // Only what the API takes: drafts come back from storage, which may hold anything.
+    const out: LineComment = { path: c.path, line: c.line, side: c.side, body };
+    if (c.start_line !== undefined) {
+      out.start_line = c.start_line;
+      out.start_side = c.start_side ?? c.side;
+    }
+    const list = byCommit.get(c.commit) ?? [];
+    list.push(out);
+    byCommit.set(c.commit, list);
+  }
+  const atHead = byCommit.get(head) ?? [];
+  if (action !== "approve" && !clean && atHead.length === 0) {
     throw new AnswerError(action === "comment" ? "write a comment first" : "say what to change");
   }
   if (opts.draft && action !== "approve") throw new AnswerError(`${DRAFT_LINE} goes only with an approval`);
-  const body = [clean, opts.draft ? DRAFT_LINE : ""].filter(Boolean).join("\n\n");
-  return { commit_id: head, event: EVENT[action], body };
+  const out: ReviewRequest[] = [];
+  for (const [commit, list] of byCommit) {
+    if (commit !== head) out.push({ commit_id: commit, event: "COMMENT", body: "", comments: list });
+  }
+  const main: ReviewRequest = { commit_id: head, event: EVENT[action], body: [clean, opts.draft ? DRAFT_LINE : ""].filter(Boolean).join("\n\n") };
+  if (atHead.length) main.comments = atHead;
+  out.push(main);
+  return out;
+}
+
+/** Compose his review of the head, without line comments. */
+export function composeReview(action: ReviewAction, text: string, head: string, opts: { draft?: boolean } = {}): ReviewRequest {
+  return composeReviews(action, text, head, opts).at(-1) as ReviewRequest;
 }

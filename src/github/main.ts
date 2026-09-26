@@ -18,12 +18,12 @@ import {
   RATE_LOW_FRACTION,
   THEME_KEY,
 } from "./config.ts";
-import { composeReview, type ForgePr, refKey, VERDICT_LABEL } from "./forge.ts";
+import { composeReviews, type ForgePr, refKey, VERDICT_LABEL } from "./forge.ts";
 import { type Command, HELP, keyCommand, parseRoute, type Route, type RouteInfo } from "./keys.ts";
 import { type HarnessCache, loadNews, type News } from "./news.ts";
 import { newsView } from "./newsview.ts";
-import { loadForgePrs, loadPrDetail, type PrDetail, refreshVerdicts, submitReview, type VerdictEntry } from "./prs.ts";
-import { APPROVE_ACTION, FILE_CLASS, prView, REVIEW_FORM_CLASS } from "./prview.ts";
+import { loadFileLines, loadForgePrs, loadPrDetail, loadRangeFiles, type PrDetail, refreshVerdicts, submitReview, type VerdictEntry } from "./prs.ts";
+import { APPROVE_ACTION, type PrPane, prView, REVIEW_FORM_CLASS } from "./prview.ts";
 import { buildEntries, type Entry, itemHref } from "./queue.ts";
 import { answerState, type BoardHref, CONTEXT_CLASS, contextView, itemView, queueView, ROW_CLASS, ROW_KEY_ATTR, type RowLabel, STATE_LABEL } from "./view.ts";
 
@@ -73,8 +73,8 @@ interface State {
   /** The news pane's last read, and which merged PRs touched the harness. */
   news?: News;
   harness: HarnessCache;
-  /** The file the keyboard is on in a PR. */
-  fileIndex: number;
+  /** The open PR's pane, which handles its own keys. */
+  pane?: PrPane;
   help: boolean;
   lastPoll?: Date;
   error?: string;
@@ -190,7 +190,8 @@ function renderRoute(state: State): void {
   delete state.shown;
   delete state.shownPr;
   delete state.itemNote;
-  state.fileIndex = -1;
+  state.pane?.dispose();
+  delete state.pane;
   renderChrome(state);
   if (!state.loaded) {
     showMain(h("p", { class: "empty" }, "Loading…"));
@@ -253,26 +254,29 @@ function renderPr(state: State, ref: { owner: string; repo: string; number: numb
     return;
   }
   state.shownPr = { key, updatedAt: detail.updatedAt };
-  showMain(
-    prView(detail, prEntry(state, key), render, {
-      review: async (action, text, draft) => {
-        const url = await submitReview(state.gh, ref, composeReview(action, text, detail.head, { draft }));
-        state.reviewed.add(key);
-        state.forceForge = true;
-        // Our own review moved updated_at: note the new one so it isn't
-        // reported as a change, without re-rendering the form.
-        void loadPrDetail(state.gh, ref)
-          .then((d) => {
-            state.details.set(key, d);
-            if (state.shownPr?.key === key) state.shownPr.updatedAt = d.updatedAt;
-          })
-          .catch(() => {
-            // The next open reloads it.
-          });
-        return url;
-      },
-    }, { reviewedHere: state.reviewed.has(key) }),
-  );
+  const pane = prView(detail, prEntry(state, key), render, {
+    review: async (action, text, draft, comments, sent) => {
+      const reviews = composeReviews(action, text, detail.head, { draft, comments });
+      const url = await submitReview(state.gh, ref, reviews, (i) => sent(reviews[i]?.commit_id ?? ""));
+      state.reviewed.add(key);
+      state.forceForge = true;
+      // Our own review moved updated_at: note the new one so it isn't
+      // reported as a change, without re-rendering the form.
+      void loadPrDetail(state.gh, ref)
+        .then((d) => {
+          state.details.set(key, d);
+          if (state.shownPr?.key === key) state.shownPr.updatedAt = d.updatedAt;
+        })
+        .catch(() => {
+          // The next open reloads it.
+        });
+      return url;
+    },
+    loadRange: (base, to) => loadRangeFiles(state.gh, ref, base, to),
+    loadLines: (path, sha) => loadFileLines(state.gh, ref, path, sha),
+  }, { reviewedHere: state.reviewed.has(key) });
+  state.pane = pane;
+  showMain(pane.el);
 }
 
 /** Load (or reload) a PR's details, then show them if it is still open. */
@@ -462,26 +466,13 @@ function isEditing(el: Element | null): boolean {
   return el.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(el.tagName);
 }
 
-function moveFile(state: State, step: number): void {
-  const files = [...byId("view").querySelectorAll<HTMLDetailsElement>(`details.${FILE_CLASS}`)];
-  if (files.length === 0) return;
-  state.fileIndex = Math.max(0, Math.min(files.length - 1, state.fileIndex + step));
-  const f = files[state.fileIndex];
-  for (const x of files) x.classList.toggle("sel", x === f);
-  f?.scrollIntoView({ block: "start" });
-  f?.querySelector("summary")?.focus({ preventScroll: true });
-}
-
 function run(state: State, cmd: Command, where: Route): void {
   const view = byId("view");
+  if (where === "pr" && state.pane?.command(cmd)) return;
   switch (cmd) {
     case "next":
     case "prev": {
       const step = cmd === "next" ? 1 : -1;
-      if (where === "pr") {
-        moveFile(state, step);
-        return;
-      }
       const all = rows();
       const i = all.findIndex((r) => r.getAttribute(ROW_KEY_ATTR) === state.selected);
       const next = all[Math.max(0, Math.min(all.length - 1, i + step))];
@@ -517,13 +508,9 @@ function run(state: State, cmd: Command, where: Route): void {
     case "approve":
       view.querySelector<HTMLButtonElement>(`.${REVIEW_FORM_CLASS} button[data-action="${APPROVE_ACTION}"]`)?.click();
       return;
-    case "fold": {
-      const files = view.querySelectorAll<HTMLDetailsElement>(`details.${FILE_CLASS}`);
-      const f = files[Math.max(0, state.fileIndex)];
-      if (f) f.open = !f.open;
-      return;
-    }
     case "compose":
+    case "comment":
+      // With no line focused in a PR, c goes to the review text.
       view.querySelector<HTMLTextAreaElement>("form textarea")?.focus();
       return;
     case "help":
@@ -606,7 +593,6 @@ async function start(source: TokenSource): Promise<void> {
     context: new Map(),
     details: new Map(),
     reloadedFor: new Map(),
-    fileIndex: -1,
     help: false,
     selected: undefined,
     harness: new Map(),
