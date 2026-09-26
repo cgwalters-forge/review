@@ -13,6 +13,7 @@ import {
   postAnswer,
   postAskComment,
   rerunFailedJobs,
+  submitAskedReview,
 } from "../src/github/backend.ts";
 import { fields, rawItems, scriptedFetch } from "./helpers.ts";
 
@@ -441,4 +442,55 @@ describe("rerunFailedJobs", () => {
       init?.method === "POST" && url.endsWith("/comments") ? new Response(JSON.stringify({ message: "nope" }), { status: 403 }) : base.fetchImpl(url, init);
     await assert.rejects(rerunFailedJobs(new GitHub(token, fetchImpl), CHORE, RUN), /reran the failed jobs of .*runs\/777, but couldn't say so on cgwalters-forge\/tracker#25.*Comment there yourself/);
   });
+});
+
+describe("submitAskedReview", () => {
+  const ASK = { owner: "cgwalters-forge", repo: "tracker", number: 24 };
+  const PR = { owner: "example-upstream", repo: "widget", number: 50 };
+  const HEAD = "a".repeat(40);
+  const review = {
+    html_url: "https://github.com/cgwalters-forge/tracker/issues/24",
+    state: "open",
+    labels: [{ name: "review" }],
+    assignees: [{ login: "cgwalters" }],
+    user: { login: "cgwalters-bot" },
+    body: `Blocks: \`https://github.com/example-upstream/widget/issues/7\`\nAsk: Re-approve\nReview: \`https://github.com/example-upstream/widget/pull/50\` at ${HEAD}\n`,
+  };
+  const pull = { html_url: "https://github.com/example-upstream/widget/pull/50", state: "open", head: { sha: HEAD }, base: {} };
+
+  function github(issue: unknown) {
+    return scriptedFetch((method, url) => {
+      if (method === "GET" && url === `${TRACKER}/24`) return { body: issue };
+      if (method === "GET" && url === `${API}/repos/example-upstream/widget/pulls/50`) return { body: pull };
+      if (method === "POST" && url === `${API}/repos/example-upstream/widget/pulls/50/reviews`) return { body: { html_url: `${pull.html_url}#r1` } };
+      return undefined;
+    });
+  }
+  const approve = [{ commit_id: HEAD, event: "APPROVE" as const, body: "" }];
+
+  it("re-reads the ask, then reviews", async () => {
+    const { fetchImpl, calls } = github(review);
+    assert.equal(await submitAskedReview(new GitHub(token, fetchImpl), ASK, PR, HEAD, approve), `${pull.html_url}#r1`);
+    assert.deepEqual(calls.map((c) => `${c.method} ${c.url.replace(API, "")}`), [
+      "GET /repos/cgwalters-forge/tracker/issues/24",
+      "GET /repos/example-upstream/widget/pulls/50",
+      "POST /repos/example-upstream/widget/pulls/50/reviews",
+    ]);
+  });
+
+  const refusals: [string, unknown, RegExp][] = [
+    ["an ask closed since the pane rendered", { ...review, state: "closed" }, /not reviewing: .*#24 is closed/],
+    ["an ask no longer assigned to him", { ...review, assignees: [] }, /not assigned to cgwalters/],
+    ["an ask relabelled as a chore", { ...review, labels: [{ name: "chore" }] }, /not labelled "review"/],
+    ["an ask that no longer names this PR", { ...review, body: `Ask: x\nReview: \`https://github.com/example-upstream/widget/pull/51\` at ${HEAD}` }, /no longer asks for a review of example-upstream\/widget#50/],
+    ["an ask that now names another head", { ...review, body: `Ask: x\nReview: \`https://github.com/example-upstream/widget/pull/50\` at ${"b".repeat(40)}` }, /now asks about bbbbbbbbbbbb, not the aaaaaaaaaaaa shown/],
+    ["an ask with a line it can't read", { ...review, body: `Ask: x\nReview: \`https://github.com/example-upstream/widget/pull/50\` at ${HEAD}\nReview: nonsense` }, /can't read "Review: nonsense"/],
+  ];
+  for (const [name, issue, want] of refusals) {
+    it(`sends nothing for ${name}`, async () => {
+      const { fetchImpl, calls } = github(issue);
+      await assert.rejects(submitAskedReview(new GitHub(token, fetchImpl), ASK, PR, HEAD, approve), want);
+      assert.deepEqual(calls.map((c) => c.method), ["GET"]);
+    });
+  }
 });

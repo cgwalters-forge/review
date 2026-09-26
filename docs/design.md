@@ -137,10 +137,15 @@ it.
   approval. The pane shows the head the bot asked about and warns when
   the PR has moved since: a review is always of the head shown, and when
   that isn't the one asked about he must confirm reviewing the new head
-  first, in its own question. After an approval or change request, the
-  app comments on the review ask ("Approved OWNER/REPO#N at <sha>: <review
-  URL>") so the bot sees it; a plain comment review settles nothing and
-  posts nothing.
+  first, in its own question. On a PR the form is there only because of
+  the ask, the ask is read fresh before anything is sent (still an open
+  review ask of the bot's, assigned to him, naming this PR at the head
+  shown), not trusted from the board snapshot. After an approval or
+  change request, the app comments on the review ask (``Approved
+  `OWNER/REPO#N` at `<sha>`: `<review URL>` ``) so the bot sees it; the
+  PR and URL are in code spans, since bare in a public issue they would
+  put a "mentioned this" entry on the upstream PR. A plain comment review
+  settles nothing and posts nothing.
 - **A chore** has `Ask: <one line>` and zero or more `` Rerun:
   `https://github.com/OWNER/REPO/actions/runs/ID` `` lines. With reruns,
   the app lists each run's failed jobs (`GET .../actions/runs/{id}` and

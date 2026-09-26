@@ -5,7 +5,17 @@
 
 import { type Answer, formatAnswer, formatComment, parseQuestion } from "../answer.ts";
 import type { GitHub } from "./api.ts";
-import { failedJobs, parseAskBody, parseRunUrl, type RawJob, type RawRun, rerunComment, rerunProblem, type RunRef } from "./asks.ts";
+import {
+  failedJobs,
+  parseAskBody,
+  parseRunUrl,
+  type RawJob,
+  type RawRun,
+  rerunComment,
+  rerunProblem,
+  type ReviewTarget,
+  type RunRef,
+} from "./asks.ts";
 import {
   answeredPending,
   askKind,
@@ -29,7 +39,8 @@ import {
 } from "./board.ts";
 import { BOARD_NUMBER, BOARD_OWNER, FETCH_CONCURRENCY, PAGE_SIZE, QUEUE_STATUSES, RECENT_COMMENTS, TRACKER_REPO } from "./config.ts";
 import { refKey } from "./forge.ts";
-import { mapLimit } from "./prs.ts";
+import { mapLimit, submitReview } from "./prs.ts";
+import type { ReviewRequest } from "./forge.ts";
 
 const PROJECT = `/users/${BOARD_OWNER}/projectsV2/${BOARD_NUMBER}`;
 
@@ -230,11 +241,11 @@ export interface Posted {
  * in `scope`; anything else throws, before anything is written. A
  * transferred issue doesn't count: it would answer from its new home.
  */
-async function freshAsk(gh: GitHub, ref: IssueRef, want: AskKind, scope: AskScope): Promise<RawContent> {
+async function freshAsk(gh: GitHub, ref: IssueRef, want: AskKind, scope: AskScope, verb = "answering"): Promise<RawContent> {
   const issue = await gh.send<RawContent>("GET", `/repos/${ref.owner}/${ref.repo}/issues/${ref.number}`);
   const actual = parseIssueUrl(issue.html_url ?? "");
   if (!actual || refKey(actual).toLowerCase() !== refKey(ref).toLowerCase()) {
-    throw new Error(`not answering: ${refKey(ref)} is now ${issue.html_url ?? "somewhere unknown"}`);
+    throw new Error(`not ${verb}: ${refKey(ref)} is now ${issue.html_url ?? "somewhere unknown"}`);
   }
   const facts = {
     kind: issue.pull_request ? "pr" : "issue",
@@ -245,7 +256,7 @@ async function freshAsk(gh: GitHub, ref: IssueRef, want: AskKind, scope: AskScop
     ...(issue.state ? { state: issue.state } : {}),
   } as const;
   const problem = askProblem(facts, want, scope);
-  if (problem !== undefined) throw new Error(`not answering: ${problem}`);
+  if (problem !== undefined) throw new Error(`not ${verb}: ${problem}`);
   return issue;
 }
 
@@ -286,6 +297,44 @@ export async function postAskComment(gh: GitHub, ref: IssueRef, kind: "review" |
   const body = formatComment(text);
   await freshAsk(gh, ref, kind, scope);
   return comment(gh, ref, body);
+}
+
+/**
+ * Read a review ask fresh and return its `Review:` target for this PR:
+ * it must still be an open review ask in `scope` naming `pr` (and no
+ * line the app can't read), at the head the pane showed as asked about.
+ * The review pane offers its form on an upstream PR only because of the
+ * ask, so this runs before anything is written, not just before telling
+ * the bot.
+ */
+export async function freshReviewAsk(gh: GitHub, ask: IssueRef, pr: IssueRef, askedHead: string, scope: AskScope = TRACKER_SCOPE): Promise<ReviewTarget> {
+  const issue = await freshAsk(gh, ask, "review", scope, "reviewing");
+  const body = parseAskBody(issue.body ?? "");
+  if (body.problems.length) throw new Error(`not reviewing: ${refKey(ask)} ${body.problems[0]}`);
+  const target = body.reviews.find((r) => refKey(r.ref).toLowerCase() === refKey(pr).toLowerCase());
+  if (!target) throw new Error(`not reviewing: ${refKey(ask)} no longer asks for a review of ${refKey(pr)}`);
+  if (target.head !== askedHead) {
+    throw new Error(`not reviewing: ${refKey(ask)} now asks about ${target.head.slice(0, 12)}, not the ${askedHead.slice(0, 12)} shown; reload (r)`);
+  }
+  return target;
+}
+
+/**
+ * Submit a review that only a review ask allows (an upstream PR): the ask
+ * is re-read first (see freshReviewAsk), and a closed, changed or
+ * reassigned one sends nothing.
+ */
+export async function submitAskedReview(
+  gh: GitHub,
+  ask: IssueRef,
+  pr: IssueRef,
+  askedHead: string,
+  reviews: readonly ReviewRequest[],
+  onSent: (index: number) => void = () => {},
+  scope: AskScope = TRACKER_SCOPE,
+): Promise<string> {
+  await freshReviewAsk(gh, ask, pr, askedHead, scope);
+  return submitReview(gh, pr, reviews, onSent);
 }
 
 /** A run a chore asks to rerun, as last read. */
