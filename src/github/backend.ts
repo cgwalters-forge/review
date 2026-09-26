@@ -1,11 +1,14 @@
 // What the app does against GitHub: read the queue, read an item's
 // context, and act on an ask: answer a question, comment on a review or
-// chore. The views call these; tests drive them with a scripted fetch.
+// chore, rerun a chore's failed runs. The views call these; tests drive
+// them with a scripted fetch.
 
 import { type Answer, formatAnswer, formatComment, parseQuestion } from "../answer.ts";
 import type { GitHub } from "./api.ts";
+import { failedJobs, parseAskBody, parseRunUrl, type RawJob, type RawRun, rerunComment, rerunProblem, type RunRef } from "./asks.ts";
 import {
   answeredPending,
+  askKind,
   askProblem,
   type AskKind,
   type AskScope,
@@ -98,6 +101,8 @@ export interface Context {
   gists: Gist[];
   /** A tracker issue's sub-issues, when it has any. */
   subIssues?: SubIssue[];
+  /** A rerun chore's runs, in the order its body names them. */
+  runs?: RunStatus[];
   /** On a question: he commented after the bot last did. */
   answered?: boolean;
   /** Problems reading optional context, shown but not fatal. */
@@ -154,6 +159,14 @@ export async function loadContext(gh: GitHub, item: Item): Promise<Context> {
       }),
       loadSubIssues(gh, item).then((subs) => {
         if (subs) ctx.subIssues = subs;
+      }),
+    );
+  }
+  const reruns = askKind(item) === "chore" && item.state === "open" ? parseAskBody(item.body) : undefined;
+  if (reruns && reruns.problems.length === 0 && reruns.reruns.length > 0) {
+    tasks.push(
+      loadRuns(gh, reruns.reruns).then((runs) => {
+        ctx.runs = runs;
       }),
     );
   }
@@ -275,3 +288,71 @@ export async function postAskComment(gh: GitHub, ref: IssueRef, kind: "review" |
   return comment(gh, ref, body);
 }
 
+/** A run a chore asks to rerun, as last read. */
+export interface RunStatus {
+  run: RunRef;
+  name?: string;
+  status?: string;
+  conclusion?: string;
+  attempt?: number;
+  /** The latest attempt's failed jobs. */
+  failed: { name: string; url?: string }[];
+  /** Why its failed jobs can't be rerun now, if they can't. */
+  problem?: string;
+}
+
+async function readRun(gh: GitHub, run: RunRef): Promise<{ raw: RawRun; jobs: RawJob[] }> {
+  const path = `/repos/${run.owner}/${run.repo}/actions/runs/${run.id}`;
+  const raw = await gh.send<RawRun>("GET", path);
+  const jobs = await gh.send<{ jobs?: RawJob[] }>("GET", `${path}/jobs?filter=latest&per_page=${PAGE_SIZE}`);
+  return { raw, jobs: jobs.jobs ?? [] };
+}
+
+/** Read the runs a chore names, and whether each one's failed jobs can be rerun. */
+export async function loadRuns(gh: GitHub, runs: readonly RunRef[]): Promise<RunStatus[]> {
+  return mapLimit(runs, FETCH_CONCURRENCY, async (run) => {
+    try {
+      const { raw, jobs } = await readRun(gh, run);
+      const out: RunStatus = {
+        run,
+        failed: failedJobs(jobs).map((j) => ({ name: j.name ?? "(unnamed job)", ...(j.html_url ? { url: j.html_url } : {}) })),
+      };
+      if (raw.name) out.name = raw.name;
+      if (raw.status) out.status = raw.status;
+      if (raw.conclusion) out.conclusion = raw.conclusion;
+      if (typeof raw.run_attempt === "number") out.attempt = raw.run_attempt;
+      const problem = rerunProblem(run, raw, jobs);
+      if (problem) out.problem = problem;
+      return out;
+    } catch (e) {
+      return { run, failed: [], problem: `couldn't read the run: ${e instanceof Error ? e.message : String(e)}` };
+    }
+  });
+}
+
+/**
+ * Rerun the failed jobs of one run a chore names, with your token, then
+ * say so on the chore. Strict, since it writes upstream: the chore is
+ * read fresh and must be an open chore in `scope` whose body names this
+ * exact run URL (and no line it can't read); the run is read fresh and
+ * must be that run, in that repository, completed and failed, with
+ * failed jobs. Only then the one endpoint that reruns failed jobs is
+ * called, built from the parsed URL's parts.
+ */
+export async function rerunFailedJobs(gh: GitHub, ask: IssueRef, runUrl: string, scope: AskScope = TRACKER_SCOPE): Promise<Posted> {
+  const run = parseRunUrl(runUrl);
+  if (!run) throw new Error(`not rerunning: ${JSON.stringify(runUrl)} is not a workflow run URL`);
+  const issue = await freshAsk(gh, ask, "chore", scope);
+  const body = parseAskBody(issue.body ?? "");
+  if (body.problems.length) throw new Error(`not rerunning: ${refKey(ask)} ${body.problems[0]}`);
+  if (!body.reruns.some((r) => r.url === run.url)) throw new Error(`not rerunning: ${refKey(ask)} doesn't ask to rerun ${run.url}`);
+  const { raw, jobs } = await readRun(gh, run);
+  const problem = rerunProblem(run, raw, jobs);
+  if (problem) throw new Error(`not rerunning ${run.url}: ${problem}`);
+  await gh.send("POST", `/repos/${run.owner}/${run.repo}/actions/runs/${run.id}/rerun-failed-jobs`);
+  try {
+    return await comment(gh, ask, formatComment(rerunComment(run)));
+  } catch (e) {
+    throw new Error(`reran the failed jobs of ${run.url}, but couldn't say so on ${refKey(ask)}: ${e instanceof Error ? e.message : String(e)}. Comment there yourself.`);
+  }
+}
