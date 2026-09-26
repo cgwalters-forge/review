@@ -230,6 +230,13 @@ describe("itemView", () => {
     assert.deepEqual(note(fixture("PVTI_synthetic_question")), []);
   });
 
+  it("links the blocked item, bare or in backticks", () => {
+    const blocksLink = (id: string) =>
+      [...view(fixture(id)).querySelectorAll(".links a")].find((a) => a.textContent === "blocks")?.getAttribute("href");
+    assert.equal(blocksLink("PVTI_synthetic_question"), "https://github.com/cgwalters-forge/tracker/issues/20");
+    assert.equal(blocksLink("PVTI_synthetic_upstream_question"), "https://github.com/example-upstream/widget/pull/42");
+  });
+
   it("shows a closed question as done, with nothing to send", () => {
     const root = view(fixture("PVTI_synthetic_closed_question"), "done");
     assert.equal(root.querySelector("form"), null);

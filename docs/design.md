@@ -62,7 +62,10 @@ authorship. It is gone. Instead:
   ```
 
   The first line always names the blocked board item (a tracker issue, or
-  an upstream issue or PR, which can't have sub-issues). Options and the
+  an upstream issue or PR, which can't have sub-issues). An upstream URL
+  is written in backticks, `` Blocks: `https://github.com/o/r/pull/7` ``:
+  a bare URL in a public issue adds a "mentioned this" entry to the
+  upstream timeline, a code span doesn't. Options and the
   recommendation may be absent (an action, or an open question); when
   there is a recommendation, it is always option A. `Options:` and
   `Recommended:` count only after the `Q:` line and outside fenced code

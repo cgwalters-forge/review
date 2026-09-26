@@ -151,7 +151,7 @@
     "content": {
       "node_id": "I_synthetic_tracker_22",
       "title": "Rerun or rebase widget#42?",
-      "body": "Blocks: https://github.com/example-upstream/widget/pull/42\nCI is red on an infra flake.\nQ: Rerun or rebase?\nOptions:\nA) Rerun the job\nB) Rebase onto main\nRecommended: A, because it is cheaper\n",
+      "body": "Blocks: `https://github.com/example-upstream/widget/pull/42`\nCI is red on an infra flake.\nQ: Rerun or rebase?\nOptions:\nA) Rerun the job\nB) Rebase onto main\nRecommended: A, because it is cheaper\n",
       "html_url": "https://github.com/cgwalters-forge/tracker/issues/22",
       "state": "open",
       "updated_at": "2026-01-07T00:00:00Z",
