@@ -129,6 +129,43 @@ above, in development mode. Next come the relay, the bot's answer check
 in homegit, and the App (created by you, with its secret installed by you
 on `forge`). PR review (§6 v2) and Forgejo follow.
 
+### Hosting v0: GitHub Pages and a pasted token (2026-09-26)
+
+cgwalters asked for something usable now rather than after the relay and
+the tailnet host, so v0 is published on GitHub Pages
+(<https://cgwalters-forge.github.io/review/>) by a workflow on every
+merge to main, and you sign in by pasting a personal access token. This
+replaces the relay client and the loopback-only development mode above;
+the tailnet host, the `cgwalters-review` App and the relay (§3) remain
+the target, and would replace only `src/github/auth.ts`.
+
+- **The token** stays in the browser: sessionStorage by default, or
+  localStorage if you tick "remember". It is sent only to
+  `api.github.com`: the client refuses any other URL, and the CSP's
+  `connect-src` allows no other origin. The page names the scopes it
+  needs, and warns when a classic token lacks one.
+- **Nothing is baked in.** The site is the code only. Everything shown is
+  read with your token, so it shows nothing your token can't read, and
+  private repositories appear only if it reaches them.
+- **CSP** is a meta tag, since Pages sends no headers: `connect-src
+  https://api.github.com`, `script-src 'self'`, no inline script or
+  eval, Trusted Types. A meta tag can't carry `frame-ancestors`, so the
+  app refuses to run in a frame. There are no third-party scripts:
+  markdown-it and DOMPurify are bundled.
+
+What this gives up, compared with §3:
+
+- **The bot deploys.** "Deploy only commits you approved" doesn't hold:
+  cgwalters let the bot merge and deploy this repository without his
+  review, and a merged change could read a pasted token. Use a token
+  that expires soon, and only the scopes listed.
+- **A shared origin.** Every Pages site of the cgwalters-forge
+  organization is served from `cgwalters-forge.github.io`, and they can
+  read each other's storage. None other exists; don't add one while
+  tokens live here (a custom domain would separate them).
+- **A long-lived credential in the browser**, rather than the relay's
+  short-lived access tokens.
+
 ## Summary
 
 - **Source of truth.**

@@ -1,61 +1,115 @@
 import assert from "node:assert/strict";
-import { afterEach, describe, it } from "node:test";
-import { detectAuth, isDevHost, useDevToken } from "../src/github/auth.ts";
+import { describe, it } from "node:test";
+import { missingScopes, parseToken, savedToken, type Storages, useToken } from "../src/github/auth.ts";
+import { CLASSIC_SCOPES, TOKEN_KEY } from "../src/github/config.ts";
 
-const realFetch = globalThis.fetch;
-afterEach(() => {
-  globalThis.fetch = realFetch;
-});
+const FINE = `github_pat_${"A1b2".repeat(10)}`;
+const CLASSIC = `ghp_${"x9Y8".repeat(9)}`;
 
-function relayAnswers(status: number | "down"): void {
-  globalThis.fetch = async () => {
-    if (status === "down") throw new TypeError("fetch failed");
-    return new Response("{}", { status });
-  };
+/** A Storage in memory; `blocked` makes every call throw, like disabled site data. */
+class MemoryStorage implements Storage {
+  #m = new Map<string, string>();
+  #blocked: boolean;
+  constructor(blocked = false) {
+    this.#blocked = blocked;
+  }
+  #check(): void {
+    if (this.#blocked) throw new DOMException("blocked", "SecurityError");
+  }
+  get length(): number {
+    return this.#m.size;
+  }
+  clear(): void {
+    this.#check();
+    this.#m.clear();
+  }
+  getItem(k: string): string | null {
+    this.#check();
+    return this.#m.get(k) ?? null;
+  }
+  key(i: number): string | null {
+    return [...this.#m.keys()][i] ?? null;
+  }
+  removeItem(k: string): void {
+    this.#check();
+    this.#m.delete(k);
+  }
+  setItem(k: string, v: string): void {
+    this.#check();
+    this.#m.set(k, v);
+  }
 }
 
-describe("isDevHost", () => {
-  const cases: [string, boolean][] = [
-    ["127.0.0.1", true],
-    ["localhost", true],
-    ["[::1]", true],
-    ["forge.example.ts.net", false],
-    ["127.0.0.1.evil.example", false],
-  ];
-  for (const [host, want] of cases) it(host, () => assert.equal(isDevHost(host), want));
-});
+const storages = (blocked = false): Storages => ({ session: new MemoryStorage(blocked), local: new MemoryStorage(blocked) });
 
-describe("detectAuth", () => {
-  const cases: [string, number | "down", string, string][] = [
-    ["relay signed out", 401, "forge.example.ts.net", "relay-signed-out"],
-    ["relay broken in production", 502, "forge.example.ts.net", "relay-error"],
-    ["no relay in production", 404, "forge.example.ts.net", "relay-error"],
-    ["relay unreachable in production", "down", "forge.example.ts.net", "relay-error"],
-    ["no relay on loopback", 404, "127.0.0.1", "dev-signed-out"],
-    ["relay unreachable on loopback", "down", "localhost", "dev-signed-out"],
+describe("parseToken", () => {
+  const cases: [string, string, string | RegExp][] = [
+    ["fine-grained, padded", ` ${FINE}\n`, FINE],
+    ["classic", CLASSIC, CLASSIC],
+    ["empty", "  ", /Paste a token/],
+    ["unknown prefix", `xyz_${"a".repeat(30)}`, /doesn't look like/],
+    ["too short", "ghp_abc", /doesn't look like/],
+    ["with spaces", `ghp_${"a".repeat(20)} b`, /doesn't look like/],
+    ["an HTML payload", `ghp_${"a".repeat(20)}<script>`, /doesn't look like/],
   ];
-  for (const [name, status, host, want] of cases) {
-    it(name, async () => {
-      relayAnswers(status);
-      assert.equal((await detectAuth(host)).kind, want);
+  for (const [name, input, want] of cases) {
+    it(name, () => {
+      if (typeof want === "string") assert.equal(parseToken(input), want);
+      else assert.throws(() => parseToken(input), want);
     });
   }
+});
 
-  it("names the failure in production", async () => {
-    relayAnswers(502);
-    const auth = await detectAuth("forge.example.ts.net");
-    assert.match(auth.kind === "relay-error" ? auth.message : "", /HTTP 502/);
+describe("useToken and savedToken", () => {
+  it("keeps the token in sessionStorage by default", async () => {
+    const s = storages();
+    assert.equal(await useToken(FINE, "session", s).get(), FINE);
+    assert.equal(s.session?.getItem(TOKEN_KEY), FINE);
+    assert.equal(s.local?.getItem(TOKEN_KEY), null);
+    assert.equal(await savedToken(s)?.get(), FINE);
+  });
+
+  it("remembers in localStorage only when asked, and moves it back", () => {
+    const s = storages();
+    useToken(FINE, "local", s);
+    assert.equal(s.local?.getItem(TOKEN_KEY), FINE);
+    assert.equal(s.session?.getItem(TOKEN_KEY), null);
+    useToken(CLASSIC, "session", s);
+    assert.equal(s.local?.getItem(TOKEN_KEY), null);
+    assert.equal(s.session?.getItem(TOKEN_KEY), CLASSIC);
+  });
+
+  it("signs out of both storages", async () => {
+    const s = storages();
+    s.session?.setItem(TOKEN_KEY, FINE);
+    s.local?.setItem(TOKEN_KEY, CLASSIC);
+    await savedToken(s)?.signOut();
+    assert.equal(savedToken(s), undefined);
+  });
+
+  it("ignores a saved value that isn't a token", () => {
+    const s = storages();
+    s.session?.setItem(TOKEN_KEY, "garbage");
+    assert.equal(savedToken(s), undefined);
+  });
+
+  it("works in memory when storage is blocked", async () => {
+    const s = storages(true);
+    assert.equal(await useToken(FINE, "local", s).get(), FINE);
+    assert.equal(savedToken(s), undefined);
+    assert.equal(savedToken({ session: undefined, local: undefined }), undefined);
   });
 });
 
-describe("useDevToken", () => {
-  it("refuses outside loopback", () => {
-    assert.throws(() => useDevToken("ghp_abc", "forge.example.ts.net"), /only be pasted in development mode/);
-  });
-  it("refuses something that isn't a token", () => {
-    assert.throws(() => useDevToken("not a token!", "127.0.0.1"), /doesn't look like/);
-  });
-  it("keeps a token on loopback", async () => {
-    assert.equal(await useDevToken(" ghp_abc \n", "127.0.0.1").get(), "ghp_abc");
-  });
+describe("missingScopes", () => {
+  const missing = (h: string | undefined) => missingScopes(h, CLASSIC_SCOPES).map((n) => n.any[0]);
+  const cases: [string | undefined, string[]][] = [
+    [undefined, []],
+    ["", ["public_repo", "read:project", "gist"]],
+    ["repo, project, gist", []],
+    ["public_repo, read:project, gist", []],
+    ["repo,gist", ["read:project"]],
+    ["read:project", ["public_repo", "gist"]],
+  ];
+  for (const [header, want] of cases) it(String(header), () => assert.deepEqual(missing(header), want));
 });

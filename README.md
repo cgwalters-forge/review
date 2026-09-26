@@ -43,20 +43,23 @@ npm run check    # tsc, the unit tests, and a build into dist/
 npm run dev      # serves http://127.0.0.1:8787/
 ```
 
-On a loopback address (127.0.0.1, localhost) with no sign-in relay
-behind it, the app is in development mode and asks for a token, which it
-keeps in the tab's sessionStorage. On any other origin it never asks for
-one. Use a token made for testing:
+## Hosting and sign-in
 
-- a fine-grained token (resource owner: you, expiring soon) with Issues
-  read and write, Pull requests read, Metadata read and the account
-  permission Gists read and write. That reads the public board and
-  answers issues and PRs, but can't write drafts on a board owned by
-  another user;
-- only if you need to test draft answers: a short-lived classic token
-  with `repo`, `project` and `gist`, which also needs you to be able to
-  edit the board.
+The app is published on GitHub Pages at
+<https://cgwalters-forge.github.io/review/> by the `pages` workflow, on
+every push to main. Until the sign-in relay exists (see "Hosting v0" in
+[docs/design.md](docs/design.md)), you sign in by pasting a personal
+access token. It stays in your browser (sessionStorage, or localStorage
+if you tick "remember") and is sent only to `api.github.com`. The sign-in
+page lists the scopes a token needs:
 
-The answers it posts are real, so point it at test items or be ready to
-delete them. The board is public: a draft answer, and the link to its
-receipt gist, can be read by anyone.
+- a short-lived classic token with `public_repo`, `read:project` and
+  `gist` covers everything (`repo` and `project` instead, to see private
+  repositories and answer draft items on the board);
+- a fine-grained token acts on one resource owner only: owned by
+  cgwalters-forge, with Pull requests and Issues read and write, it
+  reviews forge PRs but can't answer upstream or on draft items.
+
+The answers and reviews it posts are real, so test against throwaway
+items. The board is public: a draft answer, and the link to its receipt
+gist, can be read by anyone.
