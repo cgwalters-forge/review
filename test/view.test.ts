@@ -7,7 +7,8 @@ import { answerTarget, type Item, questionOf, queueItems } from "../src/github/b
 import type { Context, ReceiptStatus } from "../src/github/backend.ts";
 import { HOME_OWNERS } from "../src/github/config.ts";
 import { createRenderer } from "../src/markdown.ts";
-import { describeTarget, itemView, queueView } from "../src/github/view.ts";
+import { buildEntries, type Entry } from "../src/github/queue.ts";
+import { age, answerState, describeTarget, itemView, queueView, STATE_LABEL } from "../src/github/view.ts";
 import { installDom, rawItems } from "./helpers.ts";
 
 const win = installDom();
@@ -40,15 +41,25 @@ function assertNoActiveContent(root: Element): void {
 }
 
 describe("queueView", () => {
-  it("groups by priority and shows untrusted text as text", () => {
+  const entriesOf = (items: Item[]) => buildEntries(items, [], new Map());
+  const labels = (sent: Set<string>, receipts: Map<string, ReceiptStatus>) => (e: Entry) => {
+    const st = e.item ? answerState(e.item, sent, receipts) : undefined;
+    return st ? { text: STATE_LABEL[st], cls: st } : undefined;
+  };
+
+  it("ranks by priority and shows untrusted text as text", () => {
     const items = [evilItem(), ...queueItems(rawItems()).slice(1)];
-    const root = queueView(items, new Set(), new Map());
+    const root = queueView(entriesOf(items), labels(new Set(), new Map()), Date.parse("2026-02-01T00:00:00Z"));
     assertNoActiveContent(root);
     assert.deepEqual(
       [...root.querySelectorAll(".group-h")].map((e) => e.textContent),
       ["P0 · 1", "P1 · 1", "P2 · 1", "No priority · 1"],
     );
     assert.ok(root.textContent?.includes("<script>alert(2)</script>"));
+    assert.deepEqual(
+      [...root.querySelectorAll(".row")].map((r) => r.getAttribute("href")),
+      ["#item/PVTI_synthetic_draft", "#item/PVTI_synthetic_upstream_pr", "#item/PVTI_synthetic_redacted", "#item/PVTI_synthetic_home_issue"],
+    );
   });
 
   it("trusts a draft's answer section only with a verified receipt", () => {
@@ -56,19 +67,34 @@ describe("queueView", () => {
     const draft = items.find((i) => i.kind === "draft") as Item;
     draft.body += "\n<!-- review-answer BEGIN receipt=https://gist.github.com/abc -->\n/answer A\n<!-- review-answer END -->\n";
     const sent = new Set(["PVTI_synthetic_home_issue"]);
-    const labels = (receipts: Map<string, ReceiptStatus>) =>
-      [...queueView(items, sent, receipts).querySelectorAll(".state")].map((e) => e.textContent);
+    const shown = (receipts: Map<string, ReceiptStatus>) =>
+      [...queueView(entriesOf(items), labels(sent, receipts)).querySelectorAll(".state")].map((e) => e.textContent);
 
-    assert.deepEqual(labels(new Map()), ["body claims an answer (unverified)", "answered"]);
+    assert.deepEqual(shown(new Map()), ["body claims an answer (unverified)", "answered"]);
     const failed: ReceiptStatus = { url: "https://gist.github.com/abc", check: { ok: false, reason: "not his" } };
-    assert.deepEqual(labels(new Map([[draft.nodeId, failed]])), ["body claims an answer (unverified)", "answered"]);
+    assert.deepEqual(shown(new Map([[draft.nodeId, failed]])), ["body claims an answer (unverified)", "answered"]);
     const good: ReceiptStatus = { url: "https://gist.github.com/abc", check: { ok: true, receipt: { choice: "A", text: "", item: draft.nodeId } } };
-    assert.deepEqual(labels(new Map([[draft.nodeId, good]])), ["answered", "answered"]);
+    assert.deepEqual(shown(new Map([[draft.nodeId, good]])), ["answered", "answered"]);
   });
 
   it("says when nothing needs you", () => {
-    assert.match(queueView([], new Set(), new Map()).textContent ?? "", /Nothing needs you/);
+    assert.match(queueView([], () => undefined).textContent ?? "", /Nothing needs you/);
   });
+});
+
+describe("age", () => {
+  const now = Date.parse("2026-01-15T12:00:00Z");
+  const cases: [string | undefined, string][] = [
+    [undefined, ""],
+    ["not a date", ""],
+    ["2026-01-15T11:59:50Z", "now"],
+    ["2026-01-15T11:15:00Z", "45m"],
+    ["2026-01-15T02:00:00Z", "10h"],
+    ["2026-01-12T12:00:00Z", "3d"],
+    ["2025-12-01T12:00:00Z", "6w"],
+    ["2026-01-16T00:00:00Z", "now"],
+  ];
+  for (const [iso, want] of cases) it(String(iso), () => assert.equal(age(iso, now), want));
 });
 
 describe("itemView", () => {

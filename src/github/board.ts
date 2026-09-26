@@ -183,29 +183,6 @@ export function queueItems(raw: readonly RawItem[]): Item[] {
     .filter((i) => i.status !== undefined && QUEUE_STATUSES.includes(i.status));
 }
 
-export interface PriorityGroup {
-  priority: string;
-  items: Item[];
-}
-
-/** Group items by priority in PRIORITY_ORDER, keeping board order within one. */
-export function groupByPriority(items: readonly Item[]): PriorityGroup[] {
-  const groups = new Map<string, Item[]>();
-  for (const item of items) {
-    const key = item.priority ?? NO_PRIORITY;
-    const list = groups.get(key) ?? [];
-    list.push(item);
-    groups.set(key, list);
-  }
-  const rank = (p: string) => {
-    const i = PRIORITY_ORDER.indexOf(p);
-    return i < 0 ? (p === NO_PRIORITY ? PRIORITY_ORDER.length + 1 : PRIORITY_ORDER.length) : i;
-  };
-  return [...groups.entries()]
-    .sort(([a], [b]) => rank(a) - rank(b) || a.localeCompare(b))
-    .map(([priority, list]) => ({ priority, items: list }));
-}
-
 /** The question an item asks, as the bot wrote it. */
 export interface Question {
   options: Option[];

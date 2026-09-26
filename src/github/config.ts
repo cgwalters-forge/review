@@ -42,8 +42,14 @@ export const HOME_OWNERS: readonly string[] = ["cgwalters-forge", "cgwalters-bot
 
 /** Poll every this many ms while the tab is visible. */
 export const POLL_INTERVAL_MS = 30_000;
+/** Poll the forge's PR search this often: search has its own, smaller budget. */
+export const FORGE_POLL_INTERVAL_MS = 60_000;
+/** ... and at most this often when asked to refresh (r, or after a review). */
+export const FORGE_MIN_INTERVAL_MS = 10_000;
 /** Parallel requests when refreshing PR verdicts. */
 export const FETCH_CONCURRENCY = 6;
+/** A file's diff starts collapsed above this many lines. */
+export const DIFF_COLLAPSE_LINES = 300;
 /** Poll this many times slower when the rate budget runs low. */
 export const POLL_BACKOFF_FACTOR = 4;
 /** Below this fraction of the hourly budget, back off. */
@@ -53,6 +59,7 @@ export const RATE_LOW_FRACTION = 0.1;
 export const PAGE_SIZE = 100;
 /** Comments shown in the item view. */
 export const RECENT_COMMENTS = 5;
+
 
 /** Storage key for the pasted token (sessionStorage, or localStorage if remembered). */
 export const TOKEN_KEY = "review.token";
