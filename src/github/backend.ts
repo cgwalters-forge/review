@@ -2,10 +2,11 @@
 // context, and post an answer. The views call these; tests drive them
 // with a scripted fetch.
 
-import { type Answer, formatAnswer } from "../answer.ts";
+import { type Answer, formatAnswer, parseQuestion } from "../answer.ts";
 import type { GitHub } from "./api.ts";
 import {
   answeredPending,
+  assigneeLogins,
   fieldIds,
   type IssueRef,
   isQuestion,
@@ -13,12 +14,14 @@ import {
   labelNames,
   parseIssueUrl,
   questionProblem,
+  type QuestionScope,
   type RawContent,
   type RawField,
   type RawItem,
   queueItems,
   repoOf,
   type SubIssueSummary,
+  TRACKER_SCOPE,
 } from "./board.ts";
 import { BOARD_NUMBER, BOARD_OWNER, PAGE_SIZE, QUEUE_STATUSES, RECENT_COMMENTS, TRACKER_REPO } from "./config.ts";
 import { refKey } from "./forge.ts";
@@ -210,12 +213,13 @@ export interface Posted {
 
 /**
  * Answer a question: one comment by you on its issue. The issue is read
- * fresh first and must be an open question in `repo` (the tracker, unless
- * overridden, e.g. by a test against a sandbox repository); anything else
- * is refused before writing. A plain function of a client and an issue,
- * so a script can drive it with any token.
+ * fresh first and must be an open question in `scope` (the tracker,
+ * assigned to him, unless overridden, e.g. by a test against a sandbox
+ * repository), and a picked letter must be one of the options its body
+ * offers now; anything else is refused before writing. A plain function
+ * of a client and an issue, so a script can drive it with any token.
  */
-export async function postAnswer(gh: GitHub, ref: IssueRef, answer: Answer, repo: string = TRACKER_REPO): Promise<Posted> {
+export async function postAnswer(gh: GitHub, ref: IssueRef, answer: Answer, scope: QuestionScope = TRACKER_SCOPE): Promise<Posted> {
   const body = formatAnswer(answer);
   const path = `/repos/${ref.owner}/${ref.repo}/issues/${ref.number}`;
   const issue = await gh.send<RawContent>("GET", path);
@@ -224,9 +228,22 @@ export async function postAnswer(gh: GitHub, ref: IssueRef, answer: Answer, repo
   if (!actual || refKey(actual).toLowerCase() !== refKey(ref).toLowerCase()) {
     throw new Error(`not answering: ${refKey(ref)} is now ${issue.html_url ?? "somewhere unknown"}`);
   }
-  const facts = { kind: issue.pull_request ? "pr" : "issue", ref: actual, labels: labelNames(issue.labels) } as const;
-  const problem = questionProblem(issue.state ? { ...facts, state: issue.state } : facts, repo);
+  const facts = {
+    kind: issue.pull_request ? "pr" : "issue",
+    ref: actual,
+    labels: labelNames(issue.labels),
+    assignees: assigneeLogins(issue.assignees),
+  } as const;
+  const problem = questionProblem(issue.state ? { ...facts, state: issue.state } : facts, scope);
   if (problem !== undefined) throw new Error(`not answering: ${problem}`);
+  // The options may have changed since the view was rendered.
+  if (answer.choice !== undefined) {
+    const letters = parseQuestion(issue.body ?? "").options.map((o) => o.letter);
+    if (!letters.includes(answer.choice)) {
+      const now = letters.length ? `it now offers ${letters.join(", ")}` : "it no longer offers options";
+      throw new Error(`not answering: ${refKey(ref)} has no option ${answer.choice}; ${now}. Reload it.`);
+    }
+  }
   const c = await gh.send<{ html_url: string }>("POST", `${path}/comments`, { body });
   return { url: c.html_url };
 }

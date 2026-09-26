@@ -5,7 +5,7 @@ import type { ForgePr, Verdict } from "../src/github/forge.ts";
 import { buildEntries, effectivePriority, type Entry, groupRanked, priorityRank, rankEntries, SETTLED_GROUP } from "../src/github/queue.ts";
 
 function item(nodeId: string, over: Partial<Item> = {}): Item {
-  return { id: 0, nodeId, kind: "draft", title: nodeId, body: "", why: "", branch: [], gist: [], labels: [], status: "Needs human", ...over };
+  return { id: 0, nodeId, kind: "draft", title: nodeId, body: "", why: "", branch: [], gist: [], labels: [], assignees: [], status: "Needs human", ...over };
 }
 
 const TRACKER = "https://github.com/cgwalters-forge/tracker/issues";

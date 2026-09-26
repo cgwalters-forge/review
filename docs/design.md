@@ -84,9 +84,10 @@ authorship. It is gone. Instead:
     `/promote` line in an answer would promote a fork PR. Backticks or
     other wording get around it on purpose. It also refuses free text
     whose first line is a single letter, which would read as a pick.
-- **Only open question issues in the tracker get an answer box.**
-  `postAnswer` reads the issue fresh and refuses anything else before
-  writing. Upstream issues and PRs are never answered from the app, not
+- **Only open question issues in the tracker, assigned to him, get an
+  answer box.** `postAnswer` reads the issue fresh and refuses anything
+  else before writing, and also a picked letter that the question's body
+  no longer offers. Upstream issues and PRs are never answered from the app, not
   even with a confirmation: a bare "B" on an upstream PR is noise to its
   maintainers. A Needs-human upstream item shows its Why and a link to act
   on GitHub, and its decisions live in tracker questions whose `Blocks:`
