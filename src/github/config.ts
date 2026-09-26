@@ -43,12 +43,16 @@ export const PAGE_SIZE = 100;
 /** Comments shown in the item view. */
 export const RECENT_COMMENTS = 5;
 
-/** Relay endpoints, relative to the app, per docs/design.md. */
-export const RELAY_TOKEN_PATH = "auth/github/token";
-export const RELAY_START_PATH = "auth/github/start";
-export const RELAY_LOGOUT_PATH = "auth/logout";
-/** The custom header the relay requires on token requests (CSRF defence). */
-export const RELAY_HEADER = "X-Review-Relay";
+/** Storage key for the pasted token (sessionStorage, or localStorage if remembered). */
+export const TOKEN_KEY = "review.token";
 
-/** sessionStorage key for the local-development token. */
-export const DEV_TOKEN_KEY = "review.dev-token";
+/**
+ * What a classic token needs, by scope; each entry is met by any one of
+ * its scopes. Shown on the sign-in page, and checked against the
+ * X-OAuth-Scopes header once signed in.
+ */
+export const CLASSIC_SCOPES = [
+  { any: ["public_repo", "repo"], why: "read PRs and post comments and reviews as you (repo only if you want private repositories too)" },
+  { any: ["read:project", "project"], why: "read the Workstream board (project only to answer draft items)" },
+  { any: ["gist"], why: "save answer receipts for draft items" },
+] as const satisfies readonly { any: readonly string[]; why: string }[];

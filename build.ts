@@ -33,7 +33,7 @@ await Promise.all(STATIC_FILES.map((f) => copyFile(`static/${f}`, `${OUT_DIR}/${
 if (process.argv.includes("--serve")) {
   const ctx = await esbuild.context(options);
   const { hosts, port } = await ctx.serve({ servedir: OUT_DIR, host: DEV_HOST, port: DEV_PORT });
-  console.log(`Serving on http://${hosts[0] ?? DEV_HOST}:${port}/ (development mode: paste a token)`);
+  console.log(`Serving on http://${hosts[0] ?? DEV_HOST}:${port}/`);
 } else {
   await esbuild.build(options);
 }

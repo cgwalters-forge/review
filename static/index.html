@@ -3,10 +3,11 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<!-- The relay sends the full policy as a header (frame-ancestors only
-     works there); this copy also covers development mode. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self' https://api.github.com; img-src 'self'; base-uri 'none'; form-action 'self'; require-trusted-types-for 'script'; trusted-types dompurify">
+<!-- GitHub Pages sends no CSP header, so the policy is here. A meta tag
+     can't carry frame-ancestors; main.ts refuses to run in a frame instead. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; connect-src https://api.github.com; img-src 'self'; manifest-src 'none'; base-uri 'none'; form-action 'none'; require-trusted-types-for 'script'; trusted-types dompurify">
 <meta name="referrer" content="no-referrer">
+<meta name="color-scheme" content="light dark">
 <title>Review queue</title>
 <link rel="stylesheet" href="style.css">
 <script type="module" src="app.js"></script>
