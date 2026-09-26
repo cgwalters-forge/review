@@ -85,6 +85,5 @@ export const TOKEN_KEY = "review.token";
  */
 export const CLASSIC_SCOPES = [
   { any: ["public_repo", "repo"], why: "read PRs and post comments and reviews as you (repo only if you want private repositories too)" },
-  { any: ["read:project", "project"], why: "read the Workstream board (project only to answer draft items)" },
-  { any: ["gist"], why: "save answer receipts for draft items" },
+  { any: ["read:project", "project"], why: "read the Workstream board" },
 ] as const satisfies readonly { any: readonly string[]; why: string }[];

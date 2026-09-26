@@ -4,11 +4,11 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { answerTarget, type Item, questionOf, queueItems } from "../src/github/board.ts";
-import type { Context, ReceiptStatus } from "../src/github/backend.ts";
+import type { Context } from "../src/github/backend.ts";
 import { HOME_OWNERS } from "../src/github/config.ts";
 import { createRenderer } from "../src/markdown.ts";
 import { buildEntries, type Entry } from "../src/github/queue.ts";
-import { age, answerState, describeTarget, itemView, queueView, STATE_LABEL } from "../src/github/view.ts";
+import { age, answerState, itemView, queueView, STATE_LABEL } from "../src/github/view.ts";
 import { installDom, rawItems } from "./helpers.ts";
 
 const win = installDom();
@@ -42,14 +42,14 @@ function assertNoActiveContent(root: Element): void {
 
 describe("queueView", () => {
   const entriesOf = (items: Item[]) => buildEntries(items, [], new Map());
-  const labels = (sent: Set<string>, receipts: Map<string, ReceiptStatus>) => (e: Entry) => {
-    const st = e.item ? answerState(e.item, sent, receipts) : undefined;
+  const labels = (sent: Set<string>) => (e: Entry) => {
+    const st = e.item ? answerState(e.item, sent) : undefined;
     return st ? { text: STATE_LABEL[st], cls: st } : undefined;
   };
 
   it("ranks by priority and shows untrusted text as text", () => {
     const items = [evilItem(), ...queueItems(rawItems()).slice(1)];
-    const root = queueView(entriesOf(items), labels(new Set(), new Map()), Date.parse("2026-02-01T00:00:00Z"));
+    const root = queueView(entriesOf(items), labels(new Set()), Date.parse("2026-02-01T00:00:00Z"));
     assertNoActiveContent(root);
     assert.deepEqual(
       [...root.querySelectorAll(".group-h")].map((e) => e.textContent),
@@ -62,19 +62,10 @@ describe("queueView", () => {
     );
   });
 
-  it("trusts a draft's answer section only with a verified receipt", () => {
+  it("labels items answered from this tab", () => {
     const items = queueItems(rawItems());
-    const draft = items.find((i) => i.kind === "draft") as Item;
-    draft.body += "\n<!-- review-answer BEGIN receipt=https://gist.github.com/abc -->\n/answer A\n<!-- review-answer END -->\n";
-    const sent = new Set(["PVTI_synthetic_home_issue"]);
-    const shown = (receipts: Map<string, ReceiptStatus>) =>
-      [...queueView(entriesOf(items), labels(sent, receipts)).querySelectorAll(".state")].map((e) => e.textContent);
-
-    assert.deepEqual(shown(new Map()), ["body claims an answer (unverified)", "answered"]);
-    const failed: ReceiptStatus = { url: "https://gist.github.com/abc", check: { ok: false, reason: "not his" } };
-    assert.deepEqual(shown(new Map([[draft.nodeId, failed]])), ["body claims an answer (unverified)", "answered"]);
-    const good: ReceiptStatus = { url: "https://gist.github.com/abc", check: { ok: true, receipt: { choice: "A", text: "", item: draft.nodeId } } };
-    assert.deepEqual(shown(new Map([[draft.nodeId, good]])), ["answered", "answered"]);
+    const shown = [...queueView(entriesOf(items), labels(new Set(["PVTI_synthetic_home_issue"]))).querySelectorAll(".state")];
+    assert.deepEqual(shown.map((e) => e.textContent), ["answered"]);
   });
 
   it("says when nothing needs you", () => {
@@ -158,15 +149,14 @@ describe("itemView", () => {
     return { root, submit, button, status };
   }
 
-  it("posts the picked option, text and question id, then stays disabled", async () => {
+  it("posts the picked option and text, then stays disabled", async () => {
     const sent: unknown[] = [];
-    const v = answering("Q#8: which? Options: A) this B) that", async (a) => {
+    const v = answering("which? Options: A) this B) that", async (a) => {
       sent.push(a);
       return "https://github.com/done";
     });
-    assert.match(v.root.querySelector(".target")?.textContent ?? "", /^Answering Q#8\./);
     await v.submit("B", "because");
-    assert.deepEqual(sent, [{ choice: "B", question: "Q#8", text: "because" }]);
+    assert.deepEqual(sent, [{ choice: "B", text: "because" }]);
     assert.match(v.status(), /^Sent: https:\/\/github\.com\/done/);
     assert.equal(v.button().disabled, true);
   });
@@ -190,18 +180,5 @@ describe("itemView", () => {
     await v.submit("A", "");
     assert.deepEqual(sent, []);
     assert.match(confirms[0] ?? "", /already answered/);
-  });
-
-  it("won't answer an ambiguous question", () => {
-    const v = answering("Q#1: this?\nQ#2: or that? Options: A) this B) that", async () => "https://github.com/x");
-    assert.equal(v.button().disabled, true);
-    assert.match(v.root.querySelector(".target")?.textContent ?? "", /several ids/);
-  });
-
-  it("says plainly that a draft answer on a public board is public", () => {
-    const text = describeTarget({ kind: "draft", draftId: "DI_x", boardPublic: true });
-    assert.match(text, /anyone can read on this public board/);
-    assert.match(text, /treat both as public/);
-    assert.doesNotMatch(describeTarget({ kind: "draft", draftId: "DI_x", boardPublic: false }), /public/);
   });
 });

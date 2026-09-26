@@ -1,11 +1,11 @@
 // The two views, queue and item, built with plain DOM calls. Rendered
 // markdown comes from the sanitizing renderer as a DocumentFragment.
 
-import { type Answer, getDraftSection, parseAnswer } from "../answer.ts";
+import { type Answer, parseAnswer } from "../answer.ts";
 import { h, link } from "../dom.ts";
 import type { Renderer } from "../markdown.ts";
 import type { AnswerTarget, Item, Question } from "./board.ts";
-import type { Context, ReceiptStatus } from "./backend.ts";
+import type { Context } from "./backend.ts";
 import { BOARD_URL, OPERATOR } from "./config.ts";
 import { type Entry, type EntryKind, groupRanked } from "./queue.ts";
 
@@ -51,26 +51,15 @@ export function pill(priority: string | undefined): HTMLElement {
   return h("span", { class: `pill ${/^P[0-3]$/.test(p) ? p.toLowerCase() : "pn"}` }, p);
 }
 
-export type AnswerState = "answered" | "claimed" | undefined;
+export type AnswerState = "answered" | undefined;
 
-/**
- * Has this item been answered? Yes if sent from this tab, or if a draft's
- * answer section points to a receipt that checked out. A section alone is
- * only a claim: anyone who can edit the board can write one.
- */
-export function answerState(
-  item: Item,
-  sent: ReadonlySet<string>,
-  receipts: ReadonlyMap<string, ReceiptStatus>,
-): AnswerState {
-  if (sent.has(item.nodeId)) return "answered";
-  if (item.kind !== "draft" || getDraftSection(item.body) === null) return undefined;
-  return receipts.get(item.nodeId)?.check.ok ? "answered" : "claimed";
+/** Has this item been answered? Yes if sent from this tab. */
+export function answerState(item: Item, sent: ReadonlySet<string>): AnswerState {
+  return sent.has(item.nodeId) ? "answered" : undefined;
 }
 
 export const STATE_LABEL: Record<NonNullable<AnswerState>, string> = {
   answered: "answered",
-  claimed: "body claims an answer (unverified)",
 };
 
 /** A short status shown on a queue row, e.g. "answered". */
@@ -147,19 +136,9 @@ export function describeTarget(target: AnswerTarget): string {
         ? `Posts a public comment as you on ${where}, which is outside the bot's repositories. You'll be asked to confirm.`
         : `Posts a comment as you on ${where}.`;
     }
-    case "draft":
-      return target.boardPublic
-        ? "Writes your answer into the draft's body, which anyone can read on this public board, and saves it as an unlisted gist under your account (the receipt the bot verifies). The body links to that gist, so treat both as public."
-        : "Writes your answer into the draft's body and saves it as an unlisted gist under your account (the receipt the bot verifies).";
     case "none":
       return `Can't answer here: ${target.reason}.`;
   }
-}
-
-function questionNote(question: Question): string {
-  if (question.error) return `Can't answer: ${question.error}.`;
-  if (question.id) return `Answering ${question.id}.`;
-  return "This question has no id, so the bot can only check your answer by when you sent it.";
 }
 
 interface FormOptions {
@@ -194,11 +173,11 @@ function answerForm(target: AnswerTarget, question: Question, opts: FormOptions,
   });
   const button = h("button", { type: "submit", class: "primary" }, "Send answer");
   let sent = opts.alreadySent;
-  const blocked = target.kind === "none" || question.error !== undefined;
+  const blocked = target.kind === "none";
   button.disabled = blocked;
   form.append(
     text,
-    h("p", { class: "target" }, questionNote(question), " ", describeTarget(target)),
+    h("p", { class: "target" }, describeTarget(target)),
     h("div", { class: "actions" }, button),
     status,
   );
@@ -209,7 +188,6 @@ function answerForm(target: AnswerTarget, question: Question, opts: FormOptions,
     const picked = form.querySelector<HTMLInputElement>("input[name=choice]:checked");
     const answer: Answer = { text: text.value };
     if (picked) answer.choice = picked.value;
-    if (question.id) answer.question = question.id;
     if (!picked && !text.value.trim()) {
       status.textContent = "Pick an option or write an answer.";
       text.focus();
@@ -248,36 +226,12 @@ function commentView(c: Context["comments"][number], render: Renderer): HTMLElem
   );
 }
 
-function receiptNote(receipt: ReceiptStatus): HTMLElement {
-  if (receipt.check.ok) {
-    const { choice } = receipt.check.receipt;
-    return h(
-      "p",
-      { class: "note" },
-      `Answered${choice ? ` (${choice})` : ""}, verified by your `,
-      link(receipt.url, "receipt"),
-      ". Sending again replaces the body's section.",
-    );
-  }
-  return h(
-    "p",
-    { class: "warn" },
-    "The draft body claims an answer, but its ",
-    link(receipt.url, "receipt"),
-    ` doesn't verify: ${receipt.check.reason}. The bot will ignore it.`,
-  );
-}
-
 /** The part of the item view that needs the loaded context. */
 export function contextView(item: Item, context: Context | undefined, render: Renderer): DocumentFragment {
   const out = document.createDocumentFragment();
   if (!context) {
     out.append(h("p", { class: "note" }, "Loading comments and gists…"));
     return out;
-  }
-  if (context.receipt) out.append(receiptNote(context.receipt));
-  else if (item.kind === "draft" && getDraftSection(item.body)) {
-    out.append(h("p", { class: "warn" }, "The draft body claims an answer, but its receipt link isn't one this app can check."));
   }
   for (const w of context.warnings) out.append(h("p", { class: "warn" }, w));
   for (const g of context.gists) {

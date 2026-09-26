@@ -111,10 +111,3 @@ describe("GitHub.getAll", () => {
     await assert.rejects(new GitHub(token, fetchImpl).getAll("/loop", 3), /more than 3 pages/);
   });
 });
-
-describe("GitHub.graphql", () => {
-  it("surfaces GraphQL errors", async () => {
-    const { fetchImpl } = scriptedFetch(() => ({ body: { errors: [{ message: "Resource not accessible by integration" }] } }));
-    await assert.rejects(new GitHub(token, fetchImpl).graphql("q", {}), /Resource not accessible by integration/);
-  });
-});

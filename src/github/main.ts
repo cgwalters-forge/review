@@ -6,7 +6,7 @@ import { createRenderer } from "../markdown.ts";
 import { GitHub, GitHubError } from "./api.ts";
 import { missingScopes, type Persistence, savedToken, type TokenSource, useToken } from "./auth.ts";
 import { answerTarget, type Item, questionOf } from "./board.ts";
-import { type Context, loadContext, loadQueue, postAnswer, type ReceiptStatus, verifyReceipt, viewer } from "./backend.ts";
+import { type Context, loadContext, loadQueue, postAnswer, viewer } from "./backend.ts";
 import {
   CLASSIC_SCOPES,
   FORGE_MIN_INTERVAL_MS,
@@ -35,7 +35,6 @@ interface State {
   source: TokenSource;
   login?: string;
   items: Item[];
-  boardPublic: boolean;
   loaded: boolean;
   /** The bot's open draft PRs on the forge, from the last search. */
   prs: ForgePr[];
@@ -62,8 +61,6 @@ interface State {
   details: Map<string, PrDetail>;
   /** The search's updated_at a PR was last reloaded for, by refKey. */
   reloadedFor: Map<string, string>;
-  /** Checked receipts of drafts that claim an answer, by node id. */
-  receipts: Map<string, ReceiptStatus>;
   /** The open item as it was rendered, to notice changes under it. */
   shown?: { nodeId: string; key: string };
   /** The open PR as it was rendered: its key and updated_at. */
@@ -146,7 +143,7 @@ function labelOf(state: State): (e: Entry) => RowLabel | undefined {
       if (!v) return { text: "checking reviews…", cls: "pending" };
       return v.state === "none" ? undefined : { text: VERDICT_LABEL[v.state], cls: `v-${v.state}` };
     }
-    const st = e.item ? answerState(e.item, state.sent, state.receipts) : undefined;
+    const st = e.item ? answerState(e.item, state.sent) : undefined;
     return st ? { text: STATE_LABEL[st], cls: st } : undefined;
   };
 }
@@ -204,12 +201,12 @@ function renderRoute(state: State): void {
     return;
   }
   const ctx = state.context.get(item.nodeId);
-  const target = answerTarget(item, HOME_OWNERS, ctx?.isPrivate ?? item.isPrivate, state.boardPublic);
+  const target = answerTarget(item, HOME_OWNERS, ctx?.isPrivate ?? item.isPrivate);
   state.shown = { nodeId: item.nodeId, key: itemKey(item) };
   showMain(
     itemView(item, target, questionOf(item), ctx, render, state.sent.has(item.nodeId), {
       send: async (answer) => {
-        const posted = await postAnswer(state.gh, item, target, answer);
+        const posted = await postAnswer(state.gh, target, answer);
         state.sent.add(item.nodeId);
         void refreshContext(state, item);
         return posted.url;
@@ -290,16 +287,9 @@ async function loadPr(state: State, ref: { owner: string; repo: string; number: 
 async function refreshContext(state: State, item: Item): Promise<void> {
   const ctx = await loadContext(state.gh, item);
   state.context.set(item.nodeId, ctx);
-  if (ctx.receipt) state.receipts.set(item.nodeId, ctx.receipt);
   if (routeItemId() !== item.nodeId) return;
   const container = byId("view").querySelector(`.${CONTEXT_CLASS}`);
   container?.replaceChildren(contextView(item, ctx, render));
-}
-
-/** Check the receipts of drafts that claim an answer, for the queue's labels. */
-async function refreshReceipts(state: State): Promise<void> {
-  const checks = await Promise.all(state.items.map(async (i) => [i.nodeId, await verifyReceipt(state.gh, i)] as const));
-  state.receipts = new Map(checks.flatMap(([id, r]) => (r ? [[id, r] as const] : [])));
 }
 
 /** Re-read the news (conditionally), and show it if the pane is open and it changed. */
@@ -405,12 +395,10 @@ async function poll(state: State): Promise<void> {
     const first = !state.loaded;
     if (q.changed || first) {
       state.items = q.items;
-      state.boardPublic = q.boardPublic;
       // Keep "sent" only for items still waiting on the bot.
       const ids = new Set(q.items.map((i) => i.nodeId));
       for (const s of state.sent) if (!ids.has(s)) state.sent.delete(s);
       state.context.clear();
-      await refreshReceipts(state);
       state.loaded = true;
       update(state, true, first);
     } else {
@@ -570,7 +558,6 @@ async function start(source: TokenSource): Promise<void> {
     source,
     items: [],
     loaded: false,
-    boardPublic: true,
     prs: [],
     verdicts: new Map(),
     lastForgePoll: 0,
@@ -584,7 +571,6 @@ async function start(source: TokenSource): Promise<void> {
     context: new Map(),
     details: new Map(),
     reloadedFor: new Map(),
-    receipts: new Map(),
     fileIndex: -1,
     help: false,
     selected: undefined,
@@ -673,7 +659,7 @@ function signInView(reason: SignInReason): HTMLElement {
       h(
         "p",
         {},
-        "A fine-grained token acts on one resource owner only: with owner cgwalters-forge and Pull requests: read and write, Issues: read and write, and Contents and Commit statuses: read, it can review forge PRs, but not answer on upstream repositories or write draft items.",
+        "A fine-grained token acts on one resource owner only: with owner cgwalters-forge and Pull requests: read and write, Issues: read and write, and Contents and Commit statuses: read, it can review forge PRs, but not answer on upstream repositories.",
       ),
       h("p", {}, "Anyone who can change this site's code could read a pasted token, so prefer one that expires soon."),
     ),
