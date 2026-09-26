@@ -83,7 +83,11 @@ command (`/promote`, `/draft`, `/ready`).
 
 The board is polled every 30 seconds with ETags while the tab is
 visible, the forge's PR search every minute, and a PR's reviews only
-when it changed.
+when it changed. With "remember" ticked at sign-in, responses are also
+kept in IndexedDB (for your login only, up to about 50 MB and 7 days),
+so a reload shows the queue, a PR or the news at once, marked "cached ·
+N min ago" until GitHub confirms or replaces it. Signing out deletes
+that cache; without "remember" it lives in memory only.
 
 The app contains no data: everything is fetched in your browser with your
 token, from `api.github.com` only.

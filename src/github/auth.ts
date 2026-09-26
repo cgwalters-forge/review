@@ -8,13 +8,15 @@
 
 import { TOKEN_KEY } from "./config.ts";
 
+/** Where a pasted token is kept. */
+export type Persistence = "session" | "local";
+
 export interface TokenSource {
   get(): Promise<string>;
   signOut(): Promise<void>;
+  /** Where the token is kept, which also decides whether the response cache persists. */
+  persistence: Persistence;
 }
-
-/** Where a pasted token is kept. */
-export type Persistence = "session" | "local";
 
 /** The two storages, either of which may be missing or throw (private mode, blocked site data). */
 export interface Storages {
@@ -70,17 +72,19 @@ export function forgetToken(storages: Storages = browserStorages()): void {
   remove(storages.local);
 }
 
-function source(token: string, storages: Storages): TokenSource {
+function source(token: string, storages: Storages, persistence: Persistence): TokenSource {
   return {
     get: async () => token,
     signOut: async () => forgetToken(storages),
+    persistence,
   };
 }
 
 /** The saved token, if any: this tab's first, then a remembered one. */
 export function savedToken(storages: Storages = browserStorages()): TokenSource | undefined {
-  const t = read(storages.session) ?? read(storages.local);
-  return t && TOKEN_RE.test(t) ? source(t, storages) : undefined;
+  const session = read(storages.session);
+  const t = session ?? read(storages.local);
+  return t && TOKEN_RE.test(t) ? source(t, storages, session !== undefined ? "session" : "local") : undefined;
 }
 
 /**
@@ -96,7 +100,7 @@ export function useToken(input: string, persistence: Persistence, storages: Stor
   } catch {
     // Memory only.
   }
-  return source(t, storages);
+  return source(t, storages, persistence);
 }
 
 /** A classic token scope requirement: any one of `any` satisfies it. */

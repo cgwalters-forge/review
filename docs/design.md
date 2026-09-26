@@ -181,10 +181,64 @@ What this gives up, compared with §3:
   that expires soon, and only the scopes listed.
 - **A shared origin.** Every Pages site of the cgwalters-forge
   organization is served from `cgwalters-forge.github.io`, and they can
-  read each other's storage. None other exists; don't add one while
-  tokens live here (a custom domain would separate them).
+  read each other's storage: the token, and the response cache below,
+  which holds whatever the token read, private repositories included.
+  None other exists; don't add one while tokens or the cache live here.
+  A custom domain would give the app an origin of its own.
 - **A long-lived credential in the browser**, rather than the relay's
   short-lived access tokens.
+
+### Persistent cache (2026-09-26)
+
+Every GitHub read is a conditional GET, and the board alone is about
+1.1 MB in two pages that take GitHub 3 to 4 seconds to answer, 304 or
+not. So the app keeps its responses across reloads and renders from them
+first (stale-while-revalidate):
+
+- **One cache** (`src/github/cache.ts`): a map in memory in front of an
+  IndexedDB store (`idbstore.ts`). IndexedDB rather than localStorage:
+  the board alone would crowd localStorage's 5 MB, and bodies are
+  stored as parsed values with no JSON string round trip. Each entry
+  keeps its URL, ETag or Last-Modified, the parsed body and when GitHub
+  last sent or confirmed it; metadata and bodies are separate stores, so
+  a 304 rewrites a few fields, not the megabyte.
+- **On load**, the queue (the board, the forge's PRs, their verdicts and
+  which questions are answered), a PR's details and the news are
+  rendered from the cache by the same loaders over a cache-only client,
+  and marked "cached · N min ago" until GitHub has answered. Then every
+  entry is revalidated with `If-None-Match` or `If-Modified-Since`; a
+  304 only refreshes its time. The first render already carries its
+  labels, and the fresh answer replaces it in place: the queue with the
+  same rows, a PR only if it differs. (The board is REST with ETags, so
+  it revalidates like everything else; only the forge's search has no
+  validators and is always re-read.)
+- **Writes invalidate.** A successful write drops every cached response
+  under the issue or PR it wrote to (its `/issues/N` and `/pulls/N`
+  trees) and all searches, before and after it is sent, and a read that
+  was in flight during it isn't stored. The approve and answer guards
+  read the PR or issue with `send`, which never reads or fills the cache,
+  so an approval is always checked against the head on GitHub.
+- **Bounds:** at most about 50 MB of JSON, least recently used first,
+  and nothing GitHub hasn't confirmed for 7 days.
+- **Whose cache.** Entries are keyed by the signed-in login, and the
+  store records that login and a SHA-256 hash of the token it was last
+  used with, never the token. A reload with the same token renders at
+  once; a different token waits for `GET /user`, keeps the cache if the
+  login is the same (a rotated token) and wipes it otherwise. Signing
+  out, or GitHub rejecting the token, deletes the database; another tab
+  of the app lets go of it when that happens.
+- **Only with "remember".** A remembered token is on disk anyway, so
+  its cache may be too. Without "remember" the token lasts as long as
+  the tab, and so does the cache: it stays in memory, and each such
+  load deletes any database an earlier remembered sign-in left. That
+  gives up the fast reload for tokens that aren't remembered, in
+  exchange for leaving nothing behind after the tab closes, which is
+  what the sign-in page promises. Keeping a session's cache in
+  IndexedDB and deleting it on the next load would have left private
+  data on disk until then, possibly forever.
+- **Without storage** (blocked site data, some private modes, a full
+  disk) every store operation fails quietly and the cache is memory
+  only, as it was before.
 
 ## Summary
 
