@@ -4,8 +4,22 @@
 
 import { type Answer, formatAnswer } from "../answer.ts";
 import type { GitHub } from "./api.ts";
-import { type AnswerTarget, fieldIds, type Item, type RawField, type RawItem, queueItems } from "./board.ts";
-import { BOARD_NUMBER, BOARD_OWNER, PAGE_SIZE, QUEUE_STATUSES, RECENT_COMMENTS } from "./config.ts";
+import {
+  answeredPending,
+  fieldIds,
+  type IssueRef,
+  isQuestion,
+  type Item,
+  labelNames,
+  parseIssueUrl,
+  questionProblem,
+  type RawContent,
+  type RawField,
+  type RawItem,
+  queueItems,
+} from "./board.ts";
+import { BOARD_NUMBER, BOARD_OWNER, PAGE_SIZE, QUEUE_STATUSES, RECENT_COMMENTS, TRACKER_REPO } from "./config.ts";
+import { refKey } from "./forge.ts";
 
 const PROJECT = `/users/${BOARD_OWNER}/projectsV2/${BOARD_NUMBER}`;
 
@@ -64,7 +78,8 @@ interface RawGist {
 export interface Context {
   comments: Comment[];
   gists: Gist[];
-  isPrivate?: boolean;
+  /** On a question: he commented after the bot last did. */
+  answered?: boolean;
   /** Problems reading optional context, shown but not fatal. */
   warnings: string[];
 }
@@ -74,23 +89,30 @@ export function gistId(url: string): string | undefined {
   return /^https:\/\/gist\.github\.com\/(?:[A-Za-z0-9-]+\/)?([0-9a-f]+)(?:[#?].*)?$/.exec(url)?.[1];
 }
 
-/** Read an item's comments, gists and repository visibility. */
+function commentsPath(ref: IssueRef): string {
+  return `/repos/${ref.owner}/${ref.repo}/issues/${ref.number}/comments?per_page=${PAGE_SIZE}`;
+}
+
+/** Every comment on an issue or PR, oldest first, conditionally. */
+async function loadComments(gh: GitHub, ref: IssueRef): Promise<Comment[]> {
+  const r = await gh.getAll<RawComment>(commentsPath(ref));
+  return r.data.map((c) => ({
+    author: c.user?.login ?? "ghost",
+    createdAt: c.created_at,
+    url: c.html_url,
+    body: c.body ?? "",
+  }));
+}
+
+/** Read an item's comments and gists. */
 export async function loadContext(gh: GitHub, item: Item): Promise<Context> {
   const ctx: Context = { comments: [], gists: [], warnings: [] };
   const tasks: Promise<void>[] = [];
   if (item.ref) {
-    const { owner, repo, number } = item.ref;
     tasks.push(
-      gh.get<{ private?: boolean }>(`/repos/${owner}/${repo}`).then((r) => {
-        if (typeof r.data.private === "boolean") ctx.isPrivate = r.data.private;
-      }),
-      gh.getAll<RawComment>(`/repos/${owner}/${repo}/issues/${number}/comments?per_page=${PAGE_SIZE}`).then((r) => {
-        ctx.comments = r.data.slice(-RECENT_COMMENTS).map((c) => ({
-          author: c.user?.login ?? "ghost",
-          createdAt: c.created_at,
-          url: c.html_url,
-          body: c.body ?? "",
-        }));
+      loadComments(gh, item.ref).then((all) => {
+        ctx.comments = all.slice(-RECENT_COMMENTS);
+        if (isQuestion(item)) ctx.answered = answeredPending(all);
       }),
     );
   }
@@ -125,16 +147,50 @@ export async function viewer(gh: GitHub): Promise<string> {
   return r.data.login;
 }
 
+/**
+ * The open questions he has answered and the bot hasn't acted on yet, by
+ * node id. Reads comments only of open questions that have any; the reads
+ * are conditional, so an unchanged issue costs nothing. A question whose
+ * comments can't be read counts as unanswered.
+ */
+export async function loadAnswered(gh: GitHub, items: readonly Item[]): Promise<Set<string>> {
+  const asked = items.filter((i) => isQuestion(i) && i.state === "open" && i.ref && (i.comments ?? 1) > 0);
+  const answered = await Promise.all(
+    asked.map(async (i) => {
+      try {
+        return answeredPending(await loadComments(gh, i.ref as IssueRef)) ? [i.nodeId] : [];
+      } catch {
+        return [];
+      }
+    }),
+  );
+  return new Set(answered.flat());
+}
+
 export interface Posted {
   /** The comment. */
   url: string;
 }
 
-/** Post an answer: one comment by you on the item's issue or PR. */
-export async function postAnswer(gh: GitHub, target: AnswerTarget, answer: Answer): Promise<Posted> {
-  if (target.kind === "none") throw new Error(`can't answer here: ${target.reason}`);
+/**
+ * Answer a question: one comment by you on its issue. The issue is read
+ * fresh first and must be an open question in `repo` (the tracker, unless
+ * overridden, e.g. by a test against a sandbox repository); anything else
+ * is refused before writing. A plain function of a client and an issue,
+ * so a script can drive it with any token.
+ */
+export async function postAnswer(gh: GitHub, ref: IssueRef, answer: Answer, repo: string = TRACKER_REPO): Promise<Posted> {
   const body = formatAnswer(answer);
-  const { owner, repo, number } = target.ref;
-  const c = await gh.send<{ html_url: string }>("POST", `/repos/${owner}/${repo}/issues/${number}/comments`, { body });
+  const path = `/repos/${ref.owner}/${ref.repo}/issues/${ref.number}`;
+  const issue = await gh.send<RawContent>("GET", path);
+  const actual = parseIssueUrl(issue.html_url ?? "");
+  // A transferred issue answers from its new home; don't follow it.
+  if (!actual || refKey(actual).toLowerCase() !== refKey(ref).toLowerCase()) {
+    throw new Error(`not answering: ${refKey(ref)} is now ${issue.html_url ?? "somewhere unknown"}`);
+  }
+  const facts = { kind: issue.pull_request ? "pr" : "issue", ref: actual, labels: labelNames(issue.labels) } as const;
+  const problem = questionProblem(issue.state ? { ...facts, state: issue.state } : facts, repo);
+  if (problem !== undefined) throw new Error(`not answering: ${problem}`);
+  const c = await gh.send<{ html_url: string }>("POST", `${path}/comments`, { body });
   return { url: c.html_url };
 }

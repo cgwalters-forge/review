@@ -2,7 +2,7 @@
 // and chores, P0 first, then oldest first. Pure, so tests can check the
 // ranking and what gets merged or dropped.
 
-import { type Item, NO_PRIORITY, PRIORITY_ORDER, questionOf } from "./board.ts";
+import { blockedBy, isQuestion, type Item, NO_PRIORITY, PRIORITY_ORDER } from "./board.ts";
 import { DRAFT, FORGE_ORG, NEEDS_HUMAN } from "./config.ts";
 import { type ForgePr, parseBotMeta, refKey, type Verdict, waitsOnReviewer } from "./forge.ts";
 
@@ -24,7 +24,16 @@ export interface Entry {
   item?: Item;
   pr?: ForgePr;
   verdict?: Verdict;
+  /** A question he answered, or the bot closed: waiting on the bot, not him. */
+  settled?: boolean;
+  /** The questions blocking this entry's item, nested under it. */
+  children?: Entry[];
+  /** The item a top-level question blocks, when that isn't in the queue. */
+  blocks?: string;
 }
+
+/** Group heading for settled questions, listed after everything else. */
+export const SETTLED_GROUP = "Answered, waiting on the bot";
 
 /** Rank in PRIORITY_ORDER; anything else ranks after it, and none last. */
 export function priorityRank(p: string | undefined): number {
@@ -33,14 +42,18 @@ export function priorityRank(p: string | undefined): number {
   return i < 0 ? PRIORITY_ORDER.length : i;
 }
 
-/** Priority first, then oldest first (no date last), then by key for stability. */
+/** Settled last, then priority, then oldest first (no date last), then by key for stability. */
 export function rankEntries(entries: readonly Entry[]): Entry[] {
   const time = (e: Entry) => {
     const t = e.since ? Date.parse(e.since) : Number.NaN;
     return Number.isNaN(t) ? Number.POSITIVE_INFINITY : t;
   };
   return [...entries].sort(
-    (a, b) => priorityRank(a.priority) - priorityRank(b.priority) || time(a) - time(b) || a.key.localeCompare(b.key),
+    (a, b) =>
+      Number(a.settled === true) - Number(b.settled === true) ||
+      priorityRank(a.priority) - priorityRank(b.priority) ||
+      time(a) - time(b) ||
+      a.key.localeCompare(b.key),
   );
 }
 
@@ -68,8 +81,12 @@ function itemWhere(item: Item): string {
  * - A Draft board item tracking a forge PR is that PR's entry, never a
  *   second one. One whose Branch holds only forge PRs, none of them open
  *   and waiting, is stale (promoted or closed) and dropped.
+ * - Question issues in the tracker are questions: settled (listed last)
+ *   once he answered (`answered`, by node id) or the bot closed them.
+ *   One whose blocked item (its parent issue, else its `Blocks:` URL) is
+ *   also listed is nested under that entry rather than listed twice.
  * - Other Draft items (a gist to read) are chores, and so are Needs human
- *   items that ask no question with options.
+ *   items that aren't questions.
  *
  * Until the forge has been read once (`forgeKnown`), nothing is stale:
  * forge-only Draft items are listed as chores rather than dropped.
@@ -79,6 +96,7 @@ export function buildEntries(
   prs: readonly ForgePr[],
   verdicts: ReadonlyMap<string, Verdict>,
   forgeKnown = true,
+  answered: ReadonlySet<string> = new Set(),
 ): Entry[] {
   const byNode = new Map(items.map((i) => [i.nodeId, i]));
   const byBranch = new Map<string, Item>();
@@ -104,12 +122,14 @@ export function buildEntries(
   for (const item of items) {
     if (tracked.has(item.nodeId)) continue;
     let kind: EntryKind;
-    if (item.status === DRAFT) {
+    if (isQuestion(item)) {
+      kind = "question";
+    } else if (item.status === DRAFT) {
       const forgeOnly = item.branch.length > 0 && item.branch.every((u) => FORGE_PR_RE.test(u));
       if (forgeOnly && forgeKnown) continue;
       kind = "chore";
     } else if (item.status === NEEDS_HUMAN) {
-      kind = questionOf(item).options.length > 0 ? "question" : "chore";
+      kind = "chore";
     } else {
       continue;
     }
@@ -117,9 +137,42 @@ export function buildEntries(
     if (item.priority) e.priority = item.priority;
     const since = item.createdAt ?? item.updatedAt;
     if (since) e.since = since;
+    if (kind === "question" && (item.state === "closed" || answered.has(item.nodeId))) e.settled = true;
     out.push(e);
   }
-  return rankEntries(out);
+  return rankEntries(nestQuestions(out));
+}
+
+/** The issue or PR an entry is about, as a refKey. */
+function entryRef(e: Entry): string | undefined {
+  const ref = e.pr?.ref ?? e.item?.ref;
+  return ref ? refKey(ref).toLowerCase() : undefined;
+}
+
+/**
+ * Move each question under the entry for the item it blocks, when that
+ * is listed and isn't a question itself; the rest stay top-level, noting
+ * what they block.
+ */
+function nestQuestions(entries: Entry[]): Entry[] {
+  const parents = new Map<string, Entry>();
+  for (const e of entries) {
+    const ref = e.kind === "question" ? undefined : entryRef(e);
+    if (ref && !parents.has(ref)) parents.set(ref, e);
+  }
+  const top: Entry[] = [];
+  for (const e of entries) {
+    const blocked = e.item ? blockedBy(e.item) : undefined;
+    const parent = blocked ? parents.get(refKey(blocked).toLowerCase()) : undefined;
+    if (parent) {
+      (parent.children ??= []).push(e);
+      continue;
+    }
+    if (blocked) e.blocks = refKey(blocked);
+    top.push(e);
+  }
+  for (const e of top) if (e.children) e.children = rankEntries(e.children);
+  return top;
 }
 
 export interface EntryGroup {
@@ -127,11 +180,11 @@ export interface EntryGroup {
   entries: Entry[];
 }
 
-/** Consecutive runs of one priority in a ranked list, for headings. */
+/** Consecutive runs of one priority (or settled) in a ranked list, for headings. */
 export function groupRanked(entries: readonly Entry[]): EntryGroup[] {
   const out: EntryGroup[] = [];
   for (const e of entries) {
-    const p = e.priority ?? NO_PRIORITY;
+    const p = e.settled ? SETTLED_GROUP : (e.priority ?? NO_PRIORITY);
     const last = out.at(-1);
     if (last?.priority === p) last.entries.push(e);
     else out.push({ priority: p, entries: [e] });

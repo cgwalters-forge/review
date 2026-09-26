@@ -34,11 +34,12 @@ export const FIELD = {
 } as const;
 
 /**
- * Owners whose repositories are the bot's and his own working space: an
- * answer comment there is expected. On any other public repository it is
- * a public comment on someone's project, so the app asks first.
+ * The public repository where every board item that isn't an upstream
+ * issue or PR is an issue, questions for him included.
  */
-export const HOME_OWNERS: readonly string[] = ["cgwalters-forge", "cgwalters-bot", OPERATOR];
+export const TRACKER_REPO = "cgwalters-forge/tracker";
+/** The label the bot puts on a question issue in TRACKER_REPO. */
+export const QUESTION_LABEL = "question";
 
 /** Poll every this many ms while the tab is visible. */
 export const POLL_INTERVAL_MS = 30_000;
