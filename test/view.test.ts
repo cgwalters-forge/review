@@ -78,21 +78,22 @@ describe("queueView", () => {
     assertNoActiveContent(root);
     assert.deepEqual(
       [...root.querySelectorAll(".group-h")].map((e) => e.textContent),
-      ["P0 · 1", "P1 · 2", "P2 · 1", "No priority · 1", "Answered, waiting on the bot · 1"],
+      // The P1 epic ranks as P0 by its P0 question; counts include nested rows.
+      ["P0 · 3", "P1 · 2", "P2 · 1", "No priority · 1", "Answered, waiting on the bot · 1"],
     );
     assert.ok(root.textContent?.includes("<script>alert(2)</script>"));
     const hrefs = (sel: string) => [...root.querySelectorAll(sel)].map((r) => r.getAttribute("href"));
     assert.deepEqual(hrefs(".row"), [
       "#item/PVTI_synthetic_draft",
-      "#item/PVTI_synthetic_upstream_pr",
-      "#item/PVTI_synthetic_upstream_question",
       "#item/PVTI_synthetic_epic",
       "#item/PVTI_synthetic_question",
+      "#item/PVTI_synthetic_upstream_pr",
+      "#item/PVTI_synthetic_upstream_question",
       "#item/PVTI_synthetic_redacted",
       "#item/PVTI_synthetic_home_issue",
       "#item/PVTI_synthetic_closed_question",
     ]);
-    assert.deepEqual(hrefs(".row.child"), ["#item/PVTI_synthetic_upstream_question", "#item/PVTI_synthetic_question"]);
+    assert.deepEqual(hrefs(".row.child"), ["#item/PVTI_synthetic_question", "#item/PVTI_synthetic_upstream_question"]);
     const row = (id: string) => root.querySelector(`.row[href="#item/${id}"]`);
     assert.equal(row("PVTI_synthetic_question")?.querySelector(".why")?.textContent, "Which prefix?");
     assert.match(row("PVTI_synthetic_closed_question")?.querySelector(".tag")?.textContent ?? "", /blocks cgwalters-bot\/elsewhere#5/);

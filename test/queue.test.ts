@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { Item } from "../src/github/board.ts";
 import type { ForgePr, Verdict } from "../src/github/forge.ts";
-import { buildEntries, type Entry, groupRanked, priorityRank, rankEntries, SETTLED_GROUP } from "../src/github/queue.ts";
+import { buildEntries, effectivePriority, type Entry, groupRanked, priorityRank, rankEntries, SETTLED_GROUP } from "../src/github/queue.ts";
 
 function item(nodeId: string, over: Partial<Item> = {}): Item {
   return { id: 0, nodeId, kind: "draft", title: nodeId, body: "", why: "", branch: [], gist: [], labels: [], status: "Needs human", ...over };
@@ -172,15 +172,47 @@ describe("buildEntries", () => {
     ];
     const entries = buildEntries(items, [], verdicts([]));
     const shape = (es: readonly Entry[]): unknown[] => es.map((e) => (e.children ? [e.key, shape(e.children)] : e.key));
+    // The P2 epic ranks as P0 by its P0 sub-issue question.
     assert.deepEqual(shape(entries), [
-      ["item:PVTI_up", ["item:PVTI_upq"]],
       ["item:PVTI_epic", ["item:PVTI_sub", "item:PVTI_sub2"]],
+      ["item:PVTI_up", ["item:PVTI_upq"]],
       "item:PVTI_lone",
       "item:PVTI_qq",
     ]);
     assert.equal(entries.find((e) => e.key === "item:PVTI_lone")?.blocks, "cgwalters-forge/tracker#99");
     assert.equal(entries.find((e) => e.key === "item:PVTI_qq")?.blocks, "cgwalters-forge/tracker#23");
     assert.equal(entries.find((e) => e.key === "item:PVTI_up")?.blocks, undefined);
+  });
+
+  it("nests a question blocking a tracker issue under the forge PR that folded in its Draft item", () => {
+    const items = [
+      tracked("PVTI_task", 30, { status: "Draft", priority: "P2", branch: ["https://github.com/cgwalters-forge/a/pull/1"] }),
+      question("PVTI_sub", 31, `${TRACKER}/30`, { parent: { owner: "cgwalters-forge", repo: "tracker", number: 30 } }),
+      question("PVTI_blocks", 32, `${TRACKER}/30`),
+    ];
+    const entries = buildEntries(items, [pr("cgwalters-forge", "a", 1)], verdicts([]));
+    assert.deepEqual(entries.map((e) => [e.key, e.item?.nodeId, e.children?.map((c) => c.key)]), [
+      ["pr:cgwalters-forge/a#1", "PVTI_task", ["item:PVTI_blocks", "item:PVTI_sub"]],
+    ]);
+  });
+
+  it("ranks a parent by its most urgent open question, keeping its own priority", () => {
+    const items = [
+      tracked("PVTI_parent", 20, { priority: "P2", createdAt: "2026-01-01T00:00:00Z" }),
+      question("PVTI_p0", 21, `${TRACKER}/20`, { priority: "P0" }),
+      question("PVTI_p3", 22, `${TRACKER}/20`, { priority: "P3" }),
+      tracked("PVTI_p1", 23, { priority: "P1" }),
+      tracked("PVTI_quiet", 24, { priority: "P3" }),
+      question("PVTI_answered_p0", 25, `${TRACKER}/24`, { priority: "P0" }),
+    ];
+    const entries = buildEntries(items, [], verdicts([]), true, new Set(["PVTI_answered_p0"]));
+    assert.deepEqual(entries.map((e) => [e.key, e.priority, effectivePriority(e)]), [
+      ["item:PVTI_parent", "P2", "P0"],
+      ["item:PVTI_p1", "P1", "P1"],
+      // An answered question doesn't raise its parent.
+      ["item:PVTI_quiet", "P3", "P3"],
+    ]);
+    assert.deepEqual(groupRanked(entries).map((g) => [g.priority, g.entries.length]), [["P0", 1], ["P1", 1], ["P3", 1]]);
   });
 
   it("nests a question blocking a forge PR under the PR", () => {

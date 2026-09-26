@@ -136,7 +136,8 @@ export function queueView(
     h("p", { class: "summary" }, `${counts.pr} PRs to review · ${counts.question} questions · ${counts.chore} other · j/k to move, o to open, ? for keys`),
   );
   for (const group of groupRanked(entries)) {
-    const section = h("section", { class: "group" }, h("h2", { class: "group-h" }, `${group.priority} · ${group.entries.length}`));
+    const count = group.entries.reduce((n, e) => n + 1 + (e.children?.length ?? 0), 0);
+    const section = h("section", { class: "group" }, h("h2", { class: "group-h" }, `${group.priority} · ${count}`));
     for (const e of group.entries) {
       section.append(row(e, labelOf, now, false));
       for (const c of e.children ?? []) section.append(row(c, labelOf, now, true));
