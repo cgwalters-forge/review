@@ -25,6 +25,9 @@ in cgwalters-forge that you haven't approved or sent back at their
 current head, and the Workstream board's "Needs human" items (questions,
 and other actions) and Draft items (gists to read). P0 comes first
 (the board's Priority; a PR takes its board item's), then the oldest.
+Questions you answered, or the bot closed, move to the end until the bot
+acts. A question is nested under the item it blocks when that is in the
+queue too.
 
 - **A forge PR** opens a review pane: the description (without bot-pr's
   meta section), CI checks, every commit with its full message, and the
@@ -34,12 +37,15 @@ and other actions) and Draft items (gists to read). P0 comes first
   line that asks promote for a draft upstream PR. **Request changes** and
   **Comment** submit reviews with your text.
 - **A board item** shows its Why, links, description, gist and latest
-  comments, rendered from markdown and sanitized. You answer with a tap
-  on one of the options the bot offered (parsed from Why), free text, or
-  both. On an issue or PR the answer is a comment by you starting with
-  `/answer` (or `/answer B`); on a draft item it is a receipt gist plus a
-  marked section in the draft body, both readable by anyone while the
-  board is public.
+  comments, rendered from markdown and sanitized. A parent issue in
+  cgwalters-forge/tracker also shows its sub-issues and their progress.
+- **A question** is an issue in cgwalters-forge/tracker labelled
+  `question`. You answer with a tap on one of the options it offers (the
+  recommended one is A), free text, or both; the answer is a plain
+  comment by you on that issue, whose first line is the letter you
+  picked. The bot acts on it and closes the issue. Upstream issues and
+  PRs are never answered from here: they link to GitHub, and the bot's
+  questions about them are tracker issues.
 
 The **news** pane (`n`) lists recently merged PRs in the bot
 (cgwalters-bot/homegit), its runner (cgwalters-devspace-sandbox, both
@@ -51,7 +57,7 @@ Keys: `j`/`k` move, `o` opens, `u` goes back, `r` reloads; in a PR,
 `j`/`k` step through files, `x` folds one, `a` approves (after a
 confirmation) and `c` jumps to the review text; `?` lists them. Your
 text never goes out with a line the bot would read as a command
-(`/promote`, `/draft`, `/ready`, `/answer`).
+(`/promote`, `/draft`, `/ready`).
 
 The board is polled every 30 seconds with ETags while the tab is
 visible, the forge's PR search every minute, and a PR's reviews only
@@ -81,13 +87,11 @@ access token. It stays in your browser (sessionStorage, or localStorage
 if you tick "remember") and is sent only to `api.github.com`. The sign-in
 page lists the scopes a token needs:
 
-- a short-lived classic token with `public_repo`, `read:project` and
-  `gist` covers everything (`repo` and `project` instead, to see private
-  repositories and answer draft items on the board);
+- a short-lived classic token with `public_repo` and `read:project`
+  covers everything (`repo` instead, to see private repositories);
 - a fine-grained token acts on one resource owner only: owned by
   cgwalters-forge, with Pull requests and Issues read and write, it
-  reviews forge PRs but can't answer upstream or on draft items.
+  reviews forge PRs and answers questions in the tracker.
 
 The answers and reviews it posts are real, so test against throwaway
-items. The board is public: a draft answer, and the link to its receipt
-gist, can be read by anyone.
+items.

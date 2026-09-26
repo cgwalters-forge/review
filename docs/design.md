@@ -22,107 +22,99 @@ board mirror and the migration). Auth, hosting, CSP, rendering and deploys
   source, the build, logs or a public store. Test fixtures are synthetic.
 - **The queue** is the Workstream board: items with Status "Needs human",
   grouped by Priority, with Why, Org, Branch and Gist, plus the item's
-  issue or PR (or draft body) and any gist for long context.
+  issue or PR and any gist for long context.
 - **Reads are REST, not GraphQL.** `GET /users/{u}/projectsV2/{n}/items`
   takes `fields=<ids>` and `q=status:"Needs human"`, sends
   `access-control-allow-origin: *` and ETags (checked 2026-09-25). Polls
   are conditional requests, so an unchanged board costs no rate budget.
 
-### Answers, and why the bot can trust them
+### Answers, and why the bot can trust them (revised 2026-09-26)
 
 The bot's existing rule is that only the `cgwalters` login carries intent.
-Answers therefore are things only that login can create:
+Answers therefore are things only that login can create, and the simplest
+such thing is a comment: GitHub records its author.
 
-- **Issue or PR items:** a comment by you on it. Its first line is
-  `/answer`, `/answer B` or `/answer B Q#3` (see question ids below), and
-  the rest is your text.
+The first version answered board *draft* items, which have no comments and
+whose edits are unattributed (`DraftIssue` and `ProjectV2Item` expose only
+a creator and `updatedAt`, with no edit history). So the app wrote the
+answer into the draft's public body and saved an unlisted gist under his
+account as a receipt for the bot to verify, with `Q#n` question ids and
+timing rules to reject replayed or stale answers. cgwalters found that
+weird, and it was: all of it existed only because drafts can't carry
+authorship. It is gone. Instead:
+
+- **Every board item that isn't an upstream issue or PR is an issue in
+  the public repository `cgwalters-forge/tracker`.** The bot no longer
+  creates draft items (except archived `bot-state:` ones, which the app
+  never shows). Larger efforts are parent issues there with sub-issues.
+- **A question for him is a tracker issue** labelled `question`, assigned
+  to him, with board Status "Needs human". When the item it blocks is a
+  tracker issue, the question is a sub-issue of it. Its body:
+
+  ```
+  Blocks: https://github.com/cgwalters-forge/tracker/issues/12
+  Context, any number of lines.
+  Q: Which prefix?
+  Options:
+  A) org.example
+  B) io.example
+  Recommended: A, because it is already registered
+  ```
+
+  The first line always names the blocked board item (a tracker issue, or
+  an upstream issue or PR, which can't have sub-issues). Options and the
+  recommendation may be absent (an action, or an open question); when
+  there is a recommendation, it is always option A.
+- **He answers with a normal comment on it**, and his login is what
+  authenticates it. If he picks an option, the comment's first line is
+  exactly that letter, optionally followed by his own text; otherwise it
+  is only his text. There is no command, question id, receipt or timing
+  rule: a question issue asks one thing, and a new question is a new
+  issue. The bot acts, then closes the issue with a one-line comment
+  saying what it did.
   - The app never copies option text from the bot into the comment, so a
-    confused bot can't put words under your name.
+    confused bot can't put words under his name.
   - It refuses free text with a line that is a bot command (`/promote`,
-    `/draft`, `/ready`, `/answer`, after trimming whitespace): `bot-pr`
-    acts on `/promote` on *any* line of your comments, so "ok" followed
-    by a `/promote` line in an answer would promote a fork PR. Backticks
-    or other wording get around it on purpose.
-  - On a public repository outside `cgwalters-forge`, `cgwalters-bot` and
-    `cgwalters`, the app asks before posting. (With the App's user token,
-    comments work only where the App is installed; see the open problem
-    below. `answerTarget` is the one place that picks the channel.)
-- **Draft items** have no comments, and their edits are unattributed:
-  `DraftIssue` and `ProjectV2Item` expose only a creator and `updatedAt`,
-  and there is no edit history (GraphQL introspection, 2026-09-25). So the
-  app saves a **receipt gist** under your account (unlisted: `public:
-  false`), holding the same block plus an `Item: PVTI_...` trailer, then
-  writes a marked section into the draft body pointing at it:
+    `/draft`, `/ready`, after trimming whitespace): `bot-pr` acts on
+    `/promote` on *any* line of his comments, so "ok" followed by a
+    `/promote` line in an answer would promote a fork PR. Backticks or
+    other wording get around it on purpose. It also refuses free text
+    whose first line is a single letter, which would read as a pick.
+- **Only open question issues in the tracker get an answer box.**
+  `postAnswer` reads the issue fresh and refuses anything else before
+  writing. Upstream issues and PRs are never answered from the app, not
+  even with a confirmation: a bare "B" on an upstream PR is noise to its
+  maintainers. A Needs-human upstream item shows its Why and a link to act
+  on GitHub, and its decisions live in tracker questions whose `Blocks:`
+  line names it.
+- **The queue follows the issues.** A question he commented on after the
+  bot's last comment shows as answered and moves to the end until the bot
+  acts; one the bot closed shows as done. A question is nested under the
+  entry for the item it blocks (its parent issue, else its `Blocks:` URL)
+  when that item is in the queue. Parents show their `sub_issues_summary`
+  progress, and opening one lists its sub-issues (`GET
+  /repos/{o}/{r}/issues/{n}/sub_issues`, read only for tracker issues
+  whose summary is non-zero). Deciding "answered" reads a question's
+  comments, conditionally, only when the board changed.
 
-  ```
-  <!-- review-answer BEGIN receipt=https://gist.github.com/<id> -->
-  /answer B Q#3
-  your text
-  <!-- review-answer END -->
-  ```
-
-  The body section is only a pointer and a display; only the receipt is
-  evidence. The markers must be whole lines, and a body with more than
-  one section, or a malformed one, is refused rather than guessed at.
-  **The board is public**, so the section, and through its link the
-  receipt, are readable by anyone: answers on drafts are public today,
-  whatever "unlisted" suggests. The app says so next to the send button.
-
-**Question ids.** The bot names each question it asks with an id at the
-start of a line, `Q#3: backport to 1.2? Options: A) ... B) ...`, in Why
-(where it then starts the field) or the draft body, and uses a new number
-whenever it asks something new on that item. Only `Q#n:` at the start of
-a line counts, so an id in a URL, backticks or prose never does. The app
-copies the id into the answer's command line. Different ids between Why
-and the draft body, or within one, make the question ambiguous, and the
-app refuses to answer. The bot:
-- rejects an answer whose id isn't the current question's, an answer
-  without an id to a question with one, and an answer with an id to a
-  question without one;
-- always also requires the answer to be newer than the item's move to
-  Needs human.
-
-Together these reject a replayed comment or receipt, an answer to
-options that changed while the view was open, and an answer from before
-the question was asked.
-
-**What the bot checks** (a separate homegit change, in `bot-watch`, with
-one verifier shared with `bot-pr inbox`; not in this repository):
-- a comment's author is `cgwalters`, and it was not edited by anyone else
-  (people with write access can edit others' comments, so check
-  `userContentEdits` editors, as `bot-pr` does for PR bodies);
-- a receipt, fetched by the gist id (never trusting the user named in
-  the URL), has `owner.login` `cgwalters`; `fork_of` null; exactly one
-  revision (`history.length == 1`), by `cgwalters`; exactly one file,
-  `answer.md`, not truncated; an `Item:` trailer naming this item;
-- the answer's question id matches the current question's, both ways
-  (see question ids above), and the answer is newer than the item's move
-  to Needs human;
-- then it acts, and moves the item on as today. Unverified answers are
-  reported to you, not acted on. The app shows a draft as answered only
-  once its receipt passes the same checks (except timing), and otherwise
-  as "body claims an answer (unverified)".
+**What the bot checks** (in homegit, not in this repository): the comment
+is by `cgwalters` and was not edited by anyone else (people with write
+access can edit others' comments, so check `userContentEdits` editors, as
+`bot-pr` does for PR bodies), on an open question issue in the tracker.
 
 ### Auth changes
 
 The relay and the `cgwalters-review` App stay as in §3; v0 ships the
-client side (it asks `POST auth/github/token`, and only on a loopback
-origin falls back to a pasted token, for development), and the relay
-itself is the next PR. The App
-additionally needs **account permission Gists: read and write** for
-receipts; Contents write is not needed until PR review (v2).
+client side (see "Hosting v0" below). With answers as issue comments,
+the App needs no Gists permission; Contents write is not needed until PR
+review (v2).
 
 **Open problem:** the board is owned by the `cgwalters-bot` user, and
-GitHub Apps have no account-level Projects permission (§1(c)). Reading a
-public board should work, but writing a draft body with the App's user
-token is expected to fail with "Resource not accessible by integration".
-In development mode a classic token with `project` scope works if you can
-edit the board. The fix is the org project the pivot plan already calls
-for, with the App granted org Projects: read and write. App user tokens
-also reach only repositories where the App is installed, so upstream
-`/answer` comments would fail in relay mode; one alternative is private
-answers everywhere (a receipt plus a board "Answer" field). Both wait on
-your decision.
+GitHub Apps have no account-level Projects permission (§1(c)). The app
+only reads the board, which works for a public board. App user tokens
+reach only repositories where the App is installed, which the tracker
+and the forge are; upstream repositories need no write access now that
+answers never go there.
 
 **Plan, revised:** v0 is the GitHub queue, the item view and answers, as
 above, in development mode. Next come the relay, the bot's answer check
