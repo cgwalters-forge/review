@@ -66,6 +66,16 @@ describe("GitHub.get", () => {
     assert.equal(calls.length, 1);
   });
 
+  it("tracks the core rate limit only", async () => {
+    const rate = (resource: string, remaining: string) => ({ "x-ratelimit-resource": resource, "x-ratelimit-limit": resource === "search" ? "30" : "5000", "x-ratelimit-remaining": remaining });
+    const { fetchImpl } = scriptedFetch((_m, url) => ({ body: {}, headers: url.includes("search") ? rate("search", "2") : rate("core", "4000") }));
+    const gh = new GitHub(token, fetchImpl);
+    await gh.get("/user");
+    await gh.get("/search/issues?q=x");
+    assert.deepEqual(gh.rate, { limit: 5000, remaining: 4000, reset: 0 });
+    assert.equal(gh.rateLow(0.1), false);
+  });
+
   it("notes a classic token's scopes", async () => {
     const { fetchImpl } = scriptedFetch(() => ({ body: {}, headers: { "x-oauth-scopes": "gist, repo" } }));
     const gh = new GitHub(token, fetchImpl);
