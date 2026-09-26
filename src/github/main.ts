@@ -7,7 +7,7 @@ import { GitHub, GitHubError } from "./api.ts";
 import { missingScopes, type Persistence, savedToken, type TokenSource, useToken } from "./auth.ts";
 import { itemAction, reviewAskFor, reviewComment } from "./asks.ts";
 import type { Item } from "./board.ts";
-import { type Context, loadAnswered, loadContext, loadQueue, postAnswer, postAskComment, rerunFailedJobs, viewer } from "./backend.ts";
+import { type Context, loadAnswered, loadContext, loadQueue, postAnswer, postAskComment, rerunFailedJobs, submitAskedReview, viewer } from "./backend.ts";
 import {
   CLASSIC_SCOPES,
   FORGE_MIN_INTERVAL_MS,
@@ -24,7 +24,7 @@ import { type Command, HELP, keyCommand, parseRoute, type Route, type RouteInfo 
 import { type HarnessCache, loadNews, type News } from "./news.ts";
 import { newsView } from "./newsview.ts";
 import { loadFileLines, loadForgePrs, loadPrDetail, loadRangeFiles, type PrDetail, refreshVerdicts, submitReview, type VerdictEntry } from "./prs.ts";
-import { APPROVE_ACTION, type PrPane, prView, REVIEW_FORM_CLASS, type ReviewAskInfo } from "./prview.ts";
+import { APPROVE_ACTION, canReview, type PrPane, prView, REVIEW_FORM_CLASS, type ReviewAskInfo } from "./prview.ts";
 import { buildEntries, type Entry, itemHref } from "./queue.ts";
 import { answerState, type BoardHref, type ContextHooks, CONTEXT_CLASS, contextView, itemView, queueView, ROW_CLASS, ROW_KEY_ATTR, type RowLabel, STATE_LABEL } from "./view.ts";
 
@@ -295,7 +295,13 @@ function renderPr(state: State, ref: { owner: string; repo: string; number: numb
   const pane = prView(detail, prEntry(state, key), render, {
     review: async (action, text, draft, comments, sent) => {
       const reviews = composeReviews(action, text, detail.head, { draft, comments });
-      const url = await submitReview(state.gh, ref, reviews, (i) => sent(reviews[i]?.commit_id ?? ""));
+      const onSent = (i: number) => sent(reviews[i]?.commit_id ?? "");
+      // A PR outside the bot's own space is reviewable only because of its
+      // ask: re-read that before writing, not just the board's snapshot.
+      const url =
+        found && !canReview(detail)
+          ? await submitAskedReview(state.gh, found.ref, ref, found.target.head, reviews, onSent)
+          : await submitReview(state.gh, ref, reviews, onSent);
       state.reviewed.add(key);
       state.forceForge = true;
       // Tell the bot on its review ask. The review went out either way.
