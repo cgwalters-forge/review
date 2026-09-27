@@ -1,6 +1,8 @@
 // Keyboard commands, as a pure mapping from a key press to a command so
 // tests can check it; main.ts carries them out.
 
+import { parseFilterToken, type QueueFilter } from "./filter.ts";
+
 export type Route = "queue" | "item" | "pr" | "news";
 
 export type Command =
@@ -78,12 +80,16 @@ export const HELP: Record<Route, string> = {
 };
 
 export type RouteInfo =
-  | { route: "queue" }
+  | { route: "queue"; filter?: QueueFilter }
   | { route: "news" }
   | { route: "item"; id: string }
   | { route: "pr"; ref: { owner: string; repo: string; number: number } };
 
-/** The view a location hash asks for; anything unknown is the queue. */
+/**
+ * The view a location hash asks for; anything unknown is the queue. A
+ * bare filter token (see filterToken), e.g. `#composefs`, is the queue
+ * filtered so.
+ */
 export function parseRoute(hash: string): RouteInfo {
   if (hash === "#news") return { route: "news" };
   const item = /^#item\/(PVTI_[A-Za-z0-9_-]+)$/.exec(hash);
@@ -91,5 +97,6 @@ export function parseRoute(hash: string): RouteInfo {
   const pr = /^#pr\/([A-Za-z0-9-]+)\/([A-Za-z0-9._-]+)\/([1-9][0-9]{0,9})$/.exec(hash);
   // "." and ".." are no repository's name, and would climb the API path.
   if (pr?.[1] && pr[2] && pr[3] && !/^\.+$/.test(pr[2])) return { route: "pr", ref: { owner: pr[1], repo: pr[2], number: Number(pr[3]) } };
-  return { route: "queue" };
+  const filter = parseFilterToken(hash.slice(1));
+  return filter ? { route: "queue", filter } : { route: "queue" };
 }

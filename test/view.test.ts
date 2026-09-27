@@ -134,6 +134,28 @@ describe("queueView", () => {
     assert.match(root.querySelector(".summary")?.textContent ?? "", /1 questions/);
   });
 
+  it("filters by org, with chips linking to filter tokens", () => {
+    const entries = entriesOf(items());
+    const root = queueView(entries, labels(new Set(), new Set()), Date.now(), { scope: "infra" });
+    assertNoActiveContent(root);
+    const chipText = (sel: string) => [...root.querySelectorAll(sel)].map((c) => `${c.getAttribute("href")} ${c.textContent}`);
+    assert.deepEqual(chipText(".chip.on"), ["#infra Our infra1"]);
+    assert.equal(root.querySelector(".chip.on")?.getAttribute("aria-current"), "true");
+    // The Org field's untrusted value isn't an org name, so the owner counts instead.
+    assert.ok(chipText(".chip.org").some((t) => t.startsWith("#org:example-upstream ")));
+    assert.ok(!root.textContent?.includes("<img"));
+    const hrefs = [...root.querySelectorAll(".row")].map((r) => r.getAttribute("href"));
+    // Tracker issues with no Org field or target label have no org, so only the bot's own repo is infra.
+    assert.deepEqual(hrefs, ["#item/PVTI_synthetic_home_issue"]);
+
+    const none = queueView(entries, () => undefined, Date.now(), { scope: { org: "nobody" } });
+    assert.match(none.textContent ?? "", /Nothing here matches this filter/);
+    assert.equal(none.querySelectorAll(".chip.preset").length, 3);
+    // The chosen org stays, so it can be cleared, and the message links to everything.
+    assert.equal(none.querySelector(".chip.org.on")?.getAttribute("href"), "#all");
+    assert.equal(none.querySelector(".empty a")?.getAttribute("href"), "#all");
+  });
+
   it("says when nothing needs you", () => {
     assert.match(queueView([], () => undefined).textContent ?? "", /Nothing needs you/);
   });
