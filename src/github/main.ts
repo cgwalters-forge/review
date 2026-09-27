@@ -20,12 +20,14 @@ import {
   THEME_KEY,
 } from "./config.ts";
 import { composeReviews, type ForgePr, refKey, VERDICT_LABEL } from "./forge.ts";
+import type { QueueFilter } from "./filter.ts";
 import { type Command, HELP, keyCommand, parseRoute, type Route, type RouteInfo } from "./keys.ts";
 import { type HarnessCache, loadNews, type News } from "./news.ts";
 import { newsView } from "./newsview.ts";
 import { loadFileLines, loadForgePrs, loadPrDetail, loadRangeFiles, type PrDetail, refreshVerdicts, submitReview, type VerdictEntry } from "./prs.ts";
 import { APPROVE_ACTION, canReview, type PrPane, prView, REVIEW_FORM_CLASS, type ReviewAskInfo } from "./prview.ts";
 import { buildEntries, type Entry, itemHref } from "./queue.ts";
+import { loadFilter, saveFilter } from "./store.ts";
 import { answerState, type BoardHref, type ContextHooks, CONTEXT_CLASS, contextView, itemView, queueView, ROW_CLASS, ROW_KEY_ATTR, type RowLabel, STATE_LABEL } from "./view.ts";
 
 const render = createRenderer(window);
@@ -45,6 +47,8 @@ interface State {
   forceForge: boolean;
   /** Whether a forge search has succeeded, so missing forge PRs mean gone. */
   forgeKnown: boolean;
+  /** The queue's filter: the hash's, else the last chosen (remembered if storage allows). */
+  filter: QueueFilter;
   verdictsRunning: boolean;
   polling: boolean;
   /** The ranked queue. */
@@ -184,7 +188,13 @@ function markSelected(state: State, scroll: boolean): void {
 }
 
 function renderQueue(state: State): void {
-  showMain(queueView(state.entries, labelOf(state)));
+  // A filter in the hash is chosen, and remembered; a bare # shows the last one.
+  const r = route();
+  if (r.route === "queue" && r.filter) {
+    state.filter = r.filter;
+    saveFilter(r.filter);
+  }
+  showMain(queueView(state.entries, labelOf(state), Date.now(), state.filter));
   markSelected(state, false);
 }
 
@@ -650,6 +660,7 @@ async function start(source: TokenSource): Promise<void> {
     lastForgePoll: 0,
     forceForge: false,
     forgeKnown: false,
+    filter: loadFilter(),
     verdictsRunning: false,
     polling: false,
     entries: [],

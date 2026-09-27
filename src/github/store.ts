@@ -1,8 +1,10 @@
-// Per-viewer conveniences kept in localStorage: the diff layout, whether
-// the review guide is shown, which files he marked viewed, which guide
-// hotspots he has seen, and his unsent line comments. Storage can be
+// Per-viewer conveniences kept in localStorage: the queue's filter, the
+// diff layout, whether the review guide is shown, which files he marked
+// viewed, which guide hotspots he has seen, and his unsent line comments. Storage can be
 // missing, full or blocked (private windows, tests), so every access is
 // guarded and the app works the same without it, only forgetting more.
+
+import { ALL, filterToken, isFilterToken, parseFilterToken, type QueueFilter } from "./filter.ts";
 
 const PREFIX = "review.";
 /** Files marked viewed kept at most; the oldest go first. */
@@ -40,6 +42,15 @@ export function save(key: string, value: unknown): void {
 
 const isString = (v: unknown): v is string => typeof v === "string";
 const isStringList = (v: unknown): v is string[] => Array.isArray(v) && v.every(isString);
+
+/** The queue filter last chosen, as its hash token. */
+export function loadFilter(): QueueFilter {
+  return parseFilterToken(load("queue.filter", "", isFilterToken)) ?? ALL;
+}
+
+export function saveFilter(f: QueueFilter): void {
+  save("queue.filter", filterToken(f));
+}
 
 export type DiffLayout = "unified" | "split";
 

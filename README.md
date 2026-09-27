@@ -77,6 +77,17 @@ is flagged as a bot bug.
   token (you need write access to that repository) and comments on the
   chore.
 
+**Filters** above the queue narrow it by the organization an entry
+targets and by priority, with each chip's count. The target is the
+board's Org field, else a tracker issue's `target:<org>` label, else the
+owner of the issue or PR (a tracker issue with neither has no org); a
+forge PR counts as its upstream's. Two
+presets split the queue in one click: **Composefs** is upstream work
+(every organization but cgwalters-bot and cgwalters-forge), **Our
+infra** is the bot's own harness. The filter is in the URL (`#composefs`,
+`#infra+P0`, `#org:bootc-dev`) and remembered per browser, so `#` and
+`u` come back to it.
+
 The **news** pane (`n`) lists recently merged PRs in the bot
 (cgwalters-bot/homegit), its runner (cgwalters-devspace-sandbox, both
 copies) and this app, newest first, with the first paragraph of each

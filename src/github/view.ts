@@ -8,6 +8,7 @@ import { commentNote, type ItemAction, parseAskBody } from "./asks.ts";
 import { ASK_LABELS, askKind, type IssueRef, isAsk, isQuestion, type Item, questionOf, type SubIssueSummary } from "./board.ts";
 import type { Context, RunStatus, SubIssue } from "./backend.ts";
 import { BOARD_URL, OPERATOR } from "./config.ts";
+import { ALL, applyFilter, type Chip, chips, filterToken, type QueueFilter } from "./filter.ts";
 import { type Entry, type EntryKind, groupRanked } from "./queue.ts";
 
 /** Characters of Why shown on a queue row. */
@@ -138,14 +139,43 @@ function row(e: Entry, labelOf: (e: Entry) => RowLabel | undefined, now: number,
   );
 }
 
+/** A filter chip: a link to the queue filtered so, with its row count. */
+function chip(c: Chip, cls: string): HTMLElement {
+  const attrs: Record<string, string> = { class: `chip ${cls}${c.on ? " on" : ""}`, href: `#${filterToken(c.filter)}` };
+  if (c.title) attrs.title = c.title;
+  if (c.on) attrs["aria-current"] = "true";
+  return h("a", attrs, c.label, h("span", { class: "count" }, String(c.count)));
+}
+
+/** The presets, then one chip per target organization and per priority. */
+function filterBar(entries: readonly Entry[], filter: QueueFilter): HTMLElement {
+  const { presets, orgs, priorities } = chips(entries, filter);
+  const line = (label: string, list: Chip[], cls: string) =>
+    h("div", { class: "chips" }, h("span", { class: "chips-h" }, label), ...list.map((c) => chip(c, cls)));
+  return h(
+    "nav",
+    { class: "filters", "aria-label": "Filter the queue" },
+    line("Show", presets, "preset"),
+    line("Org", orgs, "org"),
+    line("Priority", priorities, "prio"),
+  );
+}
+
 export function queueView(
-  entries: readonly Entry[],
+  all: readonly Entry[],
   labelOf: (e: Entry) => RowLabel | undefined,
   now: number = Date.now(),
+  filter: QueueFilter = ALL,
 ): HTMLElement {
   const root = h("main", { class: "queue" });
-  if (entries.length === 0) {
+  if (all.length === 0) {
     root.append(h("p", { class: "empty" }, "Nothing needs you right now."));
+    return root;
+  }
+  root.append(filterBar(all, filter));
+  const entries = applyFilter(all, filter);
+  if (entries.length === 0) {
+    root.append(h("p", { class: "empty" }, "Nothing here matches this filter. ", h("a", { href: `#${filterToken(ALL)}` }, "Show all")));
     return root;
   }
   const counts = { pr: 0, question: 0, review: 0, chore: 0, item: 0 };

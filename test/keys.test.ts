@@ -58,6 +58,9 @@ describe("parseRoute", () => {
     ["#pr/o/./1", { route: "queue" }],
     ["#pr/o/r/1/extra", { route: "queue" }],
     ["#item/<script>", { route: "queue" }],
+    ["#composefs", { route: "queue", filter: { scope: "composefs" } }],
+    ["#org:bootc-dev+P0", { route: "queue", filter: { scope: { org: "bootc-dev" }, priority: "P0" } }],
+    ["#org:../x", { route: "queue" }],
   ];
   for (const [hash, want] of cases) it(JSON.stringify(hash), () => assert.deepEqual(parseRoute(hash), want));
 });
