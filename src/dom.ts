@@ -19,6 +19,25 @@ export function h<K extends keyof HTMLElementTagNameMap>(
   return el;
 }
 
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+/** h() for SVG elements, e.g. a sparkline; the same text-only rules apply. */
+export function svg<K extends keyof SVGElementTagNameMap>(
+  tag: K,
+  attrs: Record<string, string | undefined> = {},
+  ...children: Child[]
+): SVGElementTagNameMap[K] {
+  const el = document.createElementNS(SVG_NS, tag) as SVGElementTagNameMap[K];
+  for (const [k, v] of Object.entries(attrs)) {
+    if (v !== undefined) el.setAttribute(k, v);
+  }
+  for (const c of children) {
+    if (c === null || c === undefined || c === false) continue;
+    el.append(typeof c === "string" ? document.createTextNode(c) : c);
+  }
+  return el;
+}
+
 /** An https URL, or undefined: URLs from board fields are untrusted too. */
 export function safeHref(url: string | undefined): string | undefined {
   if (!url) return undefined;

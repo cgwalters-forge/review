@@ -94,7 +94,22 @@ copies) and this app, newest first, with the first paragraph of each
 description. Harness changes stand out: PRs labeled `harness`, or
 touching `agent.yml`, `bot-harness` or a `harness/` tree.
 
-Keys: `j`/`k` move, `o` opens, `u` goes back, `r` reloads; in a PR,
+The **ops** pane (`d`, or Ops in the header) shows what the bot is
+running now, refreshed every minute while it is open and the tab is
+visible. Devspaces are the live runs of `devspace.yml` in
+bootc-dev/cgwalters-devspace-sandbox, each with its tailnet host, cores,
+uptime and time left (bounded by the longest duration, 4 hours, since a
+run doesn't say its own), plus the last 24 hours: how many, their
+core-hours per hour, and how they ended; cancelled is how `bot-devspace
+stop` ends one, so it counts as stopped, not failed. Below that are the
+runs of `agent.yml` once that workflow exists there, the board's In
+Progress items split like the Composefs and Our infra presets, and the
+bot's recent public activity. Agents running on the coordinator's own
+machine aren't visible to the browser and aren't shown. The runner repo
+is outside cgwalters-forge, so a fine-grained token scoped to it can't
+read the devspaces; a classic token can.
+
+Keys: `j`/`k` move, `o` opens, `u` goes back, `r` reloads, `n` news, `d` ops; in a PR,
 `n`/`p` step through files and `j`/`k` through hunks, `v` marks a file
 viewed, `x` folds one, `s` switches unified and split, `[`/`]` step
 through the commits, `g` starts (or leaves) the guided review, whose

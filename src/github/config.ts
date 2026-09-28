@@ -77,6 +77,27 @@ export const NEWS_PER_REPO = 30;
 /** News items shown. */
 export const NEWS_LIMIT = 40;
 
+/** The ops view: where devspaces and agent runs come from (bin/bot-devspace and bin/bot-runs in homegit). */
+export const DEVSPACE_REPO = "bootc-dev/cgwalters-devspace-sandbox";
+export const DEVSPACE_WORKFLOW = "devspace.yml";
+export const AGENT_WORKFLOW = "agent.yml";
+/** A devspace's tailnet host is this plus its run id. */
+export const DEVSPACE_HOST_PREFIX = "cgwalters-devspace-";
+/** The Status of an item the bot is working on. */
+export const IN_PROGRESS = "In Progress";
+/** Refresh the ops view this often while it is open and the tab visible. */
+export const OPS_POLL_INTERVAL_MS = 60_000;
+/** The ops view's history window, in hours. */
+export const OPS_WINDOW_HOURS = 24;
+/** Workflow runs listed per read (one page, the API maximum). */
+export const OPS_RUNS_PER_PAGE = 100;
+/** Agent runs shown when finished. */
+export const OPS_AGENT_RECENT = 6;
+/** The bot's public events read (one page). */
+export const OPS_EVENTS = 50;
+/** Rows of bot activity shown. */
+export const OPS_EVENTS_SHOWN = 20;
+
 /** localStorage key for the chosen theme (auto, light, dark). */
 export const THEME_KEY = "review.theme";
 

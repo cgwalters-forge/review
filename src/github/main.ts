@@ -14,6 +14,7 @@ import {
   FORGE_POLL_INTERVAL_MS,
   NEWS_LIMIT,
   OPERATOR,
+  OPS_POLL_INTERVAL_MS,
   POLL_BACKOFF_FACTOR,
   POLL_INTERVAL_MS,
   RATE_LOW_FRACTION,
@@ -24,6 +25,8 @@ import type { QueueFilter } from "./filter.ts";
 import { type Command, HELP, keyCommand, parseRoute, type Route, type RouteInfo } from "./keys.ts";
 import { type HarnessCache, loadNews, type News } from "./news.ts";
 import { newsView } from "./newsview.ts";
+import { type JobCache, loadOps, type Ops } from "./ops.ts";
+import { opsView, tickOps } from "./opsview.ts";
 import { loadFileLines, loadForgePrs, loadPrDetail, loadRangeFiles, type PrDetail, refreshVerdicts, submitReview, type VerdictEntry } from "./prs.ts";
 import { APPROVE_ACTION, canReview, type PrPane, prView, REVIEW_FORM_CLASS, type ReviewAskInfo } from "./prview.ts";
 import { buildEntries, type Entry, itemHref } from "./queue.ts";
@@ -80,6 +83,13 @@ interface State {
   /** The news pane's last read, and which merged PRs touched the harness. */
   news?: News;
   harness: HarnessCache;
+  /** The ops view's last read, when it started, and the finished runs' jobs. */
+  ops?: Ops;
+  opsStarted: number;
+  opsRunning: boolean;
+  jobs: JobCache;
+  /** Moves the ops view's live times while it is shown. */
+  ticker?: ReturnType<typeof setInterval>;
   /** The open PR's pane, which handles its own keys. */
   pane?: PrPane;
   help: boolean;
@@ -134,8 +144,9 @@ function renderMeta(state: State): void {
 function renderChrome(state: State): void {
   renderMeta(state);
   const r = route().route;
-  byId("nav-queue").classList.toggle("on", r !== "news");
+  byId("nav-queue").classList.toggle("on", r !== "news" && r !== "ops");
   byId("nav-news").classList.toggle("on", r === "news");
+  byId("nav-ops").classList.toggle("on", r === "ops");
   const warnings = [state.error, state.forgeError, state.tokenWarning, r !== "queue" ? state.itemNote : undefined];
   if (state.login && state.login !== OPERATOR) {
     warnings.push(`You are signed in as ${state.login}; the bot acts only on answers and reviews from ${OPERATOR}.`);
@@ -205,6 +216,8 @@ function renderRoute(state: State): void {
   delete state.itemNote;
   state.pane?.dispose();
   delete state.pane;
+  clearInterval(state.ticker);
+  delete state.ticker;
   renderChrome(state);
   if (!state.loaded) {
     showMain(h("p", { class: "empty" }, "Loading…"));
@@ -218,6 +231,11 @@ function renderRoute(state: State): void {
   if (r.route === "news") {
     showMain(newsView(state.news, render));
     if (!state.news) void refreshNews(state);
+    return;
+  }
+  if (r.route === "ops") {
+    showOps(state);
+    if (opsDue(state)) void refreshOps(state);
     return;
   }
   const item = r.route === "item" ? state.items.find((i) => i.nodeId === r.id) : undefined;
@@ -401,6 +419,32 @@ async function refreshNews(state: State): Promise<void> {
   }
 }
 
+function showOps(state: State): void {
+  const view = opsView(state.ops);
+  showMain(view);
+  clearInterval(state.ticker);
+  state.ticker = setInterval(() => {
+    if (!document.hidden) tickOps(view, Date.now());
+  }, 1000);
+}
+
+function opsDue(state: State): boolean {
+  return !state.opsRunning && Date.now() - state.opsStarted >= OPS_POLL_INTERVAL_MS;
+}
+
+/** Re-read the ops view's data, and show it if the view is still open. */
+async function refreshOps(state: State): Promise<void> {
+  if (state.opsRunning) return;
+  state.opsRunning = true;
+  state.opsStarted = Date.now();
+  try {
+    state.ops = await loadOps(state.gh, state.jobs);
+    if (route().route === "ops") showOps(state);
+  } finally {
+    state.opsRunning = false;
+  }
+}
+
 /** Re-search the forge when due; true if its list of PRs changed. Verdicts follow in the background. */
 async function pollForge(state: State): Promise<boolean> {
   const wait = state.forceForge ? FORGE_MIN_INTERVAL_MS : FORGE_POLL_INTERVAL_MS;
@@ -468,7 +512,7 @@ function rebuildEntries(state: State): void {
 function update(state: State, boardChanged: boolean, first: boolean): void {
   rebuildEntries(state);
   const r = route();
-  if (r.route === "news") {
+  if (r.route === "news" || r.route === "ops") {
     renderChrome(state);
   } else if (first || r.route === "queue") {
     renderRoute(state);
@@ -496,6 +540,7 @@ async function poll(state: State): Promise<void> {
   state.polling = true;
   clearTimeout(state.timer);
   if (route().route === "news") void refreshNews(state);
+  if (route().route === "ops" && opsDue(state)) void refreshOps(state);
   // The board and the forge load side by side; whichever answers first shows first.
   const forge = pollForge(state);
   try {
@@ -568,6 +613,9 @@ function run(state: State, cmd: Command, where: Route): void {
     case "news":
       window.location.hash = "#news";
       return;
+    case "ops":
+      window.location.hash = "#ops";
+      return;
     case "refresh": {
       const r = route();
       if (r.route === "pr") {
@@ -576,6 +624,10 @@ function run(state: State, cmd: Command, where: Route): void {
       }
       if (r.route === "news") {
         void refreshNews(state);
+        return;
+      }
+      if (r.route === "ops") {
+        void refreshOps(state);
         return;
       }
       state.forceForge = true;
@@ -675,6 +727,9 @@ async function start(source: TokenSource): Promise<void> {
     help: false,
     selected: undefined,
     harness: new Map(),
+    opsStarted: 0,
+    opsRunning: false,
+    jobs: new Map(),
   };
   byId("meta").textContent = "Checking the token…";
   try {
