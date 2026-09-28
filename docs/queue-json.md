@@ -1,0 +1,77 @@
+# The `review-queue/v1` JSON document
+
+`review-queue --json` prints one JSON object describing what is waiting
+on cgwalters, built by the same code that ranks and filters the app's
+queue, so the two always agree. (For contributors: the types are
+`QueueJson` and `EntryJson` in `src/github/export.ts`.)
+
+Compatibility: within `review-queue/v1`, fields are only added. Removing
+or renaming a field, or changing its meaning or type, bumps the schema
+to `review-queue/v2`. Consumers should check `schema` and ignore fields
+they don't know. Fields marked optional are left out when they don't
+apply (jq's `.field` then reads `null`).
+
+## Top level
+
+| Field | Type | Meaning |
+|---|---|---|
+| `schema` | `"review-queue/v1"` | This document's schema. |
+| `generatedAt` | string | When it was read (ISO 8601, UTC). |
+| `filter` | string | The filter applied, as the app's token: `all`, `composefs` (all upstream work: every org but cgwalters-bot and cgwalters-forge), `infra` (those two orgs), `org:NAME`, `org:none`, optionally `+P0`..`+P3` or `+none`. |
+| `counts.entries` | number | Top-level entries. |
+| `counts.rows` | number | Entries plus their nested asks. |
+| `counts.open` | number | Rows that need him: those whose action isn't `wait` or `see-asks` (a parent whose work is its nested asks). |
+| `entries` | array | Ranked entries (below). |
+| `warnings` | string[] | Data that couldn't be read (say, the forge search); the queue may then be incomplete. |
+
+## Entries
+
+Entries come in the app's order: answered asks last, then by priority
+(P0 first, no priority last), then oldest first. An ask about an item
+in the queue is nested in that item's `asks`, not listed twice.
+
+| Field | Type | Meaning |
+|---|---|---|
+| `key` | string | Stable id: `pr:owner/repo#n` or `item:PVTI_...` (the board item's node id, as `bot-board` names it). |
+| `kind` | string | `pr` (a forge draft PR), `question`, `review`, `chore` (the bot's asks, tracker issues), or `item` (another board item). |
+| `title` | string | Its title. |
+| `where` | string | `owner/repo#n`; `draft item` for a board draft; `item` for a board item with no issue or PR the API shows (say, redacted). |
+| `priority` | string or null | The board's Priority. A forge PR takes its board item's. |
+| `rankPriority` | string or null | What it ranks by: its own, or a more urgent open nested ask's. |
+| `org` | string or null | The organization it targets, lowercase: the board's Org field, else a `target:<org>` label, else the issue's owner; a forge PR counts as its upstream. |
+| `since` | string or null | When it started waiting (ISO 8601). |
+| `settled` | boolean | He answered it, or the bot closed it: waiting on the bot. |
+| `bug` | boolean | Needs human, but the bot asked nothing about it. |
+| `url` | string or null | The issue or PR on github.com. |
+| `appUrl` | string | The entry in the review app, where it can be acted on. |
+| `verdict` | object, optional | Forge PRs: `state` (`none`, `approved-older`, `changes-requested-older`, `promoted`), a `label`, and the review's `url`. |
+| `blocks` | string, optional | For a top-level ask: the item it blocks, which isn't in the queue. |
+| `why` | string, optional | The board item's Why. |
+| `gists` | string[], optional | Gists to read, on a Draft item. |
+| `question` | object, optional | An open question: `ask` (the Q: line), `options` (`letter`, `text`, `recommended`), `recommendation`. |
+| `ask` | string, optional | A review or chore ask's `Ask:` line. |
+| `action` | object | The suggested action: `verb`, a one-line `summary`, optionally a `reason`, and `targets`, the URLs to act on when the ask names them (the PRs a review ask names, the workflow runs a chore asks to rerun). |
+| `asks` | array | The asks nested under it, as entries. |
+
+`action.verb` is one of:
+
+- `review`: review a PR (a forge PR, or what a review ask names);
+- `answer`: answer a question;
+- `rerun`: rerun a chore's failed workflow jobs;
+- `comment`: do what a chore asks, then say so on it;
+- `read`: read a Draft item, usually a gist, and decide;
+- `see-asks`: act on the nested asks;
+- `wait`: nothing to do, the bot acts next;
+- `act-on-github`: the app can't act on it (`reason` says why);
+- `report-bug`: the bot left it Needs human without an ask.
+
+## Examples
+
+```sh
+# What needs me in the composefs org itself, most urgent first
+review-queue --json --filter org:composefs | jq -r '.entries[] | "\(.rankPriority) \(.where) \(.action.verb)"'
+# Quick wins: reruns and gists to read, anywhere in the queue
+review-queue --json | jq '[.entries[] | ., .asks[] | select(.action.verb == "rerun" or .action.verb == "read")]'
+# Open questions with the bot's recommendation
+review-queue --json | jq -r '.entries[] | ., .asks[] | select(.question) | "\(.url)\n  \(.question.ask)\n  recommended: \(.question.recommendation // "none")"'
+```

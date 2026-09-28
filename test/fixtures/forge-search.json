@@ -1,0 +1,35 @@
+{
+  "total_count": 3,
+  "items": [
+    {
+      "html_url": "https://github.com/cgwalters-forge/widget/pull/5",
+      "title": "widget: Handle the upstream report",
+      "body": "Fixes the report.\n\n<!-- bot-meta -->\n---\n- Upstream: `example-upstream/widget`, base `main`\n- Board item: `PVTI_synthetic_upstream_issue`\n<!-- /bot-meta -->",
+      "user": {"login": "cgwalters-bot"},
+      "created_at": "2026-01-03T00:00:00Z",
+      "updated_at": "2026-01-04T00:00:00Z",
+      "draft": true,
+      "pull_request": {}
+    },
+    {
+      "html_url": "https://github.com/cgwalters-forge/homegit/pull/9",
+      "title": "bin: Already approved",
+      "body": "<!-- bot-meta -->\n- Upstream: `cgwalters-bot/homegit`, base `main`\n<!-- /bot-meta -->",
+      "user": {"login": "cgwalters-bot"},
+      "created_at": "2026-01-01T00:00:00Z",
+      "updated_at": "2026-01-02T00:00:00Z",
+      "draft": true,
+      "pull_request": {}
+    },
+    {
+      "html_url": "https://github.com/cgwalters-forge/bootc/pull/3",
+      "title": "lib: Pushed since the approval",
+      "body": "<!-- bot-meta -->\n- Upstream: `bootc-dev/bootc`, base `main`\n<!-- /bot-meta -->",
+      "user": {"login": "cgwalters-bot"},
+      "created_at": "2026-01-02T00:00:00Z",
+      "updated_at": "2026-01-12T00:00:00Z",
+      "draft": true,
+      "pull_request": {}
+    }
+  ]
+}

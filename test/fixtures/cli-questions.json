@@ -1,0 +1,134 @@
+[
+  {
+    "id": 9100,
+    "node_id": "PVTI_synthetic_unrecommended_question",
+    "content_type": "Issue",
+    "content": {
+      "node_id": "I_synthetic_tracker_30",
+      "title": "Keep the old flag?",
+      "body": "Blocks: https://github.com/cgwalters-bot/elsewhere/issues/9\nQ: Keep the old flag?\nOptions:\nA) Keep it\nB) Drop it\n",
+      "html_url": "https://github.com/cgwalters-forge/tracker/issues/30",
+      "state": "open",
+      "updated_at": "2026-01-13T00:00:00Z",
+      "user": {
+        "login": "cgwalters-bot"
+      },
+      "labels": [
+        {
+          "name": "question"
+        }
+      ],
+      "assignees": [
+        {
+          "login": "cgwalters"
+        }
+      ],
+      "comments": 0,
+      "sub_issues_summary": {
+        "total": 0,
+        "completed": 0,
+        "percent_completed": 0
+      }
+    },
+    "fields": [
+      {
+        "id": 102,
+        "name": "Status",
+        "data_type": "single_select",
+        "value": {
+          "id": "x1",
+          "name": {
+            "raw": "Needs human"
+          }
+        }
+      },
+      {
+        "id": 104,
+        "name": "Priority",
+        "data_type": "single_select",
+        "value": {
+          "id": "p",
+          "name": {
+            "raw": "P3"
+          }
+        }
+      },
+      {
+        "id": 103,
+        "name": "Why",
+        "data_type": "text",
+        "value": {
+          "raw": "Question for cgwalters."
+        }
+      }
+    ],
+    "created_at": "2026-01-13T00:00:00Z",
+    "archived_at": null
+  },
+  {
+    "id": 9101,
+    "node_id": "PVTI_synthetic_open_question",
+    "content_type": "Issue",
+    "content": {
+      "node_id": "I_synthetic_tracker_31",
+      "title": "What should the default be?",
+      "body": "Blocks: https://github.com/cgwalters-bot/elsewhere/issues/9\nQ: What should the default be?\n",
+      "html_url": "https://github.com/cgwalters-forge/tracker/issues/31",
+      "state": "open",
+      "updated_at": "2026-01-14T00:00:00Z",
+      "user": {
+        "login": "cgwalters-bot"
+      },
+      "labels": [
+        {
+          "name": "question"
+        }
+      ],
+      "assignees": [
+        {
+          "login": "cgwalters"
+        }
+      ],
+      "comments": 0,
+      "sub_issues_summary": {
+        "total": 0,
+        "completed": 0,
+        "percent_completed": 0
+      }
+    },
+    "fields": [
+      {
+        "id": 102,
+        "name": "Status",
+        "data_type": "single_select",
+        "value": {
+          "id": "x1",
+          "name": {
+            "raw": "Needs human"
+          }
+        }
+      },
+      {
+        "id": 104,
+        "name": "Priority",
+        "data_type": "single_select",
+        "value": {
+          "id": "p",
+          "name": {
+            "raw": "P3"
+          }
+        }
+      },
+      {
+        "id": 103,
+        "name": "Why",
+        "data_type": "text",
+        "value": {
+          "raw": "Question for cgwalters."
+        }
+      }
+    ],
+    "created_at": "2026-01-14T00:00:00Z",
+    "archived_at": null
+  }
+]

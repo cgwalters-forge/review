@@ -167,6 +167,33 @@ GitHub rejecting the token at any time, deletes that cache; without
 The app contains no data: everything is fetched in your browser with your
 token, from `api.github.com` only.
 
+## The queue on the command line
+
+`review-queue` prints the same ranked, filtered queue for scripts and
+agents, read-only:
+
+```sh
+npm ci && npm run build
+npx review-queue --text                    # everything, for a human
+npx review-queue --json --filter composefs # upstream work, as JSON
+npx review-queue --filter composefs+P0     # the app's filter tokens; a bare P0 is all+P0
+npx review-queue --filter org:composefs    # one organization
+```
+
+As in the app, `composefs` is all upstream work (every organization but
+cgwalters-bot and cgwalters-forge), `infra` is those two; to see one
+organization, use `org:NAME`.
+
+Without `--json` or `--text`, it prints text on a terminal and JSON
+otherwise. The JSON is the documented `review-queue/v1` schema
+([docs/queue-json.md](docs/queue-json.md)): each entry has its kind,
+priority, target org, GitHub and app URLs, its nested asks, and a
+suggested `action` (`review`, `answer`, `rerun`, `read`, `wait`, ...).
+It authenticates with `$GH_TOKEN`, else `$GITHUB_TOKEN`, else `gh auth
+token --hostname github.com`; the token needs `read:project` for the board. It only sends GET
+requests, so it never answers, reviews or reruns anything: the app does
+that.
+
 ## Development
 
 Builds and tests need Node.js 22.18 or later (TypeScript runs directly
