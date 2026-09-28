@@ -231,12 +231,17 @@ export function parseItem(raw: RawItem): Item {
   return item;
 }
 
-/** The board's part of the queue: unarchived items needing a human, or Draft (ready for review). */
-export function queueItems(raw: readonly RawItem[]): Item[] {
+/** Unarchived items whose Status is one of `statuses`. */
+export function boardItems(raw: readonly RawItem[], statuses: readonly string[]): Item[] {
   return raw
     .filter((r) => !r.archived_at)
     .map(parseItem)
-    .filter((i) => i.status !== undefined && QUEUE_STATUSES.includes(i.status));
+    .filter((i) => i.status !== undefined && statuses.includes(i.status));
+}
+
+/** The board's part of the queue: unarchived items needing a human, or Draft (ready for review). */
+export function queueItems(raw: readonly RawItem[]): Item[] {
+  return boardItems(raw, QUEUE_STATUSES);
 }
 
 /** The kinds of ask: a tracker issue asking him to answer, review or act. */
