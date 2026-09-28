@@ -24,6 +24,7 @@ import {
   type AskKind,
   type AskScope,
   assigneeLogins,
+  boardItems,
   fieldIds,
   type IssueRef,
   isAsk,
@@ -33,7 +34,6 @@ import {
   type RawContent,
   type RawField,
   type RawItem,
-  queueItems,
   repoOf,
   type SubIssueSummary,
   TRACKER_SCOPE,
@@ -50,18 +50,23 @@ export interface Queue {
   changed: boolean;
 }
 
-/** Read the items needing a human or ready for review, conditionally: 304s cost nothing. */
-export async function loadQueue(gh: GitHub): Promise<Queue> {
+/** Read the board's items with one of `statuses`, conditionally: 304s cost nothing. */
+export async function loadBoard(gh: GitHub, statuses: readonly string[]): Promise<Queue> {
   const fields = await gh.getAll<RawField>(`${PROJECT}/fields?per_page=${PAGE_SIZE}`);
   const ids = fieldIds(fields.data).join(",");
-  // The server-side filter keeps the poll to one page; queueItems filters
+  // The server-side filter keeps the poll to one page; boardItems filters
   // again, in case the filter syntax ever stops matching.
-  const q = encodeURIComponent(`status:${QUEUE_STATUSES.map((s) => `"${s}"`).join(",")}`);
+  const q = encodeURIComponent(`status:${statuses.map((s) => `"${s}"`).join(",")}`);
   const items = await gh.getAll<RawItem>(`${PROJECT}/items?per_page=${PAGE_SIZE}&fields=${ids}&q=${q}`);
   return {
-    items: queueItems(items.data),
+    items: boardItems(items.data, statuses),
     changed: fields.changed || items.changed,
   };
+}
+
+/** Read the items needing a human or ready for review. */
+export function loadQueue(gh: GitHub): Promise<Queue> {
+  return loadBoard(gh, QUEUE_STATUSES);
 }
 
 export interface Comment {
