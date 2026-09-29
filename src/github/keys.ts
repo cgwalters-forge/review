@@ -2,8 +2,9 @@
 // tests can check it; main.ts carries them out.
 
 import { parseFilterToken, type QueueFilter } from "./filter.ts";
+import { TRIAGE_FILTERS, type TriageFilter } from "./triage.ts";
 
-export type Route = "queue" | "item" | "pr" | "news" | "ops";
+export type Route = "queue" | "item" | "pr" | "news" | "ops" | "triage" | "decisions";
 
 export type Command =
   | "next"
@@ -17,6 +18,8 @@ export type Command =
   | "help"
   | "news"
   | "ops"
+  | "triage"
+  | "decisions"
   // The PR pane's own, which it carries out itself.
   | "next-file"
   | "prev-file"
@@ -41,9 +44,11 @@ export interface KeyPress {
 const COMMON: Record<string, Command> = { r: "refresh", "?": "help" };
 
 const BY_ROUTE: Record<Route, Record<string, Command>> = {
-  queue: { j: "next", k: "prev", ArrowDown: "next", ArrowUp: "prev", o: "open", Enter: "open", n: "news", d: "ops" },
-  news: { u: "back", Escape: "back", n: "back", d: "ops" },
-  ops: { u: "back", Escape: "back", d: "back", n: "news" },
+  queue: { j: "next", k: "prev", ArrowDown: "next", ArrowUp: "prev", o: "open", Enter: "open", n: "news", d: "ops", t: "triage", q: "decisions" },
+  news: { u: "back", Escape: "back", n: "back", d: "ops", t: "triage", q: "decisions" },
+  ops: { u: "back", Escape: "back", d: "back", n: "news", t: "triage", q: "decisions" },
+  triage: { u: "back", Escape: "back", t: "back", n: "news", d: "ops", q: "decisions" },
+  decisions: { u: "back", Escape: "back", q: "back", n: "news", d: "ops", t: "triage" },
   item: { u: "back", Escape: "back", c: "compose" },
   pr: {
     n: "next-file",
@@ -75,9 +80,11 @@ export function keyCommand(press: KeyPress, route: Route): Command | "blur" | un
 }
 
 export const HELP: Record<Route, string> = {
-  queue: "j/k or ↓/↑ move · o or Enter open · n news · d ops · r refresh · ? keys",
-  news: "u, Esc or n back to the queue · d ops · r refresh",
-  ops: "u, Esc or d back to the queue · n news · r refresh",
+  queue: "j/k or ↓/↑ move · o or Enter open · t triage · q decisions · n news · d ops · r refresh · ? keys",
+  news: "u, Esc or n back to the queue · t triage · q decisions · d ops · r refresh",
+  ops: "u, Esc or d back to the queue · t triage · q decisions · n news · r refresh",
+  triage: "u, Esc or t back to the queue · q decisions · n news · d ops · r refresh",
+  decisions: "u, Esc or q back to the queue · t triage · n news · d ops · r refresh",
   item: "u or Esc back to the queue · c write an answer · r refresh",
   pr: "n/p next/previous file · j/k next/previous hunk · v mark viewed · x fold · c comment on the focused line (or write the review) · s unified/split · [/] previous/next commit · g guided review (then n/p between hotspots, Esc leaves) · a approve · u or Esc back · r reload",
 };
@@ -86,6 +93,8 @@ export type RouteInfo =
   | { route: "queue"; filter?: QueueFilter }
   | { route: "news" }
   | { route: "ops" }
+  | { route: "triage"; filter: TriageFilter }
+  | { route: "decisions" }
   | { route: "item"; id: string }
   | { route: "pr"; ref: { owner: string; repo: string; number: number } };
 
@@ -97,6 +106,12 @@ export type RouteInfo =
 export function parseRoute(hash: string): RouteInfo {
   if (hash === "#news") return { route: "news" };
   if (hash === "#ops") return { route: "ops" };
+  if (hash === "#decisions") return { route: "decisions" };
+  const triage = /^#triage(?:\/([a-z]+))?$/.exec(hash);
+  if (triage) {
+    const filter = TRIAGE_FILTERS.find((f) => f === (triage[1] ?? "all"));
+    if (filter) return { route: "triage", filter };
+  }
   const item = /^#item\/(PVTI_[A-Za-z0-9_-]+)$/.exec(hash);
   if (item?.[1]) return { route: "item", id: item[1] };
   const pr = /^#pr\/([A-Za-z0-9-]+)\/([A-Za-z0-9._-]+)\/([1-9][0-9]{0,9})$/.exec(hash);

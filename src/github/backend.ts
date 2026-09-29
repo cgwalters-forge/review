@@ -28,11 +28,13 @@ import {
   fieldIds,
   type IssueRef,
   isAsk,
+  isQuestion,
   type Item,
   labelNames,
   missingTriageFields,
   openItems,
   parseIssueUrl,
+  parseItem,
   type RawContent,
   type RawField,
   type RawItem,
@@ -40,7 +42,7 @@ import {
   type SubIssueSummary,
   TRACKER_SCOPE,
 } from "./board.ts";
-import { BOARD_NUMBER, BOARD_OWNER, BOT_LOGIN, DONE, FETCH_CONCURRENCY, LINKED_STATUSES, PAGE_SIZE, QUEUE_STATUSES, RECENT_COMMENTS, TRACKER_REPO } from "./config.ts";
+import { BOARD_NUMBER, BOARD_OWNER, BOT_LOGIN, DECISION_LABEL, DONE, FETCH_CONCURRENCY, LINKED_STATUSES, PAGE_SIZE, QUEUE_STATUSES, RECENT_COMMENTS, TRACKER_REPO } from "./config.ts";
 import { refKey } from "./forge.ts";
 import { mapLimit, submitReview } from "./prs.ts";
 import type { ReviewRequest } from "./forge.ts";
@@ -85,6 +87,21 @@ export interface OpenBoard extends Board {
 export async function loadOpenBoard(gh: GitHub): Promise<OpenBoard> {
   const r = await readBoard(gh, `-status:${DONE}`);
   return { items: openItems(r.items), changed: r.changed, missing: missingTriageFields(r.fields) };
+}
+
+/**
+ * Read the open decisions: issues in the tracker labelled DECISION_LABEL,
+ * as items (not board items: their project fields are absent), so they
+ * answer like any question.
+ */
+export async function loadDecisions(gh: GitHub): Promise<Board> {
+  const r = await gh.getAll<RawContent>(`/repos/${TRACKER_REPO}/issues?labels=${encodeURIComponent(DECISION_LABEL)}&state=open&per_page=${PAGE_SIZE}`);
+  const items = r.data
+    .filter((c) => !c.pull_request && c.html_url)
+    .map((c) => parseItem({ id: 0, node_id: c.node_id ?? (c.html_url as string), content_type: "Issue", content: c }))
+    // Only questions can be answered; a decision label on anything else is a mistake.
+    .filter(isQuestion);
+  return { items, changed: r.changed };
 }
 
 /** Read the items needing a human or ready for review, and in one request those linked to PRs the queue lists. */

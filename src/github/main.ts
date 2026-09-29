@@ -11,8 +11,11 @@ import {
   type Context,
   loadAnswered,
   loadContext,
+  loadDecisions,
+  loadOpenBoard,
   loadQueue,
   loadRuns,
+  type OpenBoard,
   postAnswer,
   postAskComment,
   rerunFailedJobs,
@@ -61,6 +64,8 @@ import {
 import { APPROVE_ACTION, canReview, type PrPane, prView, REVIEW_FORM_CLASS, type ReviewAskInfo } from "./prview.ts";
 import { buildEntries, type Entry, itemHref, onBot } from "./queue.ts";
 import { loadFilter, saveFilter } from "./store.ts";
+import { type Decision, parseDecision, sortDecisions } from "./triage.ts";
+import { decisionsView, triageView } from "./triageview.ts";
 import { answerState, type BoardHref, type ContextHooks, CONTEXT_CLASS, contextView, itemView, queueView, ROW_CLASS, ROW_KEY_ATTR, type RowLabel, STATE_LABEL } from "./view.ts";
 import { ON_BOT_LABEL, REASON_LABEL } from "./waiting.ts";
 
@@ -143,6 +148,16 @@ interface State {
   prCachedAt: Map<string, number>;
   /** The news pane shows cached data fetched at this time. */
   newsCachedAt?: number;
+  /** The triage view's last read of the open board, and when a cached copy was fetched. */
+  openBoard?: OpenBoard;
+  openBoardCachedAt?: number;
+  /** Themes whose group is open in the triage view. */
+  triageOpen: Set<string>;
+  /** The open decisions, in order, and when a cached copy was fetched. */
+  decisions?: Decision[];
+  decisionsCachedAt?: number;
+  /** Decisions he answered (on GitHub, or from this tab until the next read) and the bot hasn't acted on, by issue node id. */
+  decisionsAnswered: Set<string>;
   error?: string;
   forgeError?: string;
   /** What the token lacks, e.g. classic scopes. */
@@ -172,6 +187,13 @@ function setNotice(text: string | undefined): void {
 
 const route = (): RouteInfo => parseRoute(window.location.hash);
 
+/** The views besides the queue and what opens from it, each with its header link. */
+const PANES = ["triage", "decisions", "news", "ops"] as const;
+
+function isPane(r: Route): r is (typeof PANES)[number] {
+  return (PANES as readonly string[]).includes(r);
+}
+
 function routeItemId(): string | undefined {
   const r = route();
   return r.route === "item" ? r.id : undefined;
@@ -192,6 +214,8 @@ function cachedSince(state: State): number | undefined {
   if (r.route === "pr") return state.prCachedAt.get(refKey(r.ref));
   if (r.route === "news") return state.newsCachedAt;
   if (r.route === "ops") return state.ops?.fromCache ? state.ops.at : undefined;
+  if (r.route === "triage") return state.openBoardCachedAt;
+  if (r.route === "decisions") return state.decisionsCachedAt;
   return state.cachedAt;
 }
 
@@ -210,9 +234,8 @@ function renderChrome(state: State): void {
   if (state.closed) return;
   renderMeta(state);
   const r = route().route;
-  byId("nav-queue").classList.toggle("on", r !== "news" && r !== "ops");
-  byId("nav-news").classList.toggle("on", r === "news");
-  byId("nav-ops").classList.toggle("on", r === "ops");
+  for (const pane of PANES) byId(`nav-${pane}`).classList.toggle("on", r === pane);
+  byId("nav-queue").classList.toggle("on", !isPane(r));
   const warnings = [state.error, state.forgeError, state.tokenWarning, r !== "queue" ? state.itemNote : undefined];
   if (state.login && state.login !== OPERATOR) {
     warnings.push(`You are signed in as ${state.login}; the bot acts only on answers and reviews from ${OPERATOR}.`);
@@ -305,6 +328,16 @@ function renderRoute(state: State): void {
   if (r.route === "ops") {
     showOps(state);
     if (opsDue(state)) void refreshOps(state);
+    return;
+  }
+  if (r.route === "triage") {
+    showTriage(state);
+    if (!state.openBoard) void refreshTriage(state);
+    return;
+  }
+  if (r.route === "decisions") {
+    showDecisions(state);
+    if (!state.decisions) void refreshDecisions(state);
     return;
   }
   const item = r.route === "item" ? state.items.find((i) => i.nodeId === r.id) : undefined;
@@ -570,6 +603,125 @@ async function refreshNews(state: State): Promise<void> {
   }
 }
 
+function showTriage(state: State): void {
+  const r = route();
+  const filter = r.route === "triage" ? r.filter : "all";
+  showMain(
+    triageView(state.openBoard, filter, {
+      itemHref: (item) => (state.items.some((i) => i.nodeId === item.nodeId) ? itemHref(item) : undefined),
+      open: state.triageOpen,
+      toggled: (theme, open) => {
+        if (open) state.triageOpen.add(theme);
+        else state.triageOpen.delete(theme);
+      },
+    }),
+  );
+}
+
+/**
+ * Re-read every open board item (conditionally), and show them if the
+ * triage view is open and they changed. The first time, a cached copy
+ * shows first.
+ */
+async function refreshTriage(state: State): Promise<void> {
+  const shown = () => route().route === "triage";
+  if (!state.openBoard) {
+    const cached = state.gh.cacheOnly();
+    const board = await loadOpenBoard(cached).catch(() => undefined);
+    if (board && !state.openBoard) {
+      state.openBoard = board;
+      state.openBoardCachedAt = cached.oldest ?? Date.now();
+      if (shown()) {
+        showTriage(state);
+        renderChrome(state);
+      }
+    }
+  }
+  try {
+    const board = await loadOpenBoard(state.gh);
+    const redraw = board.changed || state.openBoardCachedAt !== undefined || !state.openBoard;
+    delete state.openBoardCachedAt;
+    state.openBoard = board;
+    if (redraw && shown()) showTriage(state);
+    renderChrome(state);
+  } catch (e) {
+    state.error = `Couldn't read the board for triage: ${message(e)}`;
+    renderChrome(state);
+  }
+}
+
+/** Whether he has started answering on the decisions view: a pick or a note not sent yet. */
+function decisionDraft(): boolean {
+  const view = byId("view");
+  const typed = [...view.querySelectorAll<HTMLTextAreaElement>("form.answer:not([data-sent]) textarea")].some((t) => t.value.trim() !== "");
+  const picked = view.querySelector("form.answer:not([data-sent]) input[type=radio]:checked") !== null;
+  return typed || picked;
+}
+
+function showDecisions(state: State): void {
+  showMain(
+    decisionsView(
+      state.decisions,
+      {
+        ...(state.login ? { login: state.login } : {}),
+        answered: state.decisionsAnswered,
+        send: async (d, answer) => {
+          if (!d.item.ref) throw new Error("this decision has no issue");
+          const posted = await postAnswer(state.gh, d.item.ref, answer);
+          // The next read confirms it: his comment is now after the bot's last.
+          state.decisionsAnswered.add(d.item.nodeId);
+          return posted.url;
+        },
+      },
+      render,
+    ),
+  );
+}
+
+/**
+ * Re-read the open decisions and which he answered, and show them if the
+ * view is open and they changed; with an answer half written, only say
+ * so, unless `force` (he asked to reload).
+ */
+async function refreshDecisions(state: State, force = false): Promise<void> {
+  const shown = () => route().route === "decisions";
+  const show = () => {
+    if (!shown()) return;
+    delete state.itemNote;
+    if (!force && decisionDraft()) state.itemNote = "The decisions changed on GitHub; press r to reload them (unsent picks and notes are lost).";
+    else showDecisions(state);
+    renderChrome(state);
+  };
+  const read = async (gh: GitHub) => {
+    const q = await loadDecisions(gh);
+    const answered = await loadAnswered(gh, q.items);
+    return { changed: q.changed, decisions: sortDecisions(q.items.map(parseDecision)), answered };
+  };
+  if (!state.decisions) {
+    const cached = state.gh.cacheOnly();
+    const r = await read(cached).catch(() => undefined);
+    if (r && !state.decisions) {
+      state.decisions = r.decisions;
+      state.decisionsAnswered = r.answered;
+      state.decisionsCachedAt = cached.oldest ?? Date.now();
+      show();
+    }
+  }
+  try {
+    const r = await read(state.gh);
+    const sig = (d: readonly Decision[] | undefined, a: ReadonlySet<string>) => JSON.stringify([d?.map((x) => [x.item.nodeId, x.item.title, x.item.body]), [...a].sort()]);
+    const changed = !state.decisions || state.decisionsCachedAt !== undefined || sig(r.decisions, r.answered) !== sig(state.decisions, state.decisionsAnswered);
+    delete state.decisionsCachedAt;
+    state.decisions = r.decisions;
+    state.decisionsAnswered = r.answered;
+    if (changed || force) show();
+    else renderChrome(state);
+  } catch (e) {
+    state.error = `Couldn't read the decisions: ${message(e)}`;
+    renderChrome(state);
+  }
+}
+
 function showOps(state: State): void {
   const view = opsView(state.ops);
   showMain(view);
@@ -764,7 +916,7 @@ function update(state: State, boardChanged: boolean, first: boolean): void {
   if (state.closed) return;
   rebuildEntries(state);
   const r = route();
-  if (r.route === "news" || r.route === "ops") {
+  if (isPane(r.route)) {
     renderChrome(state);
   } else if (first || r.route === "queue") {
     renderRoute(state);
@@ -776,7 +928,7 @@ function update(state: State, boardChanged: boolean, first: boolean): void {
     }
     if (item && boardChanged) void refreshContext(state, item);
     renderChrome(state);
-  } else {
+  } else if (r.route === "pr") {
     const key = refKey(r.ref);
     // The pane was built for what the queue listed it for (review form, re-sign, reruns).
     if (state.shownPr?.key === key && JSON.stringify(prEntry(state, key)?.wait) !== state.shownPr.wait) {
@@ -797,6 +949,8 @@ async function poll(state: State): Promise<void> {
   clearTimeout(state.timer);
   if (route().route === "news") void refreshNews(state);
   if (route().route === "ops" && opsDue(state)) void refreshOps(state);
+  if (route().route === "triage") void refreshTriage(state);
+  if (route().route === "decisions") void refreshDecisions(state);
   // The board and the forge load side by side; whichever answers first shows first.
   const forge = pollForge(state);
   try {
@@ -877,6 +1031,12 @@ function run(state: State, cmd: Command, where: Route): void {
     case "ops":
       window.location.hash = "#ops";
       return;
+    case "triage":
+      window.location.hash = "#triage";
+      return;
+    case "decisions":
+      window.location.hash = "#decisions";
+      return;
     case "refresh": {
       const r = route();
       if (r.route === "pr") {
@@ -889,6 +1049,15 @@ function run(state: State, cmd: Command, where: Route): void {
       }
       if (r.route === "ops") {
         void refreshOps(state);
+        return;
+      }
+      if (r.route === "triage") {
+        void refreshTriage(state);
+        return;
+      }
+      if (r.route === "decisions") {
+        // A reload on request drops unsent picks, as the note warned.
+        void refreshDecisions(state, true);
         return;
       }
       state.forceForge = true;
@@ -1016,6 +1185,8 @@ async function start(source: TokenSource): Promise<void> {
     opsStarted: 0,
     opsRunning: false,
     jobs: new Map(),
+    triageOpen: new Set(),
+    decisionsAnswered: new Set(),
   };
   state.gh.onUnauthorized = () => void rejected(state);
   byId("meta").textContent = "Checking the token…";

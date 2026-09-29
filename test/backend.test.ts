@@ -2,11 +2,13 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { GitHub } from "../src/github/api.ts";
 import type { Item } from "../src/github/board.ts";
+import { itemAction } from "../src/github/asks.ts";
 import { FETCH_CONCURRENCY } from "../src/github/config.ts";
 import {
   gistId,
   loadAnswered,
   loadContext,
+  loadDecisions,
   loadOpenBoard,
   loadQueue,
   loadRuns,
@@ -88,6 +90,36 @@ describe("loadOpenBoard", () => {
       [1, "harness", "park"],
       [3, undefined, undefined],
     ]);
+  });
+});
+
+describe("loadDecisions", () => {
+  it("reads open decision issues in the tracker as answerable questions, skipping PRs and non-questions", async () => {
+    const issue = (n: number, extra: Record<string, unknown> = {}) => ({
+      node_id: `I_${n}`,
+      title: `D${n}: pick`,
+      body: "Blocks: https://github.com/cgwalters-forge/tracker/issues/1\nQ: x",
+      html_url: `https://github.com/cgwalters-forge/tracker/issues/${n}`,
+      state: "open",
+      user: { login: "cgwalters-bot" },
+      labels: [{ name: "question" }, { name: "decision" }],
+      assignees: [{ login: "cgwalters" }],
+      comments: 0,
+      ...extra,
+    });
+    const { fetchImpl, calls } = scriptedFetch((_m, url) => (url.startsWith(TRACKER) ? { body: [issue(2), issue(3, { pull_request: {} }), issue(4, { labels: [{ name: "decision" }] })] } : undefined));
+    const q = await loadDecisions(new GitHub(token, fetchImpl));
+    const url = new URL(calls[0]?.url ?? "");
+    assert.equal(url.pathname, "/repos/cgwalters-forge/tracker/issues");
+    assert.equal(url.searchParams.get("labels"), "decision");
+    assert.equal(url.searchParams.get("state"), "open");
+    assert.equal(q.items.length, 1);
+    const d = q.items[0] as Item;
+    assert.equal(d.nodeId, "I_2");
+    assert.equal(d.kind, "issue");
+    assert.deepEqual(d.ref, { owner: "cgwalters-forge", repo: "tracker", number: 2 });
+    assert.deepEqual(d.assignees, ["cgwalters"]);
+    assert.equal(itemAction(d, 0).kind, "answer");
   });
 });
 

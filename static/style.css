@@ -179,7 +179,7 @@ pre.msg { white-space: pre-wrap; overflow-wrap: anywhere; margin: 6px 0; }
 }
 
 /* News */
-.nav { display: flex; gap: 10px; font-size: 14px; }
+.nav { display: flex; flex-wrap: wrap; gap: 4px 10px; font-size: 14px; }
 .nav a { color: var(--muted); text-decoration: none; }
 .nav a.on { color: var(--ink); font-weight: 600; }
 .news-item { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 8px 14px; margin-bottom: 8px; overflow-wrap: anywhere; }
@@ -422,3 +422,44 @@ pre.mine-diff span { display: block; min-height: 1.45em; }
 pre.mine-diff .d-add { background: var(--add); color: var(--add-ink); }
 pre.mine-diff .d-del { background: var(--del); color: var(--del-ink); }
 pre.mine-diff .d-same { color: var(--muted); }
+
+/* Triage: the P0 lane, then board items grouped by Theme with their verdicts. */
+.triage section { margin-top: 12px; }
+.tri-list { list-style: none; margin: 0; padding: 0; }
+.tri-item { display: grid; grid-template-columns: 9.5em minmax(0, 1fr); gap: 2px 10px; padding: 6px 0; border-top: 1px solid var(--line); font-size: 14px; }
+.tri-item:first-child { border-top: 0; }
+.tri-ref { font: 12px var(--mono); overflow-wrap: anywhere; }
+.tri-title { overflow-wrap: anywhere; }
+.tri-meta { grid-column: 2; display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: center; }
+.p0-lane .tri-list { background: var(--surface); border: 1px solid var(--line); border-top: 3px solid var(--p0); border-radius: 8px; padding: 4px 12px; }
+.verdict { font: 11px var(--mono); padding: 1px 7px; border-radius: 4px; }
+.verdict.v-keep { color: var(--accent); background: var(--accent-soft); }
+.verdict.v-merge { color: var(--p2); background: var(--p2-soft); }
+.verdict.v-park { color: var(--p3); background: var(--p3-soft); }
+.verdict.v-close { color: var(--p0); background: var(--p0-soft); }
+.verdict.v-none { color: var(--muted); border: 1px dashed var(--line); }
+details.theme { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; margin-bottom: 8px; }
+details.theme > summary { cursor: pointer; padding: 10px 14px; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 12px; align-items: baseline; }
+details.theme > ul { padding: 0 14px 8px; }
+details.theme.untriaged { border-style: dashed; }
+.theme-name { font-weight: 600; }
+.vbar, .theme-counts { grid-column: 1 / 3; }
+.vbar { display: flex; height: 6px; border-radius: 3px; overflow: hidden; background: var(--line); }
+.vbar span, .legend i { display: block; height: 100%; }
+.v-keep { background: var(--accent); } .v-merge { background: var(--p2); } .v-park { background: var(--p3); } .v-close { background: var(--p0); } .v-none { background: var(--line); }
+.legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font: 12px var(--mono); color: var(--muted); margin-bottom: 8px; }
+.legend i { display: inline-block; width: 10px; height: 6px; border-radius: 2px; margin-right: 5px; vertical-align: middle; }
+
+/* Decisions: each open decision with its options, answered in place. */
+.decision { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 10px 14px; margin-top: 12px; display: grid; gap: 8px; }
+.decision.answered { opacity: .75; }
+.decision header { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; }
+.decision h3 { margin: 0; font-size: 16px; line-height: 1.35; overflow-wrap: anywhere; }
+.dec-id { font: 13px var(--mono); font-weight: 600; color: var(--accent); }
+.decision .note, .decision .ask { margin: 0; }
+details.unblocks summary, details.dec-body summary { cursor: pointer; font: 12px var(--mono); color: var(--muted); }
+details.unblocks ul { margin: 6px 0 0; padding-left: 18px; columns: 2 16em; font: 12px var(--mono); }
+@media (max-width: 640px) {
+  .tri-item { grid-template-columns: minmax(0, 1fr); }
+  .tri-meta { grid-column: 1; }
+}
