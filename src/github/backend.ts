@@ -30,6 +30,8 @@ import {
   isAsk,
   type Item,
   labelNames,
+  missingTriageFields,
+  openItems,
   parseIssueUrl,
   type RawContent,
   type RawField,
@@ -38,7 +40,7 @@ import {
   type SubIssueSummary,
   TRACKER_SCOPE,
 } from "./board.ts";
-import { BOARD_NUMBER, BOARD_OWNER, BOT_LOGIN, FETCH_CONCURRENCY, LINKED_STATUSES, PAGE_SIZE, QUEUE_STATUSES, RECENT_COMMENTS, TRACKER_REPO } from "./config.ts";
+import { BOARD_NUMBER, BOARD_OWNER, BOT_LOGIN, DONE, FETCH_CONCURRENCY, LINKED_STATUSES, PAGE_SIZE, QUEUE_STATUSES, RECENT_COMMENTS, TRACKER_REPO } from "./config.ts";
 import { refKey } from "./forge.ts";
 import { mapLimit, submitReview } from "./prs.ts";
 import type { ReviewRequest } from "./forge.ts";
@@ -58,18 +60,31 @@ export interface Queue extends Board {
   linked: Item[];
 }
 
-/** Read the board's items with one of `statuses`, conditionally: 304s cost nothing. */
-export async function loadBoard(gh: GitHub, statuses: readonly string[]): Promise<Board> {
+/** Read the board's fields, and the items matching the board search `q`, conditionally: 304s cost nothing. */
+async function readBoard(gh: GitHub, q: string): Promise<{ fields: RawField[]; items: RawItem[]; changed: boolean }> {
   const fields = await gh.getAll<RawField>(`${PROJECT}/fields?per_page=${PAGE_SIZE}`);
   const ids = fieldIds(fields.data).join(",");
+  const items = await gh.getAll<RawItem>(`${PROJECT}/items?per_page=${PAGE_SIZE}&fields=${ids}&q=${encodeURIComponent(q)}`);
+  return { fields: fields.data, items: items.data, changed: fields.changed || items.changed };
+}
+
+/** Read the board's items with one of `statuses`. */
+export async function loadBoard(gh: GitHub, statuses: readonly string[]): Promise<Board> {
   // The server-side filter keeps the poll to one page; boardItems filters
   // again, in case the filter syntax ever stops matching.
-  const q = encodeURIComponent(`status:${statuses.map((s) => `"${s}"`).join(",")}`);
-  const items = await gh.getAll<RawItem>(`${PROJECT}/items?per_page=${PAGE_SIZE}&fields=${ids}&q=${q}`);
-  return {
-    items: boardItems(items.data, statuses),
-    changed: fields.changed || items.changed,
-  };
+  const r = await readBoard(gh, `status:${statuses.map((s) => `"${s}"`).join(",")}`);
+  return { items: boardItems(r.items, statuses), changed: r.changed };
+}
+
+export interface OpenBoard extends Board {
+  /** Triage fields the board lacks, by name. */
+  missing: string[];
+}
+
+/** Read every board item that isn't Done, with its triage fields. */
+export async function loadOpenBoard(gh: GitHub): Promise<OpenBoard> {
+  const r = await readBoard(gh, `-status:${DONE}`);
+  return { items: openItems(r.items), changed: r.changed, missing: missingTriageFields(r.fields) };
 }
 
 /** Read the items needing a human or ready for review, and in one request those linked to PRs the queue lists. */

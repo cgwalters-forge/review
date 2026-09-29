@@ -3,7 +3,7 @@
 // synthetic payloads.
 
 import { parseBlocks, parseQuestion, type Question, unfencedLines } from "../answer.ts";
-import { BOT_LOGIN, CHORE_LABEL, FIELD, OPERATOR, QUESTION_LABEL, QUEUE_STATUSES, REVIEW_LABEL, TRACKER_REPO } from "./config.ts";
+import { BOT_LOGIN, CHORE_LABEL, DONE, FIELD, OPERATOR, QUESTION_LABEL, QUEUE_STATUSES, REVIEW_LABEL, TRACKER_REPO, TRIAGE_FIELD } from "./config.ts";
 
 /** The subset of a project field the app uses. */
 export interface RawField {
@@ -106,6 +106,12 @@ export interface Item {
   org?: string;
   branch: string[];
   gist: string[];
+  /** The Theme field: the triage group the item belongs to. */
+  theme?: string;
+  /** The Verdict field, as the board names it (see triage.ts). */
+  verdict?: string;
+  /** The Verdict target field: what a merge or close verdict points at. */
+  verdictTarget?: string;
   /** When the item was added to the board. */
   createdAt?: string;
   updatedAt?: string;
@@ -151,16 +157,27 @@ export function labelNames(labels: readonly RawLabel[] | undefined): string[] {
   });
 }
 
-/** Field ids for the fields the app reads, failing clearly if one is gone. */
+/**
+ * Field ids for the fields the app reads, failing clearly if a required
+ * one is gone; the triage fields are added when the board has them.
+ */
 export function fieldIds(fields: readonly RawField[]): number[] {
   const byName = new Map(fields.map((f) => [f.name, f.id]));
-  return Object.values(FIELD).map((name) => {
+  const required = Object.values(FIELD).map((name) => {
     const id = byName.get(name);
     if (id === undefined) {
       throw new Error(`the board has no field named "${name}"; was it renamed?`);
     }
     return id;
   });
+  const optional = Object.values(TRIAGE_FIELD).flatMap((name) => byName.get(name) ?? []);
+  return [...required, ...optional];
+}
+
+/** The triage fields the board lacks, by name. */
+export function missingTriageFields(fields: readonly RawField[]): string[] {
+  const names = new Set(fields.map((f) => f.name));
+  return Object.values(TRIAGE_FIELD).filter((name) => !names.has(name));
 }
 
 function fieldText(v: RawFieldValue["value"]): string | undefined {
@@ -217,6 +234,9 @@ export function parseItem(raw: RawItem): Item {
   opt("status", fields.get(FIELD.status));
   opt("priority", fields.get(FIELD.priority));
   opt("org", fields.get(FIELD.org));
+  opt("theme", fields.get(TRIAGE_FIELD.theme)?.trim() || undefined);
+  opt("verdict", fields.get(TRIAGE_FIELD.verdict)?.trim() || undefined);
+  opt("verdictTarget", fields.get(TRIAGE_FIELD.verdictTarget)?.trim() || undefined);
   opt("createdAt", raw.created_at);
   opt("updatedAt", c.updated_at ?? raw.updated_at);
   if (kind !== "draft" && c.html_url) {
@@ -237,6 +257,14 @@ export function boardItems(raw: readonly RawItem[], statuses: readonly string[])
     .filter((r) => !r.archived_at)
     .map(parseItem)
     .filter((i) => i.status !== undefined && statuses.includes(i.status));
+}
+
+/** Unarchived items that aren't Done, those without a Status included. */
+export function openItems(raw: readonly RawItem[]): Item[] {
+  return raw
+    .filter((r) => !r.archived_at)
+    .map(parseItem)
+    .filter((i) => i.status !== DONE);
 }
 
 /** The board's part of the queue: unarchived items needing a human, or Draft (ready for review). */

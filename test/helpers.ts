@@ -51,3 +51,20 @@ export function scriptedFetch(route: (method: string, url: string, headers: Reco
   };
   return { fetchImpl, calls };
 }
+
+const TEXT_FIELDS: readonly string[] = ["Why", "Branch", "Gist", "Verdict target"];
+
+/** A board item with the given fields set, as the Projects REST API returns them. */
+export function rawBoardItem(n: number, fields: Record<string, string>, title = `item ${n}`): RawItem {
+  return {
+    id: n,
+    node_id: `PVTI_t${n}`,
+    content_type: "Issue",
+    content: { title, html_url: `https://github.com/cgwalters-forge/tracker/issues/${n}`, state: "open" },
+    fields: Object.entries(fields).map(([name, v], i) =>
+      TEXT_FIELDS.includes(name)
+        ? { id: 200 + i, name, data_type: "text", value: { raw: v } }
+        : { id: 200 + i, name, data_type: "single_select", value: { name: { raw: v } } },
+    ),
+  };
+}
