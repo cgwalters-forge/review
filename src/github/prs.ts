@@ -169,6 +169,8 @@ export interface PrDetail {
   /** The base commit the PR's diff starts from, as GitHub last computed it. */
   baseSha?: string;
   headRef?: string;
+  /** The repository the head branch is in, `owner/repo`. */
+  headRepo?: string;
   baseRef?: string;
   /** The fork's parent repository, `owner/repo`. */
   parent?: string;
@@ -218,7 +220,7 @@ export const MAX_FILE_PAGES = 30;
 /** Commits the API lists for a PR at most. */
 const MAX_LISTED_COMMITS = 250;
 
-function pullPath(ref: IssueRef): string {
+export function pullPath(ref: IssueRef): string {
   return `/repos/${ref.owner}/${ref.repo}/pulls/${ref.number}`;
 }
 
@@ -289,6 +291,7 @@ export async function loadPrDetail(gh: GitHub, ref: IssueRef): Promise<PrDetail>
   };
   if (pull.base.sha) detail.baseSha = pull.base.sha;
   if (pull.head.ref) detail.headRef = pull.head.ref;
+  if (pull.head.repo?.full_name) detail.headRepo = pull.head.repo.full_name;
   if (pull.base.ref) detail.baseRef = pull.base.ref;
   if (repoInfo.parent?.full_name) detail.parent = repoInfo.parent.full_name;
   if (typeof repoInfo.private === "boolean") detail.isPrivate = repoInfo.private;

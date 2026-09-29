@@ -66,8 +66,8 @@ export function parseSearchPr(raw: RawSearchIssue): ForgePr | undefined {
   };
 }
 
-const META_START = "<!-- bot-meta -->";
-const META_END = "<!-- /bot-meta -->";
+export const META_START = "<!-- bot-meta -->";
+export const META_END = "<!-- /bot-meta -->";
 
 /** What bot-pr records in a fork PR's bot-meta section. */
 export interface BotMeta {
