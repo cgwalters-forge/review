@@ -13,6 +13,8 @@ export const BOARD_URL = `https://github.com/orgs/${BOARD_OWNER}/projects/${BOAR
 
 /** The only login whose answers the bot acts on. */
 export const OPERATOR = "cgwalters";
+/** His sign-off, as `bot-pr promote` adds it where upstream wants DCO. */
+export const OPERATOR_SIGNOFF = { name: "Colin Walters", email: "walters@verbum.org" } as const;
 
 /** The Status of an item blocked on his decision or action. */
 export const NEEDS_HUMAN = "Needs human";
@@ -20,6 +22,14 @@ export const NEEDS_HUMAN = "Needs human";
 export const DRAFT = "Draft";
 /** The Statuses that put an item in the queue (the board's "Needs cgwalters" view). */
 export const QUEUE_STATUSES: readonly string[] = [NEEDS_HUMAN, DRAFT];
+/** The Status of an item whose PR is open upstream. */
+export const IN_REVIEW = "In Review";
+/**
+ * Statuses read only to rank the bot's PRs other than the forge's
+ * drafts: an item whose Branch holds the PR gives it its priority and
+ * org.
+ */
+export const LINKED_STATUSES: readonly string[] = [IN_REVIEW];
 
 /** The organization holding the forks where the bot proposes draft PRs. */
 export const FORGE_ORG = "cgwalters-forge";

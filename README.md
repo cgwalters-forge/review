@@ -22,15 +22,39 @@ claude.ai-hosted prototype, and why it is being replaced, is described in
 
 One ranked queue of everything waiting on you: the bot's open draft PRs
 in cgwalters-forge that you haven't approved or sent back at their
-current head, and the Workstream board's "Needs human" items and Draft
-items (gists to read). P0 comes first (the board's Priority; a PR takes
-its board item's), then the oldest. What the bot asks of you is an
-issue in cgwalters-forge/tracker, a question, a review or a chore,
-nested under the item it blocks. Asks you answered, or the bot closed,
-move to the end until the bot acts. A Needs human item with no open ask
-is flagged as a bot bug.
+current head, the bot's other PRs with something only you can do, and
+the Workstream board's "Needs human" items and Draft items (gists to
+read). Once a PR is open, everything about it happens on the PR, so
+those PRs are listed from GitHub itself, not from tracker asks:
 
-- **A forge PR** opens a review pane: the description (without bot-pr's
+- **review requested**: its open PRs anywhere that request your review
+  (`is:pr is:open author:cgwalters-bot user-review-requested:cgwalters`).
+  GitHub drops the request once you review, so a PR you reviewed leaves
+  the queue until the bot requests it again.
+- **approve to re-sign**: its upstream PRs whose DCO check fails on
+  commits lacking your `Signed-off-by`. Approving the head is your
+  sign-off: the bot then adds it with `bot-pr signoff`.
+- **rerun**: its upstream PRs (unless conflicting) whose
+  required checks (the base branch's rulesets; classic branch
+  protection isn't readable) failed in GitHub Actions,
+  with a "Rerun failed jobs" button per run for a flake.
+- **the bot responded**: PRs where you requested changes and the bot
+  pushed or replied since.
+
+PRs where you requested changes and the bot hasn't pushed or replied
+since are listed last, under "Changes requested, waiting on the bot":
+none of them is yours. P0 comes first (the board's Priority; a PR takes
+its board item's, found by the item id in a forge PR's bot-meta, else by
+the PR's URL in an item's Branch, In Review items included), then the
+oldest. A decision with no PR is an issue in cgwalters-forge/tracker, a
+question (or a chore), nested under the item it blocks; older review
+and chore asks about PRs still show until the bot closes them. Asks you
+answered, or the bot closed, move to the end until the bot acts. A
+Needs human item with neither an open ask nor a PR listed for you is
+flagged as a bot bug.
+
+- **A PR** opens a review pane (the form is there for the bot's PRs in
+  its own space, and for the PRs listed for your review): the description (without bot-pr's
   meta section), CI checks, every commit with its full message, and the
   diff. **Approve** submits an approving review of the head you were
   shown, which is what `bot-pr promote` acts on; if the head moved
@@ -85,9 +109,9 @@ is flagged as a bot bug.
   recommended one is A), free text, or both; the answer is a plain
   comment by you on that issue, whose first line is the letter you
   picked. The bot acts on it and closes the issue. Upstream issues and
-  PRs are never answered from here: they link to GitHub, and the bot's
-  asks about them are tracker issues.
-- **A review** ask (label `review`) opens the PR it names in the review
+  PRs are never answered from here: they link to GitHub.
+- **A review** ask (label `review`, deprecated: the bot now requests
+  your review on the PR itself) opens the PR it names in the review
   pane, upstream PRs included, showing the head the bot asked about and
   warning if the PR moved since (reviewing the new head needs your
   confirmation). Approving or requesting changes also comments on the

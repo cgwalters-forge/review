@@ -38,20 +38,28 @@ import {
   type SubIssueSummary,
   TRACKER_SCOPE,
 } from "./board.ts";
-import { BOARD_NUMBER, BOARD_OWNER, FETCH_CONCURRENCY, PAGE_SIZE, QUEUE_STATUSES, RECENT_COMMENTS, TRACKER_REPO } from "./config.ts";
+import { BOARD_NUMBER, BOARD_OWNER, BOT_LOGIN, FETCH_CONCURRENCY, LINKED_STATUSES, PAGE_SIZE, QUEUE_STATUSES, RECENT_COMMENTS, TRACKER_REPO } from "./config.ts";
 import { refKey } from "./forge.ts";
 import { mapLimit, submitReview } from "./prs.ts";
 import type { ReviewRequest } from "./forge.ts";
 
 const PROJECT = `/orgs/${BOARD_OWNER}/projectsV2/${BOARD_NUMBER}`;
 
-export interface Queue {
+export interface Board {
   items: Item[];
   changed: boolean;
 }
 
+export interface Queue extends Board {
+  /**
+   * Items outside the queue whose Branch may hold a PR the queue lists
+   * (In Review): they give it a priority and an org, never an entry.
+   */
+  linked: Item[];
+}
+
 /** Read the board's items with one of `statuses`, conditionally: 304s cost nothing. */
-export async function loadBoard(gh: GitHub, statuses: readonly string[]): Promise<Queue> {
+export async function loadBoard(gh: GitHub, statuses: readonly string[]): Promise<Board> {
   const fields = await gh.getAll<RawField>(`${PROJECT}/fields?per_page=${PAGE_SIZE}`);
   const ids = fieldIds(fields.data).join(",");
   // The server-side filter keeps the poll to one page; boardItems filters
@@ -64,9 +72,11 @@ export async function loadBoard(gh: GitHub, statuses: readonly string[]): Promis
   };
 }
 
-/** Read the items needing a human or ready for review. */
-export function loadQueue(gh: GitHub): Promise<Queue> {
-  return loadBoard(gh, QUEUE_STATUSES);
+/** Read the items needing a human or ready for review, and in one request those linked to PRs the queue lists. */
+export async function loadQueue(gh: GitHub): Promise<Queue> {
+  const board = await loadBoard(gh, [...QUEUE_STATUSES, ...LINKED_STATUSES]);
+  const queued = (i: Item) => i.status !== undefined && QUEUE_STATUSES.includes(i.status);
+  return { items: board.items.filter(queued), linked: board.items.filter((i) => !queued(i)), changed: board.changed };
 }
 
 export interface Comment {
@@ -447,4 +457,41 @@ export async function rerunFailedJobs(gh: GitHub, ask: IssueRef, runUrl: string,
   } catch (e) {
     throw new Error(`reran the failed jobs of ${run.url}, but couldn't say so on ${refKey(ask)}: ${e instanceof Error ? e.message : String(e)}. Comment there yourself.`);
   }
+}
+
+/**
+ * Rerun the failed jobs of one run behind a failed required check of a
+ * PR the queue lists for a rerun (the app, not a chore, found it). As
+ * strict as rerunFailedJobs: `allowed` must name this exact run URL (the
+ * runs the queue found for the PR); the PR is read fresh and must be
+ * open; the run is read fresh and must be that run, in the PR's base
+ * repository, on the PR's current head, completed and failed, with
+ * failed jobs. Only then the one endpoint that reruns failed jobs is
+ * called. Nothing is commented anywhere: the checks turning green (or
+ * red again) is the record. Resolves to the run's URL.
+ */
+export async function rerunPrRun(gh: GitHub, pr: IssueRef, runUrl: string, allowed: readonly RunRef[]): Promise<string> {
+  const run = parseRunUrl(runUrl);
+  if (!run) throw new Error(`not rerunning: ${JSON.stringify(runUrl)} is not a workflow run URL`);
+  if (!allowed.some((r) => r.url === run.url)) throw new Error(`not rerunning: ${run.url} isn't a failed required check of ${refKey(pr)}`);
+  if (run.owner.toLowerCase() !== pr.owner.toLowerCase() || run.repo.toLowerCase() !== pr.repo.toLowerCase()) {
+    throw new Error(`not rerunning: ${run.url} is not in ${pr.owner}/${pr.repo}`);
+  }
+  const fresh = await gh.send<{ state?: string; head?: { sha?: string }; user?: { login?: string } | null }>("GET", `/repos/${pr.owner}/${pr.repo}/pulls/${pr.number}`);
+  if (fresh.state !== "open") throw new Error(`not rerunning: ${refKey(pr)} is ${fresh.state ?? "not open"}`);
+  if (fresh.user?.login !== BOT_LOGIN) throw new Error(`not rerunning: ${refKey(pr)} is not ${BOT_LOGIN}'s`);
+  const { raw, jobs } = await readRun(gh, run);
+  const problem = rerunProblem(run, raw, jobs);
+  if (problem) throw new Error(`not rerunning ${run.url}: ${problem}`);
+  if (!raw.head_sha || raw.head_sha !== fresh.head?.sha) {
+    throw new Error(`not rerunning ${run.url}: it ran on ${(raw.head_sha ?? "an unknown commit").slice(0, 12)}, and ${refKey(pr)} is now at ${(fresh.head?.sha ?? "?").slice(0, 12)}`);
+  }
+  try {
+    await gh.send("POST", `/repos/${run.owner}/${run.repo}/actions/runs/${run.id}/rerun-failed-jobs`);
+  } catch (e) {
+    if (e instanceof GitHubError && e.status < 500) throw e;
+    const why = e instanceof Error ? e.message : String(e);
+    throw new MaybeSentError(`the rerun request for ${run.url} may or may not have gone out (${why}); check the run on GitHub before trying again`);
+  }
+  return run.url;
 }
