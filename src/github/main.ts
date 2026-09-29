@@ -30,6 +30,7 @@ import { newsView } from "./newsview.ts";
 import { deleteCacheDatabase, IdbStore } from "./idbstore.ts";
 import { type JobCache, loadOps, type Ops } from "./ops.ts";
 import { opsView, tickOps } from "./opsview.ts";
+import { saveMine } from "./mine.ts";
 import { loadFileLines, loadForgePrs, loadPrDetail, loadRangeFiles, mapLimit, type PrDetail, refreshVerdicts, submitReview, type VerdictEntry } from "./prs.ts";
 import { APPROVE_ACTION, canReview, type PrPane, prView, REVIEW_FORM_CLASS, type ReviewAskInfo } from "./prview.ts";
 import { buildEntries, type Entry, itemHref } from "./queue.ts";
@@ -402,6 +403,16 @@ function renderPr(state: State, ref: { owner: string; repo: string; number: numb
     },
     loadRange: (base, to) => loadRangeFiles(state.gh, ref, base, to),
     loadLines: (path, sha) => loadFileLines(state.gh, ref, path, sha),
+    mine: {
+      login: state.login,
+      scopes: () => state.gh.scopes,
+      save: async (edit, committer, { promote, ownText }, progress) => {
+        const r = await saveMine(state.gh, detail, edit, { committer, ownText, promote, scopes: state.gh.scopes, progress });
+        // The head, title and body changed: the queue and this PR need a fresh read (r).
+        state.forceForge = true;
+        return r;
+      },
+    },
   }, { reviewedHere: state.reviewed.has(key), ...(ask ? { ask } : {}) });
   state.pane = pane;
   showMain(pane.el);
@@ -988,7 +999,7 @@ function signInView(reason: SignInReason): HTMLElement {
       h(
         "p",
         {},
-        "A fine-grained token acts on one resource owner only: with owner cgwalters-forge and Pull requests: read and write, Issues: read and write, and Contents and Commit statuses: read, it can review forge PRs and answer the bot's questions in cgwalters-forge/tracker.",
+        "A fine-grained token acts on one resource owner only: with owner cgwalters-forge and Pull requests: read and write, Issues: read and write, and Contents and Commit statuses: read, it can review forge PRs and answer the bot's questions in cgwalters-forge/tracker. Make it mine also needs Contents: read and write, to rewrite a PR's commits.",
       ),
       h("p", {}, "Anyone who can change this site's code could read a pasted token, so prefer one that expires soon."),
     ),
