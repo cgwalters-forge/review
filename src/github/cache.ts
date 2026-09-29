@@ -304,25 +304,29 @@ export class ResponseCache {
 
 /** An API path's issue or PR (a PR is also an issue): /repos/O/R/issues/N or /pulls/N, and below. */
 const ISSUE_PATH_RE = /^\/repos\/([^/]+)\/([^/]+)\/(?:issues|pulls)\/(\d+)(?:\/|$)/;
+/** A project's item listings, which embed each item's issue or PR: /users/O/projectsV2/N/items, and below. */
+const PROJECT_ITEMS_RE = /^\/(?:users|orgs)\/[^/]+\/projectsV2\/\d+\/items(?:\/|$)/;
 
-function issueOf(pathOrUrl: string): { issue: string | undefined; search: boolean } {
+function issueOf(pathOrUrl: string): { issue: string | undefined; listing: boolean } {
   const path = new URL(pathOrUrl, "https://api.github.com").pathname;
   const m = ISSUE_PATH_RE.exec(path);
-  return { issue: m ? `${m[1]}/${m[2]}#${m[3]}`.toLowerCase() : undefined, search: path.startsWith("/search/") };
+  return { issue: m ? `${m[1]}/${m[2]}#${m[3]}`.toLowerCase() : undefined, listing: path.startsWith("/search/") || PROJECT_ITEMS_RE.test(path) };
 }
 
 /**
  * Which cached URLs a successful write to `path` may have made stale:
  * everything under the issue or PR it wrote to, in both its /issues and
- * /pulls trees, and searches, whose results carry comment counts and
- * updated_at.
+ * /pulls trees, and the listings that embed issues: searches, whose
+ * results carry comment counts and updated_at, and the board's items,
+ * which carry their issue's state and body. A reload right after an
+ * action then can't show the state from before it.
  */
 export function staleAfterWrite(path: string): (url: string) => boolean {
   const target = issueOf(path).issue;
   if (!target) return () => false;
   return (url) => {
     const u = issueOf(url);
-    return u.issue === target || u.search;
+    return u.issue === target || u.listing;
   };
 }
 

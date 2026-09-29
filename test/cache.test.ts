@@ -115,7 +115,10 @@ describe("ResponseCache with IndexedDB", () => {
       ["/repos/o/r/issues/50/comments?per_page=100", true],
       ["/repos/o/r/pulls?state=open&per_page=100", true],
       ["/repos/o/other/issues/5", true],
-      ["/users/b/projectsV2/1/items", true],
+      // The board's items embed their issues.
+      ["/users/b/projectsV2/1/items?per_page=100&fields=1,2", false],
+      ["/orgs/b/projectsV2/2/items", false],
+      ["/users/b/projectsV2/1/fields?per_page=100", true],
     ];
     const s = await session(factory, (method) => (method === "POST" ? { status: 201, body: { html_url: "c" } } : etagged({}, '"e"')));
     for (const [url] of cases) await s.gh.get(url);
@@ -345,5 +348,23 @@ describe("cachedLabel", () => {
 describe("staleAfterWrite", () => {
   it("ignores writes outside an issue or PR", () => {
     assert.equal(staleAfterWrite("/gists")("/search/issues?q=x"), false);
+    assert.equal(staleAfterWrite("/graphql")("/users/b/projectsV2/1/items"), false);
+  });
+
+  it("makes the next queue read after an answer a full one, not a revalidation", async () => {
+    const { fetchImpl, calls } = scriptedFetch((method, url) => {
+      if (method === "POST") return { status: 201, body: { html_url: "c" } };
+      if (url.includes("/fields")) return etagged(fields(), '"f"');
+      return etagged(rawItems(), '"i"');
+    });
+    const gh = new GitHub(token, fetchImpl, new ResponseCache());
+    await loadQueue(gh);
+    await gh.send("POST", "/repos/cgwalters-forge/tracker/issues/7/comments", { body: "A" });
+    calls.length = 0;
+    await loadQueue(gh);
+    const items = calls.find((c) => c.url.includes("/items"));
+    const fieldsRead = calls.find((c) => c.url.includes("/fields"));
+    assert.equal(items?.headers["If-None-Match"], undefined, "the items listing was dropped");
+    assert.equal(fieldsRead?.headers["If-None-Match"], '"f"', "the fields weren't");
   });
 });
