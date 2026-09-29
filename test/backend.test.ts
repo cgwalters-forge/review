@@ -7,6 +7,7 @@ import {
   gistId,
   loadAnswered,
   loadContext,
+  loadOpenBoard,
   loadQueue,
   loadRuns,
   loadSubIssues,
@@ -17,7 +18,7 @@ import {
   rerunPrRun,
   submitAskedReview,
 } from "../src/github/backend.ts";
-import { fields, rawItems, scriptedFetch } from "./helpers.ts";
+import { fields, rawBoardItem, rawItems, scriptedFetch } from "./helpers.ts";
 
 const token = async () => "t";
 const API = "https://api.github.com";
@@ -65,6 +66,28 @@ describe("loadQueue", () => {
     const q = await loadQueue(new GitHub(token, fetchImpl));
     assert.equal(q.items.length, 11);
     assert.deepEqual(q.linked.map((i) => [i.nodeId, i.status]), [["PVTI_in_review", "In Review"]]);
+  });
+});
+
+describe("loadOpenBoard", () => {
+  it("asks for the triage fields the board has, and every item not Done", async () => {
+    const withTriage = [...fields(), { id: 110, name: "Theme" }, { id: 111, name: "Verdict" }];
+    const { fetchImpl, calls } = scriptedFetch((_m, url) => {
+      if (url.startsWith(`${PROJECT}/fields`)) return { body: withTriage };
+      if (url.startsWith(`${PROJECT}/items`)) {
+        return { body: [rawBoardItem(1, { Status: "Todo", Theme: "harness", Verdict: "park" }), rawBoardItem(2, { Status: "Done" }), rawBoardItem(3, {})] };
+      }
+      return undefined;
+    });
+    const board = await loadOpenBoard(new GitHub(token, fetchImpl));
+    const itemsUrl = new URL(calls[1]?.url ?? "");
+    assert.equal(itemsUrl.searchParams.get("fields"), "102,104,103,105,106,107,110,111");
+    assert.equal(itemsUrl.searchParams.get("q"), "-status:Done");
+    assert.deepEqual(board.missing, ["Verdict target"]);
+    assert.deepEqual(board.items.map((i) => [i.id, i.theme, i.verdict]), [
+      [1, "harness", "park"],
+      [3, undefined, undefined],
+    ]);
   });
 });
 

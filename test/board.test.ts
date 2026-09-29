@@ -14,13 +14,15 @@ import {
   isQuestion,
   type Item,
   labelNames,
+  missingTriageFields,
+  openItems,
   parseApiIssueUrl,
   parseIssueUrl,
   questionOf,
   questionProblem,
   queueItems,
 } from "../src/github/board.ts";
-import { fields, rawItems } from "./helpers.ts";
+import { fields, rawBoardItem, rawItems } from "./helpers.ts";
 
 describe("fieldIds", () => {
   it("maps the fields the app reads", () => {
@@ -28,6 +30,24 @@ describe("fieldIds", () => {
   });
   it("names a missing field", () => {
     assert.throws(() => fieldIds(fields().filter((f) => f.name !== "Why")), /no field named "Why"/);
+  });
+  it("adds the triage fields the board has, and names those it lacks", () => {
+    const more = [...fields(), { id: 110, name: "Verdict" }, { id: 111, name: "Theme" }];
+    assert.deepEqual(fieldIds(more), [102, 104, 103, 105, 106, 107, 111, 110]);
+    assert.deepEqual(missingTriageFields(more), ["Verdict target"]);
+    assert.deepEqual(missingTriageFields(fields()), ["Theme", "Verdict", "Verdict target"]);
+  });
+});
+
+describe("openItems", () => {
+  it("keeps every unarchived item that isn't Done, those without a Status too", () => {
+    const raw = [
+      rawBoardItem(1, { Status: "Todo" }),
+      rawBoardItem(2, { Status: "Done" }),
+      rawBoardItem(3, {}),
+      { ...rawBoardItem(4, { Status: "Draft" }), archived_at: "2026-01-01T00:00:00Z" },
+    ];
+    assert.deepEqual(openItems(raw).map((i) => i.id), [1, 3]);
   });
 });
 

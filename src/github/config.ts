@@ -47,6 +47,20 @@ export const FIELD = {
 } as const;
 
 /**
+ * Board fields the triage view reads, by name. They are optional: a
+ * board without them still loads, and the view says which are missing.
+ */
+export const TRIAGE_FIELD = {
+  theme: "Theme",
+  verdict: "Verdict",
+  verdictTarget: "Verdict target",
+} as const;
+
+/** The Status of a finished item; the triage view shows everything else. */
+export const DONE = "Done";
+
+
+/**
  * The public repository where every board item that isn't an upstream
  * issue or PR is an issue, questions for him included.
  */
