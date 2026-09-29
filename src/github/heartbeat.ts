@@ -42,6 +42,8 @@ export interface Heartbeat {
   workers: LocalWorker[];
   /** Workers left out as malformed. */
   skipped: number;
+  /** Workers left out past MAX_WORKERS. */
+  truncated: number;
   commentUrl?: string;
 }
 
@@ -89,8 +91,9 @@ export function parseHeartbeat(body: string | null | undefined): Heartbeat | und
   const session = str(raw.coordinator.session, NAME_RE);
   const loopState = str(raw.coordinator.loop_state, WORD_RE);
   if (!updatedAt || !session || !loopState) return undefined;
-  const workers = raw.workers.slice(0, MAX_WORKERS).flatMap((w) => parseWorker(w) ?? []);
-  const hb: Heartbeat = { updatedAt, session, loopState, workers, skipped: raw.workers.length - workers.length };
+  const kept = raw.workers.slice(0, MAX_WORKERS);
+  const workers = kept.flatMap((w) => parseWorker(w) ?? []);
+  const hb: Heartbeat = { updatedAt, session, loopState, workers, skipped: kept.length - workers.length, truncated: raw.workers.length - kept.length };
   const wake = time(raw.coordinator.next_wake_at);
   if (wake) hb.nextWakeAt = wake;
   return hb;

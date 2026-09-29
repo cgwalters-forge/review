@@ -306,6 +306,7 @@ function localSection(hb: Heartbeat | null | undefined, devspaces: DevspaceData 
     sec.append(h("ul", { class: `past-list${stale ? " stale" : ""}` }, ...hb.workers.map((w) => localRow(w, live, now))));
   }
   if (hb.skipped) sec.append(h("p", { class: "fine" }, `${hb.skipped} malformed worker entr${hb.skipped === 1 ? "y" : "ies"} not shown.`));
+  if (hb.truncated) sec.append(h("p", { class: "fine" }, `${hb.truncated} more worker${hb.truncated === 1 ? "" : "s"} not shown.`));
   return sec;
 }
 

@@ -31,6 +31,7 @@ describe("findHeartbeat", () => {
         { name: "bootc-2482", itemUrl: "https://github.com/bootc-dev/bootc/issues/2482", itemRef: "bootc-dev/bootc#2482", startedAt: "2026-09-28T15:01:30Z", status: "starting" },
       ],
       skipped: 0,
+      truncated: 0,
       commentUrl: "https://github.com/cgwalters-forge/tracker/issues/176#issuecomment-2",
     });
   });
@@ -48,7 +49,7 @@ describe("parseHeartbeat", () => {
   ];
   for (const [what, text, workers] of cases) it(what, () => assert.equal(parseHeartbeat(text)?.workers.length, workers));
 
-  const edits: [string, Edit, number | undefined, number?][] = [
+  const edits: [string, Edit, number | undefined, number?, number?][] = [
     ["another schema", (j) => ({ ...j, schema: "bot-heartbeat/v2" }), undefined],
     ["no session", (j) => ({ ...j, coordinator: { loop_state: "sleeping" } }), undefined],
     ["bad updated_at", (j) => ({ ...j, updated_at: "now" }), undefined],
@@ -58,13 +59,14 @@ describe("parseHeartbeat", () => {
     ["an item off github.com", (j) => ({ ...j, workers: [{ ...j.workers[0], item_url: "https://evil.example/o/r/pull/3" }] }), 0, 1],
     ["markup in a name", (j) => ({ ...j, workers: [{ ...j.workers[0], name: "<img src=x>" }] }), 0, 1],
     ["a bad devspace is dropped, the worker kept", (j) => ({ ...j, workers: [{ ...j.workers[0], devspace: "A B" }] }), 1],
-    ["too many workers", (j) => ({ ...j, workers: Array.from({ length: 40 }, () => j.workers[0]) }), 32, 8],
+    ["too many workers are cut off, not malformed", (j) => ({ ...j, workers: Array.from({ length: 40 }, () => j.workers[0]) }), 32, 0, 8],
   ];
-  for (const [what, edit, workers, skipped] of edits) {
+  for (const [what, edit, workers, skipped, truncated] of edits) {
     it(what, () => {
       const hb = parseHeartbeat(body(edit(valid())));
       assert.equal(hb?.workers.length, workers);
       if (skipped !== undefined) assert.equal(hb?.skipped, skipped);
+      if (truncated !== undefined) assert.equal(hb?.truncated, truncated);
     });
   }
   it("keeps no devspace it can't trust", () => {
@@ -75,7 +77,7 @@ describe("parseHeartbeat", () => {
 
 describe("isStale", () => {
   const at = Date.parse("2026-09-28T15:00:00Z");
-  const hb = (over: Partial<NonNullable<ReturnType<typeof parseHeartbeat>>> = {}) => ({ updatedAt: "2026-09-28T15:00:00Z", session: "s", loopState: "polling", workers: [], skipped: 0, ...over });
+  const hb = (over: Partial<NonNullable<ReturnType<typeof parseHeartbeat>>> = {}) => ({ updatedAt: "2026-09-28T15:00:00Z", session: "s", loopState: "polling", workers: [], skipped: 0, truncated: 0, ...over });
   const cases: [string, ReturnType<typeof hb>, number, boolean][] = [
     ["fresh", hb(), at + 5 * MIN, false],
     ["15 minutes is the limit", hb(), at + 15 * MIN, false],
