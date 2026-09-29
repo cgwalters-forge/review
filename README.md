@@ -122,6 +122,20 @@ flagged as a bot bug.
   token (you need write access to that repository) and comments on the
   chore.
 
+**After an action** (approving or requesting changes, answering a
+question, commenting on a review or chore, rerunning a chore's jobs,
+Make it mine), the queue shows its effect at once, re-reads the board
+and the forge without waiting for the next poll, and re-reads the
+entry itself. GitHub's search and reviews can lag a write, so a review
+sent from here counts as given until a read agrees (or five minutes
+pass). Then the app opens the next entry of the list you opened it
+from, in the order you saw it, with a small "Done: … → …" line and a
+link back; with nothing left, the queue says you're all caught up. It
+stays put when the action failed, when the entry still waits on you
+(a comment-only review), when you left for another view meanwhile, or
+when you have unsent text elsewhere on the page. "Auto-next" in the
+header turns this off (remembered per browser).
+
 **Filters** above the queue narrow it by the organization an entry
 targets and by priority, with each chip's count. The target is the
 board's Org field, else a tracker issue's `target:<org>` label, else the

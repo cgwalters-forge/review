@@ -161,6 +161,9 @@ function filterBar(entries: readonly Entry[], filter: QueueFilter): HTMLElement 
   );
 }
 
+/** The class of the queue's "all caught up" line. */
+export const CAUGHT_UP_CLASS = "caught-up";
+
 export function queueView(
   all: readonly Entry[],
   labelOf: (e: Entry) => RowLabel | undefined,
@@ -169,7 +172,7 @@ export function queueView(
 ): HTMLElement {
   const root = h("main", { class: "queue" });
   if (all.length === 0) {
-    root.append(h("p", { class: "empty" }, "Nothing needs you right now."));
+    root.append(h("p", { class: `empty ${CAUGHT_UP_CLASS}` }, "All caught up: nothing needs you right now."));
     return root;
   }
   root.append(filterBar(all, filter));
@@ -177,6 +180,10 @@ export function queueView(
   if (entries.length === 0) {
     root.append(h("p", { class: "empty" }, "Nothing here matches this filter. ", h("a", { href: `#${filterToken(ALL)}` }, "Show all")));
     return root;
+  }
+  // Only settled asks and the bot's turns left: nothing to do here.
+  if (entries.every((e) => [e, ...(e.children ?? [])].every((x) => x.settled || onBot(x)))) {
+    root.append(h("p", { class: `empty ${CAUGHT_UP_CLASS}` }, "All caught up: nothing here waits on you."));
   }
   const counts = { pr: 0, question: 0, review: 0, chore: 0, item: 0 };
   let bugs = 0;

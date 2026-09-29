@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { Verdict } from "../src/github/forge.ts";
 import {
+  afterReview,
   botRepliedSince,
   checkRunWorkflow,
   classifyPr,
@@ -157,4 +158,22 @@ describe("forgeWait", () => {
     ["approved", false, undefined],
   ];
   for (const [state, replied, want] of cases) it(`${state}, replied: ${replied}`, () => assert.deepEqual(forgeWait({ state }, replied), want));
+});
+
+describe("afterReview", () => {
+  const wait = (reasons: PrWait["reasons"], onBot = false): PrWait => ({ reasons, onBot });
+  // [name, before, verdict, reasons after (undefined: no longer listed), onBot after]
+  const cases: [string, PrWait, "approved" | "changes-requested", PrWait["reasons"] | undefined, boolean?][] = [
+    ["an approval answers a review request", wait(["review-requested"]), "approved", undefined],
+    ["an approval is the re-sign's sign-off", wait(["resign", "updated"]), "approved", undefined],
+    ["an approval leaves a rerun", wait(["review-requested", "rerun"]), "approved", ["rerun"], false],
+    ["a change request makes it the bot's turn", wait(["review-requested"]), "changes-requested", [], true],
+    ["a change request leaves a re-sign and a rerun", wait(["resign", "rerun", "updated"]), "changes-requested", ["resign", "rerun"], true],
+  ];
+  for (const [name, before, verdict, reasons, botTurn] of cases) {
+    it(name, () => {
+      const got = afterReview(before, verdict);
+      assert.deepEqual(got && [got.reasons, got.onBot], reasons && [reasons, botTurn]);
+    });
+  }
 });
