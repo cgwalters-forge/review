@@ -98,6 +98,16 @@ export const OPS_WINDOW_HOURS = 24;
 export const OPS_RUNS_PER_PAGE = 100;
 /** Agent runs shown when finished. */
 export const OPS_AGENT_RECENT = 6;
+/**
+ * The coordinator's heartbeat: the one comment by BOT_LOGIN on this
+ * TRACKER_REPO issue ("Bot heartbeat", pinned and locked), which
+ * bin/bot-heartbeat in homegit edits in place.
+ */
+export const HEARTBEAT_ISSUE = 176;
+/** A heartbeat older than this is stale... */
+export const HEARTBEAT_STALE_MS = 15 * 60_000;
+/** ... unless the coordinator said it sleeps longer, and this grace past its wake time hasn't run out. */
+export const HEARTBEAT_WAKE_GRACE_MS = 5 * 60_000;
 /** The bot's public events read (one page). */
 export const OPS_EVENTS = 50;
 /** Rows of bot activity shown. */

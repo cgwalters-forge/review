@@ -1,0 +1,18 @@
+[
+  {
+    "id": 1,
+    "html_url": "https://github.com/cgwalters-forge/tracker/issues/176#issuecomment-1",
+    "user": {
+      "login": "someone"
+    },
+    "body": "<!-- bot-heartbeat v1 -->\nCoordinator `929c7a64-b3fd-49bd-933c-b7259b1253bd` is sleeping, as of 2026-09-28T15:05:00Z; 2 local worker(s). Written by `bot-heartbeat publish` in cgwalters-bot/homegit; the review app's ops view reads the JSON below.\n\n| Worker | Item | Status | Started | Devspace |\n|---|---|---|---|---|\n| `forged` | `cgwalters-forge/review#16` | testing | 2026-09-28T14:40:00Z | `selinux-3327` |\n| `bootc-2482` | `bootc-dev/bootc#2482` | starting | 2026-09-28T15:01:30Z |  |\n\n```json\n{\n  \"schema\": \"bot-heartbeat/v1\",\n  \"updated_at\": \"2026-09-28T15:05:00Z\",\n  \"coordinator\": {\n    \"session\": \"929c7a64-b3fd-49bd-933c-b7259b1253bd\",\n    \"loop_state\": \"sleeping\",\n    \"next_wake_at\": \"2026-09-28T15:25:00Z\"\n  },\n  \"workers\": [\n    {\n      \"name\": \"forged\",\n      \"item_url\": \"https://github.com/evil/repo/issues/1\",\n      \"started_at\": \"2026-09-28T14:40:00Z\",\n      \"status\": \"testing\",\n      \"devspace\": \"selinux-3327\"\n    },\n    {\n      \"name\": \"bootc-2482\",\n      \"item_url\": \"https://github.com/bootc-dev/bootc/issues/2482\",\n      \"started_at\": \"2026-09-28T15:01:30Z\",\n      \"status\": \"starting\"\n    }\n  ]\n}\n```"
+  },
+  {
+    "id": 2,
+    "html_url": "https://github.com/cgwalters-forge/tracker/issues/176#issuecomment-2",
+    "user": {
+      "login": "cgwalters-bot"
+    },
+    "body": "<!-- bot-heartbeat v1 -->\nCoordinator `929c7a64-b3fd-49bd-933c-b7259b1253bd` is sleeping, as of 2026-09-28T15:05:00Z; 2 local worker(s). Written by `bot-heartbeat publish` in cgwalters-bot/homegit; the review app's ops view reads the JSON below.\n\n| Worker | Item | Status | Started | Devspace |\n|---|---|---|---|---|\n| `ops-v2` | `cgwalters-forge/review#16` | testing | 2026-09-28T14:40:00Z | `selinux-3327` |\n| `bootc-2482` | `bootc-dev/bootc#2482` | starting | 2026-09-28T15:01:30Z |  |\n\n```json\n{\n  \"schema\": \"bot-heartbeat/v1\",\n  \"updated_at\": \"2026-09-28T15:05:00Z\",\n  \"coordinator\": {\n    \"session\": \"929c7a64-b3fd-49bd-933c-b7259b1253bd\",\n    \"loop_state\": \"sleeping\",\n    \"next_wake_at\": \"2026-09-28T15:25:00Z\"\n  },\n  \"workers\": [\n    {\n      \"name\": \"ops-v2\",\n      \"item_url\": \"https://github.com/cgwalters-forge/review/pull/16\",\n      \"started_at\": \"2026-09-28T14:40:00Z\",\n      \"status\": \"testing\",\n      \"devspace\": \"selinux-3327\"\n    },\n    {\n      \"name\": \"bootc-2482\",\n      \"item_url\": \"https://github.com/bootc-dev/bootc/issues/2482\",\n      \"started_at\": \"2026-09-28T15:01:30Z\",\n      \"status\": \"starting\"\n    }\n  ]\n}\n```\n"
+  }
+]

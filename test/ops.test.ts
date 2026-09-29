@@ -42,6 +42,9 @@ const HOUR = 60 * MIN;
 const runs = () => fixture<{ workflow_runs: RawRun[] }>("ops-runs.json").workflow_runs;
 const jobs = () => fixture<Record<string, RawJob[]>>("ops-jobs.json");
 const events = () => fixture<RawEvent[]>("ops-events.json");
+// What bin/bot-heartbeat publish wrote for a sample heartbeat, at 15:05Z.
+const heartbeat = () => fixture<unknown[]>("heartbeat-comments.json");
+const HEARTBEAT_PATH = "/repos/cgwalters-forge/tracker/issues/176/comments";
 
 function row(id: number): Devspace {
   const run = runs().find((r) => r.id === id);
@@ -301,6 +304,7 @@ describe("loadOps", () => {
       if (u.pathname.endsWith("/projectsV2/1/fields")) return { body: fields() };
       if (u.pathname.endsWith("/projectsV2/1/items")) return { body: [raw("In Progress", "bootc-dev", 1), raw("In Progress", "cgwalters-bot", 2), raw("Draft", "bootc-dev", 3)] };
       if (u.pathname === "/users/cgwalters-bot/events/public") return { body: events() };
+      if (u.pathname === HEARTBEAT_PATH) return { body: heartbeat() };
       return undefined;
     });
 
@@ -403,7 +407,7 @@ describe("loadOps", () => {
 });
 
 describe("opsView", () => {
-  async function view(agent: "missing" | "present" = "missing") {
+  async function view(agent: "missing" | "present" = "missing", local: unknown[] = heartbeat(), now = NOW) {
     const { fetchImpl } = scriptedFetch((_m, url) => {
       const u = new URL(url);
       if (u.pathname.endsWith("/workflows/devspace.yml/runs")) return { body: { workflow_runs: runs() } };
@@ -415,9 +419,10 @@ describe("opsView", () => {
       if (u.pathname.endsWith("/events/public")) {
         return { body: [{ id: "x", type: "IssueCommentEvent", created_at: "2026-09-28T15:00:00Z", repo: { name: "o/r" }, payload: { issue: { number: 1, title: "<img src=x onerror=alert(1)>" }, comment: { html_url: "javascript:alert(1)" } } }] };
       }
+      if (u.pathname === HEARTBEAT_PATH) return { body: local };
       return undefined;
     });
-    return opsView(await loadOps(new GitHub(async () => "t", fetchImpl), new Map(), NOW), NOW);
+    return opsView(await loadOps(new GitHub(async () => "t", fetchImpl), new Map(), NOW), now);
   }
 
   it("shows the live devspace with its host, size and a bounded time left", async () => {
@@ -436,12 +441,39 @@ describe("opsView", () => {
     assert.equal(el.querySelectorAll(".spark rect").length, 24);
   });
 
-  it("says agent.yml isn't there yet, and that local agents aren't published", async () => {
-    const text = (await view()).textContent ?? "";
+  it("says agent.yml isn't there yet, nor a heartbeat", async () => {
+    const text = (await view("missing", [])).textContent ?? "";
     assert.match(text, /Not deployed yet: bootc-dev\/cgwalters-devspace-sandbox has no agent\.yml/);
-    assert.match(text, /Local agents: not published yet/);
+    assert.match(text, /No heartbeat published yet/);
     assert.match(text, /Nothing is In Progress/);
     assert.match((await view("present")).textContent ?? "", /No agent runs yet/);
+  });
+
+  it("lists the local workers from the heartbeat, with links and elapsed time", async () => {
+    const el = await view();
+    const sec = [...el.querySelectorAll(".ops-sec")].find((s) => s.querySelector("h2")?.textContent === "Local agents");
+    assert.ok(sec);
+    assert.match(sec.querySelector(".coord")?.textContent ?? "", /Coordinator 929c7a64 sleeping · heartbeat 7m ago · wakes at .* · source ↗/);
+    assert.equal(sec.querySelector(".warn"), null);
+    const rows = [...sec.querySelectorAll(".lw")];
+    assert.deepEqual(rows.map((r) => r.querySelector(".name strong")?.textContent), ["ops-v2", "bootc-2482"]);
+    const a = rows[0]?.querySelector(".name a");
+    assert.equal(a?.getAttribute("href"), "https://github.com/cgwalters-forge/review/pull/16");
+    assert.equal(a?.textContent, "cgwalters-forge/review#16");
+    assert.match(rows[0]?.textContent ?? "", /testing.*⌁ selinux-3327.*32m 05s/);
+    assert.equal(rows[0]?.querySelector(".ds")?.getAttribute("title"), "its devspace, running (above)");
+    assert.match(rows[1]?.textContent ?? "", /starting.*10m 35s/);
+    tickOps(el, NOW + 60_000);
+    assert.match(sec.querySelector(".lw")?.textContent ?? "", /33m 05s/);
+  });
+
+  it("warns when the heartbeat is stale", async () => {
+    // 15:05Z with a wake at 15:25Z: fine until 15:30Z.
+    const fresh = await view("missing", heartbeat(), Date.parse("2026-09-28T15:29:00Z"));
+    assert.equal(fresh.querySelector(".ops-sec .warn"), null);
+    const stale = await view("missing", heartbeat(), Date.parse("2026-09-28T15:31:00Z"));
+    assert.match(stale.querySelector(".ops-sec .warn")?.textContent ?? "", /^Stale: no heartbeat since .* \(26m ago\)/);
+    assert.ok(stale.querySelector(".past-list.stale .lw"));
   });
 
   it("renders event text as text, and unsafe links as plain text", async () => {

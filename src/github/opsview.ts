@@ -1,11 +1,12 @@
-// The ops view: devspaces, agent runs, active work and the bot's recent
-// activity. Times that move (uptime, time left) are marked so tickOps
+// The ops view: devspaces, local agents, agent runs, active work and
+// the bot's recent activity. Times that move (uptime, time left) are marked so tickOps
 // can update them in place every second without a re-render.
 
 import { h, link, svg } from "../dom.ts";
 import { type IssueRef, type Item, parseIssueUrl } from "./board.ts";
-import { AGENT_WORKFLOW, BOT_LOGIN, DEVSPACE_REPO, DEVSPACE_WORKFLOW, OPS_EVENTS_SHOWN, OPS_WINDOW_HOURS } from "./config.ts";
+import { AGENT_WORKFLOW, BOT_LOGIN, DEVSPACE_REPO, DEVSPACE_WORKFLOW, HEARTBEAT_ISSUE, OPS_EVENTS_SHOWN, OPS_WINDOW_HOURS, TRACKER_REPO } from "./config.ts";
 import { PRESET_LABEL, PRESET_TITLE } from "./filter.ts";
+import { type Heartbeat, isStale, type LocalWorker } from "./heartbeat.ts";
 import {
   type AgentData,
   type AgentRun,
@@ -240,14 +241,71 @@ function agentsSection(data: AgentData | undefined, now: number, fromCache = fal
     sec.append(h("p", { class: "note" }, `Not deployed yet: ${DEVSPACE_REPO} has no ${AGENT_WORKFLOW} on its default branch. Runs show here once it lands.`));
   } else if (data.runs.length === 0) sec.append(h("p", { class: "note" }, "No agent runs yet."));
   else sec.append(h("ul", { class: "past-list" }, ...data.runs.map((r) => agentRow(r, now))));
+  return sec;
+}
+
+/** A local worker's status as a dot: busy, starting or waiting. */
+function workerStatus(s: string): HTMLElement {
+  const cls = s === "starting" ? "s-starting" : s === "waiting" ? "s-queued" : /^(working|testing|reviewing|landing)$/.test(s) ? "s-ready" : "s-unknown";
+  return status(cls, s, `the worker's last reported status: ${s}`);
+}
+
+function localRow(w: LocalWorker, live: ReadonlySet<string>, now: number): HTMLElement {
+  const since = Date.parse(w.startedAt);
+  return h(
+    "li",
+    { class: "lw" },
+    workerStatus(w.status),
+    h("span", { class: "name" }, h("strong", {}, w.name), " ", link(w.itemUrl, w.itemRef)),
+    h(
+      "span",
+      { class: "ds", title: w.devspace ? (live.has(w.devspace) ? "its devspace, running (above)" : "its devspace, not among the running ones") : "no devspace" },
+      w.devspace ? `⌁ ${w.devspace}` : "",
+    ),
+    h("span", { class: "up", title: `started ${time(w.startedAt)}` }, h("span", { class: TICK_SINCE, [ATTR_T]: String(since) }, duration(now - since))),
+  );
+}
+
+const LOOP_TITLE: Record<string, string> = {
+  polling: "reading notifications, the inbox and the watch sweep",
+  working: "acting on what it found: dispatching, reviewing, promoting",
+  sleeping: "waiting for its next poll, or for a worker to finish",
+  stopped: "the session ended",
+};
+
+function localSection(hb: Heartbeat | null | undefined, devspaces: DevspaceData | undefined, now: number, fromCache = false): HTMLElement {
+  const sec = section("Local agents");
+  if (hb === undefined) {
+    sec.append(h("p", { class: "note" }, unavailable(fromCache)));
+    return sec;
+  }
+  if (hb === null) {
+    sec.append(h("p", { class: "note" }, `No heartbeat published yet. The coordinator's workers run on its own machine, which this page can't see; they show here once it publishes them to ${TRACKER_REPO}#${HEARTBEAT_ISSUE}.`));
+    return sec;
+  }
+  const stale = isStale(hb, now);
+  const wake = hb.nextWakeAt && hb.loopState === "sleeping" && Date.parse(hb.nextWakeAt) > now ? ` · wakes at ${clock(hb.nextWakeAt)}` : "";
   sec.append(
     h(
       "p",
-      { class: "local" },
-      status("s-unknown", "Local agents", "the coordinator's own workers"),
-      ": not published yet. The coordinator's workers run on its own machine, which this page can't see; they show up here only through the devspaces they start.",
+      { class: "coord" },
+      "Coordinator ",
+      h("code", { title: hb.session }, hb.session.slice(0, 8)),
+      " ",
+      h("span", { class: "loop", title: LOOP_TITLE[hb.loopState] ?? "" }, hb.loopState),
+      ` · heartbeat ${age(hb.updatedAt, now)} ago${wake} · `,
+      hb.commentUrl ? link(hb.commentUrl, "source ↗") : `${TRACKER_REPO}#${HEARTBEAT_ISSUE}`,
     ),
   );
+  if (stale) {
+    sec.append(h("p", { class: "warn" }, `Stale: no heartbeat since ${time(hb.updatedAt)} (${age(hb.updatedAt, now)} ago). The coordinator's session may have ended or be stuck, so this list may be out of date.`));
+  }
+  if (hb.workers.length === 0) sec.append(h("p", { class: "note" }, hb.loopState === "stopped" ? "The coordinator stopped." : "No local workers running."));
+  else {
+    const live = new Set((devspaces?.devspaces ?? []).filter((d) => d.phase !== "done").map((d) => d.name));
+    sec.append(h("ul", { class: `past-list${stale ? " stale" : ""}` }, ...hb.workers.map((w) => localRow(w, live, now))));
+  }
+  if (hb.skipped) sec.append(h("p", { class: "fine" }, `${hb.skipped} malformed worker entr${hb.skipped === 1 ? "y" : "ies"} not shown.`));
   return sec;
 }
 
@@ -342,6 +400,7 @@ export function opsView(ops: Ops | undefined, now: number = Date.now()): HTMLEle
   if (t) root.append(t);
   root.append(
     devspacesSection(ops.devspaces, now, ops.fromCache),
+    localSection(ops.local, ops.devspaces, now, ops.fromCache),
     agentsSection(ops.agents, now, ops.fromCache),
     workSection(ops.work, now, ops.fromCache),
     eventsSection(ops.events, now, ops.fromCache),
