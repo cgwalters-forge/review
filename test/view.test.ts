@@ -11,7 +11,7 @@ import { type Item, queueItems } from "../src/github/board.ts";
 import type { Context, RunStatus } from "../src/github/backend.ts";
 import { createRenderer } from "../src/markdown.ts";
 import { buildEntries, type Entry } from "../src/github/queue.ts";
-import { age, answerState, type AnswerState, contextView, type ItemViewHandlers, itemView, queueView, STATE_LABEL } from "../src/github/view.ts";
+import { age, answerState, type AnswerState, CAUGHT_UP_CLASS, contextView, type ItemViewHandlers, itemView, queueView, STATE_LABEL } from "../src/github/view.ts";
 import { installDom, rawItems } from "./helpers.ts";
 
 const win = installDom();
@@ -157,7 +157,21 @@ describe("queueView", () => {
   });
 
   it("says when nothing needs you", () => {
-    assert.match(queueView([], () => undefined).textContent ?? "", /Nothing needs you/);
+    assert.match(queueView([], () => undefined).textContent ?? "", /All caught up: nothing needs you/);
+    assert.ok(queueView([], () => undefined).querySelector(`.${CAUGHT_UP_CLASS}`));
+  });
+
+  it("says all caught up when only answered or closed asks are left, and lists them", () => {
+    const entry = (key: string, settled: boolean): Entry => ({ key, kind: "question", title: key, where: "t#1", href: `#item/${key}`, settled });
+    const settled = queueView([entry("PVTI_a", true), entry("PVTI_b", true)], () => undefined);
+    assert.match(settled.querySelector(`.${CAUGHT_UP_CLASS}`)?.textContent ?? "", /All caught up/);
+    assert.equal(settled.querySelectorAll(".row").length, 2);
+    const open = queueView([entry("PVTI_a", true), entry("PVTI_b", false)], () => undefined);
+    assert.equal(open.querySelector(`.${CAUGHT_UP_CLASS}`), null);
+    assert.equal(queueView(entriesOf(items()), labels(new Set(), new Set())).querySelector(`.${CAUGHT_UP_CLASS}`), null);
+    // The bot's turns don't wait on him either.
+    const botTurn: Entry = { key: "pr:o/r#1", kind: "pr", title: "t", where: "o/r#1", href: "#pr/o/r/1", wait: { reasons: [], onBot: true } };
+    assert.ok(queueView([entry("PVTI_a", true), botTurn], () => undefined).querySelector(`.${CAUGHT_UP_CLASS}`));
   });
 });
 

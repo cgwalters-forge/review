@@ -1,5 +1,6 @@
 // Per-viewer conveniences kept in localStorage: the queue's filter, the
-// diff layout, whether the review guide is shown, which files he marked
+// diff layout, whether the review guide is shown, whether the app moves
+// on to the next entry after an action, which files he marked
 // viewed, which guide hotspots he has seen, and his unsent line comments. Storage can be
 // missing, full or blocked (private windows, tests), so every access is
 // guarded and the app works the same without it, only forgetting more.
@@ -68,6 +69,15 @@ export function loadGuideOn(): boolean {
 
 export function saveGuideOn(on: boolean): void {
   save("guide.on", on);
+}
+
+/** Whether to open the next entry after acting on one; on unless he turned it off. */
+export function loadAdvance(): boolean {
+  return load("advance.on", true, (v): v is boolean => typeof v === "boolean");
+}
+
+export function saveAdvance(on: boolean): void {
+  save("advance.on", on);
 }
 
 /**

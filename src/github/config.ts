@@ -98,6 +98,13 @@ export const POLL_INTERVAL_MS = 30_000;
 export const FORGE_POLL_INTERVAL_MS = 60_000;
 /** ... and at most this often when asked to refresh (r, or after a review). */
 export const FORGE_MIN_INTERVAL_MS = 10_000;
+/**
+ * His own review shows in the queue for at most this long before GitHub's
+ * reads confirm it; they can lag a write (search more than most).
+ */
+export const OPTIMISTIC_TTL_MS = 5 * 60_000;
+/** How long the "Done: ... → next" notice stays after moving on. */
+export const DONE_NOTICE_MS = 15_000;
 /** Parallel requests when refreshing PR verdicts. */
 export const FETCH_CONCURRENCY = 6;
 /** A file's diff starts collapsed above this many lines (files build lazily, so this is for reading, not speed). */

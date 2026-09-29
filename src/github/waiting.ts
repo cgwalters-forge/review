@@ -52,6 +52,20 @@ export interface PrWait {
   runs?: RunRef[];
 }
 
+/**
+ * What a PR outside the forge's drafts waits on after his review from
+ * here, until a re-read says: undefined once nothing does. A review
+ * answers a review request and an update since his change request, and
+ * an approval is also the sign-off a re-sign asks for; a rerun is left.
+ * Requesting changes makes it the bot's turn.
+ */
+export function afterReview(wait: PrWait, verdict: "approved" | "changes-requested"): PrWait | undefined {
+  const answered: readonly PrReason[] = verdict === "approved" ? ["review-requested", "updated", "resign"] : ["review-requested", "updated"];
+  const reasons = wait.reasons.filter((r) => !answered.includes(r));
+  const botTurn = verdict === "changes-requested" || wait.onBot;
+  return reasons.length || botTurn ? { ...wait, reasons, onBot: botTurn } : undefined;
+}
+
 /** The owners that are the bot itself: no DCO or maintainer reruns there. */
 const OWN_OWNERS: readonly string[] = [BOT_LOGIN, FORGE_ORG];
 

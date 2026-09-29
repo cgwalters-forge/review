@@ -23,9 +23,11 @@ import {
   submitAskedReview,
   viewer,
 } from "./backend.ts";
+import { decideAdvance, EDITED_ATTR, type Origin, overlayVerdicts, type PendingVerdict, pickNext, queueStops, writingElsewhere } from "./advance.ts";
 import { cachedLabel, type CacheSession, forgetCache, openCache } from "./cache.ts";
 import {
   CLASSIC_SCOPES,
+  DONE_NOTICE_MS,
   FETCH_CONCURRENCY,
   FORGE_MIN_INTERVAL_MS,
   FORGE_POLL_INTERVAL_MS,
@@ -37,7 +39,7 @@ import {
   RATE_LOW_FRACTION,
   THEME_KEY,
 } from "./config.ts";
-import { composeReviews, type ForgePr, refKey, VERDICT_LABEL } from "./forge.ts";
+import { composeReviews, type ForgePr, refKey, type ReviewAction, VERDICT_LABEL } from "./forge.ts";
 import type { QueueFilter } from "./filter.ts";
 import { type Command, HELP, keyCommand, parseRoute, type Route, type RouteInfo } from "./keys.ts";
 import { type HarnessCache, loadNews, type News } from "./news.ts";
@@ -46,6 +48,7 @@ import { deleteCacheDatabase, IdbStore } from "./idbstore.ts";
 import { type JobCache, loadOps, type Ops } from "./ops.ts";
 import { opsView, tickOps } from "./opsview.ts";
 import { saveMine } from "./mine.ts";
+import { MINE_CLASS } from "./mineview.ts";
 import {
   loadFileLines,
   loadForgePrs,
@@ -63,11 +66,11 @@ import {
 } from "./prs.ts";
 import { APPROVE_ACTION, canReview, type PrPane, prView, REVIEW_FORM_CLASS, type ReviewAskInfo } from "./prview.ts";
 import { buildEntries, type Entry, itemHref, onBot } from "./queue.ts";
-import { loadFilter, saveFilter } from "./store.ts";
+import { loadAdvance, loadFilter, saveAdvance, saveFilter } from "./store.ts";
 import { type Decision, parseDecision, sortDecisions } from "./triage.ts";
 import { decisionsView, triageView } from "./triageview.ts";
 import { answerState, type BoardHref, type ContextHooks, CONTEXT_CLASS, contextView, itemView, queueView, ROW_CLASS, ROW_KEY_ATTR, type RowLabel, STATE_LABEL } from "./view.ts";
-import { ON_BOT_LABEL, REASON_LABEL } from "./waiting.ts";
+import { afterReview, ON_BOT_LABEL, REASON_LABEL } from "./waiting.ts";
 
 const render = createRenderer(window);
 
@@ -102,6 +105,8 @@ interface State {
   verdictsRunning: boolean;
   waitingRunning: boolean;
   polling: boolean;
+  /** Poll again as soon as the running poll ends: an action changed what it read. */
+  pollAgain: boolean;
   /** The ranked queue. */
   entries: Entry[];
   /** The queue row the keyboard is on. */
@@ -110,12 +115,16 @@ interface State {
   sent: Set<string>;
   /** Run URLs whose rerun request is in flight. */
   rerunning: Set<string>;
+  /** Runs rerun from this tab ("<chore node id> <run url>"), so a chore with several knows when each went out. */
+  rerunsSent: Set<string>;
   /** Open questions he has answered on GitHub and the bot hasn't acted on, by node id. */
   answered: Set<string>;
   /** Bumped per board change, so an older answered read can't land over a newer one. */
   answeredSeq: number;
   /** PRs reviewed from this tab, by refKey. */
   reviewed: Set<string>;
+  /** Those reviews' verdicts, shown until GitHub's reads agree (see overlayVerdicts); by refKey. */
+  pending: Map<string, PendingVerdict>;
   /** Context of opened items, by node id. */
   context: Map<string, Context>;
   /** Loaded PR details, by refKey. */
@@ -141,6 +150,15 @@ interface State {
   /** The open PR's pane, which handles its own keys. */
   pane?: PrPane;
   help: boolean;
+  /** The location hash last routed to, to tell which list an entry was opened from. */
+  hash: string;
+  /** The list the open entry was opened from, which an action there moves on in. */
+  origin?: Origin;
+  /** Whether an action opens the next entry (a setting, on by default). */
+  advance: boolean;
+  /** Where the app moved to after an action, while its "Done" notice shows. */
+  doneAt?: string;
+  doneTimer?: ReturnType<typeof setTimeout>;
   lastPoll?: Date;
   /** The queue shows cached data fetched at this time (epoch ms), until the board is revalidated. */
   cachedAt?: number;
@@ -352,9 +370,13 @@ function renderRoute(state: State): void {
   const entry = state.entries.find((e) => e.item?.nodeId === item.nodeId);
   const asks = entry?.children ?? [];
   const action = itemAction(item, asks.filter((a) => a.item?.state !== "closed").length);
+  const hash = window.location.hash;
   const done = (url: string) => {
+    const from = byId("view").querySelector("form.answer");
     state.sent.add(item.nodeId);
+    state.context.delete(item.nodeId);
     void refreshContext(state, item);
+    acted(state, { key: `item:${item.nodeId}`, title: item.title, hash, from });
     return url;
   };
   showMain(
@@ -388,10 +410,19 @@ async function rerun(state: State, item: Item, url: string): Promise<string> {
   if (action.kind !== "rerun") throw new Error("this chore asks for no reruns");
   if (state.rerunning.has(url)) throw new Error("a rerun of this run is already in flight");
   state.rerunning.add(url);
+  const hash = window.location.hash;
+  // Taken now: a board change or another rerun can drop the context meanwhile.
+  const runs = state.context.get(item.nodeId)?.runs ?? [];
+  const sentKey = (u: string) => `${item.nodeId} ${u}`;
   try {
     const posted = await rerunFailedJobs(state.gh, action.ref, url);
-    state.sent.add(item.nodeId);
+    state.rerunsSent.add(sentKey(url));
+    // A chore can list several runs: it is done once each that can be rerun was.
+    const left = runs.some((r) => r.problem === undefined && !state.rerunsSent.has(sentKey(r.run.url)));
+    if (!left) state.sent.add(item.nodeId);
+    state.context.delete(item.nodeId);
     void refreshContext(state, item);
+    acted(state, { key: `item:${item.nodeId}`, title: item.title, hash, from: null, ...(left ? { stillWaiting: true } : {}) });
     return posted.url;
   } finally {
     state.rerunning.delete(url);
@@ -456,6 +487,7 @@ function renderPr(state: State, ref: { owner: string; repo: string; number: numb
         hooks: { rerun: (url: string) => rerunPr(state, ref, url, runs), rerunning: (url: string) => state.rerunning.has(url) },
       }
     : undefined;
+  const hash = window.location.hash;
   const pane = prView(detail, entry, render, {
     review: async (action, text, draft, comments, sent) => {
       const reviews = composeReviews(action, text, detail.head, { draft, comments });
@@ -467,29 +499,36 @@ function renderPr(state: State, ref: { owner: string; repo: string; number: numb
           ? await submitAskedReview(state.gh, found.ref, ref, found.target.head, reviews, onSent)
           : await submitReview(state.gh, ref, reviews, onSent);
       state.reviewed.add(key);
-      state.forceForge = true;
+      // Show its effect now: search and the reviews API lag a write.
+      const verdict = REVIEW_VERDICT[action];
+      if (verdict) {
+        state.pending.set(key, { state: verdict, head: detail.head, at: Date.now() });
+        // Read its reviews again on the next poll, even before search notices.
+        state.verdicts.delete(key);
+        // A PR listed for what waits on him has no verdict overlay: apply the review to its wait.
+        state.waiting = state.waiting.flatMap((w) => {
+          if (refKey(w.pr.ref) !== key) return [w];
+          const wait = afterReview(w.wait, verdict);
+          return wait ? [{ ...w, wait }] : [];
+        });
+      }
       // Tell the bot on its review ask. The review went out either way.
       const note = found ? reviewComment(action, ref, detail.head, url) : undefined;
       if (found && note) {
-        postAskComment(state.gh, found.ref, "review", note)
-          .then(() => {
-            state.sent.add(found.item.nodeId);
-          })
-          .catch((e: unknown) => {
-            state.error = `Your review went out, but the comment telling the bot on ${refKey(found.ref)} didn't: ${message(e)}. Comment there yourself.`;
-            renderChrome(state);
-          });
-      }
-      // Our own review moved updated_at: note the new one so it isn't
-      // reported as a change, without re-rendering the form.
-      void loadPrDetail(state.gh, ref)
-        .then((d) => {
-          state.details.set(key, d);
-          if (state.shownPr?.key === key) state.shownPr.updatedAt = d.updatedAt;
-        })
-        .catch(() => {
-          // The next open reloads it.
+        // Answered as far as the queue goes, before the comment lands.
+        state.sent.add(found.item.nodeId);
+        postAskComment(state.gh, found.ref, "review", note).catch((e: unknown) => {
+          // Not answered after all: the ask is listed again.
+          state.sent.delete(found.item.nodeId);
+          rebuildEntries(state);
+          update(state, false, false);
+          state.error = `Your review went out, but the comment telling the bot on ${refKey(found.ref)} didn't: ${message(e)}. Comment there yourself.`;
+          renderChrome(state);
         });
+      }
+      const from = byId("view").querySelector(`form.${REVIEW_FORM_CLASS}`);
+      acted(state, { key: `pr:${key}`, title: detail.title, hash, from });
+      void refetchPr(state, ref, from, false);
       return url;
     },
     loadRange: (base, to) => loadRangeFiles(state.gh, ref, base, to),
@@ -499,14 +538,139 @@ function renderPr(state: State, ref: { owner: string; repo: string; number: numb
       scopes: () => state.gh.scopes,
       save: async (edit, committer, { promote, ownText }, progress) => {
         const r = await saveMine(state.gh, detail, edit, { committer, ownText, promote, scopes: state.gh.scopes, progress });
-        // The head, title and body changed: the queue and this PR need a fresh read (r).
-        state.forceForge = true;
+        // The head, title and body changed: the queue and this PR need a fresh read.
+        state.details.delete(key);
+        const from = byId("view").querySelector(`.${MINE_CLASS}`);
+        acted(state, { key: `pr:${key}`, title: detail.title, hash, from });
+        void refetchPr(state, ref, from, true);
         return r;
       },
     },
   }, { reviewedHere: state.reviewed.has(key), ...(ask ? { ask } : {}), ...(reruns ? { reruns } : {}) });
   state.pane = pane;
   showMain(pane.el);
+}
+
+/** The verdict a review of his gives the PR; a comment-only one leaves it waiting on him. */
+const REVIEW_VERDICT: Record<ReviewAction, "approved" | "changes-requested" | undefined> = {
+  approve: "approved",
+  "request-changes": "changes-requested",
+  comment: undefined,
+};
+
+/**
+ * Re-read a PR after an action on it. With `redraw` (its head changed),
+ * show it again if it is still open, unless he is writing on its page
+ * (other than in `from`, whose text went out): the next poll's note then
+ * offers the reload. Without, a page he stayed on keeps its review
+ * status, expanded diffs and place.
+ */
+async function refetchPr(state: State, ref: { owner: string; repo: string; number: number }, from: Element | null, redraw: boolean): Promise<void> {
+  const key = refKey(ref);
+  let fresh: PrDetail;
+  try {
+    fresh = await loadPrDetail(state.gh, ref);
+  } catch {
+    // The next open reloads it.
+    return;
+  }
+  state.details.set(key, fresh);
+  state.prCachedAt.delete(key);
+  const r = route();
+  if (state.closed || r.route !== "pr" || refKey(r.ref) !== key) return;
+  if (!redraw || writingElsewhere(byId("view"), from, document.activeElement)) {
+    // Our own write moved updated_at: don't report it as a change.
+    if (state.shownPr?.key === key) state.shownPr.updatedAt = fresh.updatedAt;
+    return;
+  }
+  renderRoute(state);
+}
+
+/** What an action was done on, for acted(). */
+interface Done {
+  /** The entry's key in the queue, e.g. `pr:owner/repo#n` or `item:PVTI_...`. */
+  key: string;
+  title: string;
+  /** The location hash of the view it was done on. */
+  hash: string;
+  /** The part of that view whose text went out with it, if any. */
+  from: Element | null;
+  /** The entry still waits on him whatever the queue says, e.g. a chore with runs left to rerun. */
+  stillWaiting?: boolean;
+}
+
+/** "" and "#" are both the bare queue. */
+const sameHash = (a: string, b: string) => a.replace(/^#$/, "") === b.replace(/^#$/, "");
+
+/** The queue, as the list an entry was opened from. */
+function queueOrigin(state: State, hash: string): Origin {
+  const filter = state.filter;
+  return { hash, stops: queueStops(state.entries, filter), live: () => queueStops(state.entries, filter) };
+}
+
+/**
+ * After an action succeeded (the caller has applied what it knows of its
+ * effect to the state): rebuild the queue with that effect, re-read the
+ * board and the forge now rather than at the next poll, and move on to
+ * the next entry of the list he came from, if the setting is on, the
+ * entry no longer waits on him, he is still on its view and he isn't
+ * writing something else there.
+ */
+function acted(state: State, done: Done): void {
+  if (state.closed) return;
+  rebuildEntries(state);
+  // Its own effect isn't news to the page it was done on.
+  if (state.shownPr && done.key === `pr:${state.shownPr.key}`) state.shownPr.wait = JSON.stringify(prEntry(state, state.shownPr.key)?.wait);
+  refreshSoon(state);
+  const origin = state.origin ?? queueOrigin(state, "#");
+  const live = origin.live();
+  const next = pickNext(origin.stops, done.key, live);
+  const decision = decideAdvance(
+    {
+      enabled: state.advance,
+      ok: true,
+      stillThere: sameHash(window.location.hash, done.hash),
+      writing: writingElsewhere(byId("view"), done.from, document.activeElement),
+      stillWaiting: done.stillWaiting ?? live.some((s) => s.key === done.key && s.waiting),
+    },
+    next,
+  );
+  switch (decision.kind) {
+    case "go":
+      moveOn(state, decision.to.href, `Done: ${done.title} → ${decision.to.title}`, done.hash);
+      return;
+    case "caught-up":
+      moveOn(state, origin.hash, `Done: ${done.title}. All caught up.`, done.hash);
+      return;
+    case "stay":
+      showDone(state, decision.why === "writing" ? `Done: ${done.title}. Staying here: you have unsent text on this page.` : `Done: ${done.title}.`);
+      // Show the effect wherever he is, without touching an open form.
+      update(state, false, false);
+      return;
+  }
+}
+
+/** Go to `hash` after an action, with a notice saying so and a link back to where it was done. */
+function moveOn(state: State, hash: string, text: string, back: string): void {
+  showDone(state, text, back);
+  state.doneAt = hash;
+  if (sameHash(window.location.hash, hash)) renderRoute(state);
+  else window.location.hash = hash;
+}
+
+/** The small "Done: …" notice, with an optional link back. */
+function showDone(state: State, text: string, back?: string): void {
+  const el = byId("done");
+  el.replaceChildren(text, ...(back !== undefined ? [" · ", h("a", { href: back || "#" }, "back")] : []));
+  el.hidden = false;
+  clearTimeout(state.doneTimer);
+  state.doneTimer = setTimeout(() => hideDone(state), DONE_NOTICE_MS);
+}
+
+function hideDone(state: State): void {
+  clearTimeout(state.doneTimer);
+  delete state.doneAt;
+  byId("done").hidden = true;
 }
 
 /**
@@ -826,6 +990,12 @@ async function pollVerdicts(state: State): Promise<void> {
   state.verdictsRunning = true;
   try {
     const verdicts = await refreshVerdicts(state.gh, state.prs, state.verdicts);
+    // Until a read confirms his review from here, read its PR again every
+    // time: search may have moved on while the reviews API still lagged.
+    for (const k of state.pending.keys()) {
+      const v = verdicts.get(k);
+      if (v) verdicts.set(k, { ...v, updatedAt: "" });
+    }
     const sig = (v: ReadonlyMap<string, VerdictEntry>) => JSON.stringify([...v].map(([k, e]) => [k, e.head, e.verdict.state, e.botReplied === true]).sort());
     const changed = sig(verdicts) !== sig(state.verdicts);
     state.verdicts = verdicts;
@@ -898,7 +1068,8 @@ async function refreshAnswered(state: State, items: readonly Item[]): Promise<vo
 }
 
 function rebuildEntries(state: State): void {
-  const verdicts = new Map([...state.verdicts].map(([k, v]) => [k, v.verdict]));
+  const { verdicts, pending } = overlayVerdicts(state.verdicts, state.pending, Date.now());
+  state.pending = pending;
   const replied = new Set([...state.verdicts].filter(([, v]) => v.botReplied).map(([k]) => k));
   state.entries = buildEntries(state.items, state.prs, verdicts, state.forgeKnown, new Set([...state.answered, ...state.sent]), {
     others: state.waiting,
@@ -988,8 +1159,20 @@ async function poll(state: State): Promise<void> {
   } finally {
     // Whatever went wrong above, keep polling.
     state.polling = false;
-    schedule(state);
+    if (state.pollAgain) {
+      state.pollAgain = false;
+      void poll(state);
+    } else {
+      schedule(state);
+    }
   }
+}
+
+/** Re-read the board and the forge now, not at the next poll: an action changed them. */
+function refreshSoon(state: State): void {
+  state.forceForge = true;
+  if (state.polling) state.pollAgain = true;
+  else void poll(state);
 }
 
 function schedule(state: State): void {
@@ -1098,6 +1281,28 @@ function installKeys(state: State): void {
   });
 }
 
+/**
+ * The auto-advance setting's header button, and the marks writingElsewhere
+ * reads: a field he typed into holds his text, not a prefilled one.
+ */
+function installAdvance(state: State): void {
+  const button = byId("advance");
+  const show = () => {
+    button.textContent = `Auto-next: ${state.advance ? "on" : "off"}`;
+    button.setAttribute("aria-pressed", String(state.advance));
+  };
+  show();
+  button.hidden = false;
+  button.onclick = () => {
+    state.advance = !state.advance;
+    saveAdvance(state.advance);
+    show();
+  };
+  byId("view").addEventListener("input", (ev) => {
+    if (ev.target instanceof HTMLElement) ev.target.setAttribute(EDITED_ATTR, "");
+  });
+}
+
 type Theme = "auto" | "light" | "dark";
 const THEMES: readonly Theme[] = ["auto", "light", "dark"];
 
@@ -1170,16 +1375,21 @@ async function start(source: TokenSource): Promise<void> {
     verdictsRunning: false,
     waitingRunning: false,
     polling: false,
+    pollAgain: false,
     entries: [],
     sent: new Set(),
     answered: new Set(),
     rerunning: new Set(),
+    rerunsSent: new Set(),
     answeredSeq: 0,
     reviewed: new Set(),
+    pending: new Map(),
     context: new Map(),
     details: new Map(),
     reloadedFor: new Map(),
     help: false,
+    hash: window.location.hash,
+    advance: loadAdvance(),
     selected: undefined,
     harness: new Map(),
     opsStarted: 0,
@@ -1216,11 +1426,25 @@ async function start(source: TokenSource): Promise<void> {
     void Promise.allSettled([forgetCache(session, () => deleteCacheDatabase()), source.signOut()]).then(() => window.location.reload());
   };
   window.addEventListener("hashchange", () => {
+    const from = state.hash;
+    state.hash = window.location.hash;
+    if (state.doneAt === undefined || !sameHash(state.hash, state.doneAt)) hideDone(state);
+    else delete state.doneAt;
+    // An entry opened from the queue: an action on it moves on in the queue's order.
+    const to = route().route;
+    // From anywhere else (news, ops, a link), no list of his: acted() then
+    // follows the queue's order. Moving between entries keeps the list.
+    if (to === "item" || to === "pr") {
+      const came = parseRoute(from).route;
+      if (came === "queue") state.origin = queueOrigin(state, from || "#");
+      else if (came !== "item" && came !== "pr") delete state.origin;
+    }
     renderRoute(state);
     if (route().route === "queue") markSelected(state, true);
     else window.scrollTo(0, 0);
   });
   installKeys(state);
+  installAdvance(state);
   document.addEventListener("visibilitychange", () => {
     if (!document.hidden) void poll(state);
     else clearTimeout(state.timer);
