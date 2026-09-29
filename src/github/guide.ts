@@ -5,6 +5,11 @@
 // head the guide names, and shows everything in it as plain text: the
 // guide is advice written by a model that read untrusted code, so it
 // may carry anything that code said.
+//
+// TODO(#19): replace the guide with the bot pre-reviewing its own PR.
+// GitHub reviews already attach comments to code lines, so hotspots
+// should be ordinary review comments by the bot, walked from the review
+// threads, instead of JSON in a marker.
 
 import { BOT_LOGIN } from "./config.ts";
 import type { RawReview } from "./forge.ts";
