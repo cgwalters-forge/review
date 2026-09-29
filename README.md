@@ -133,6 +133,27 @@ infra** is the bot's own harness. The filter is in the URL (`#composefs`,
 `#infra+P0`, `#org:bootc-dev`) and remembered per browser, so `#` and
 `u` come back to it.
 
+The **triage** view (`t`, or Triage in the header) is the whole board,
+not only what waits on you: every item that isn't Done, read live
+with the board's Theme, Verdict and Verdict target fields (looked up
+by name; a board without them still loads, and the view says which
+are missing). First the P0 lane, every open P0 item; then one
+collapsible group per Theme, with its item count and a bar of its
+verdicts (keep, merge into another item, park, close), and last the
+items with no Theme, the untriaged bucket. Each item shows its
+priority, status and verdict chip, and for merge and close the
+target it points at; an item that is in the queue opens there. The
+verdict chips above filter every group (`#triage/merge`, and
+`#triage/none` for items without a verdict).
+
+The **decisions** view (`q`) lists the open questions in the tracker
+that the bot also labels `decision`, titled "D<n>: …", in D order.
+Each shows its options with the recommended one marked, a note field,
+and an expandable list of the items it unblocks (the `Unblocks:` list
+in its body), and is answered in place exactly like a question in the
+queue: a comment by you whose first line is the letter you picked,
+followed by your note. Only the `cgwalters` login gets the forms.
+
 The **news** pane (`n`) lists recently merged PRs in the bot
 (cgwalters-bot/homegit), its runner (cgwalters-devspace-sandbox, both
 copies) and this app, newest first, with the first paragraph of each
@@ -169,7 +190,7 @@ bot's recent public activity. The runner repo
 is outside cgwalters-forge, so a fine-grained token scoped to it can't
 read the devspaces; a classic token can.
 
-Keys: `j`/`k` move, `o` opens, `u` goes back, `r` reloads, `n` news, `d` ops; in a PR,
+Keys: `j`/`k` move, `o` opens, `u` goes back, `r` reloads, `t` triage, `q` decisions, `n` news, `d` ops; in a PR,
 `n`/`p` step through files and `j`/`k` through hunks, `v` marks a file
 viewed, `x` folds one, `s` switches unified and split, `[`/`]` step
 through the commits, `g` starts (or leaves) the guided review, whose

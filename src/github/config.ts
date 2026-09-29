@@ -59,6 +59,21 @@ export const TRIAGE_FIELD = {
 /** The Status of a finished item; the triage view shows everything else. */
 export const DONE = "Done";
 
+/** The board's Theme options, in the order the triage view lists them; others follow. */
+export const TRIAGE_THEMES: readonly string[] = [
+  "composefs-stable",
+  "image-builder",
+  "composefs-rs",
+  "harness",
+  "devspace",
+  "review-tooling",
+  "bootc-ci",
+  "ostree-family",
+];
+
+/** The board's Verdict options: keep it, merge it into its target, park it, or close it (for its target, if any). */
+export const VERDICTS = ["keep", "merge", "park", "close"] as const;
+export type Verdict = (typeof VERDICTS)[number];
 
 /**
  * The public repository where every board item that isn't an upstream
@@ -71,6 +86,11 @@ export const QUESTION_LABEL = "question";
 export const REVIEW_LABEL = "review";
 /** ... on an issue asking him for any other action. */
 export const CHORE_LABEL = "chore";
+/**
+ * The label the bot adds to a question that is a triage decision, titled
+ * "D<n>: ..." and listing the items it unblocks (see triage.ts).
+ */
+export const DECISION_LABEL = "decision";
 
 /** Poll every this many ms while the tab is visible. */
 export const POLL_INTERVAL_MS = 30_000;

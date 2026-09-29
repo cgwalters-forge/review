@@ -232,7 +232,9 @@ function sendingForm(form: HTMLElement, button: HTMLButtonElement, status: HTMLE
       .then((url) => {
         status.textContent = "Sent: ";
         status.append(link(url, url));
-        // The button stays disabled: one tap, one answer.
+        // The button stays disabled: one tap, one answer. What's left in
+        // the form was sent, so it's no draft (see decisionDraft).
+        form.dataset.sent = "true";
       })
       .catch((e: unknown) => {
         status.textContent = `Not sent: ${e instanceof Error ? e.message : String(e)}`;
@@ -241,14 +243,19 @@ function sendingForm(form: HTMLElement, button: HTMLButtonElement, status: HTMLE
   });
 }
 
-function answerForm(ref: IssueRef, question: Question, answered: boolean, handlers: ItemViewHandlers): HTMLElement {
+/**
+ * The answer form for a question: its options as radio buttons, the
+ * recommended one marked, and his own text. `idPrefix` keeps element ids
+ * unique when a page shows several forms.
+ */
+export function answerForm(ref: IssueRef, question: Question, answered: boolean, send: (answer: Answer) => Promise<string>, idPrefix = ""): HTMLElement {
   const { options } = question;
   const form = h("form", { class: "answer" });
   const status = h("p", { class: "status", role: "status" });
   if (options.length) {
     const fs = h("fieldset", {}, h("legend", {}, "Choose"));
     for (const o of options) {
-      const id = `opt-${o.letter}`;
+      const id = `${idPrefix}opt-${o.letter}`;
       fs.append(
         h(
           "label",
@@ -279,7 +286,7 @@ function answerForm(ref: IssueRef, question: Question, answered: boolean, handle
       return undefined;
     }
     if (sent && !window.confirm("You already answered this. Send another answer?")) return undefined;
-    return handlers.send(answer).then((url) => {
+    return send(answer).then((url) => {
       sent = true;
       return url;
     });
@@ -520,7 +527,7 @@ function actionView(item: Item, data: ItemViewData, handlers: ItemViewHandlers):
         action.question.optionsProblem
           ? h("p", { class: "warn" }, `The question's options can't all be offered: ${action.question.optionsProblem}. Read the question below, and answer in your own words if an option is missing.`)
           : null,
-        answerForm(action.ref, action.question, answered, handlers),
+        answerForm(action.ref, action.question, answered, (a) => handlers.send(a)),
       ];
     case "review":
       return [
