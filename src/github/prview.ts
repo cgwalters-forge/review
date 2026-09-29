@@ -22,6 +22,7 @@ import {
 } from "./forge.ts";
 import { type Guide, type GuideState, SEVERITY_LABEL, worst } from "./guide.ts";
 import type { Command } from "./keys.ts";
+import { type MineHooks, mineSection } from "./mineview.ts";
 import { type Commit, type FileDiff, MAX_COMPARE_FILES, type PrDetail } from "./prs.ts";
 import type { Entry } from "./queue.ts";
 import {
@@ -58,6 +59,8 @@ export interface PrViewHandlers {
   loadRange(base: string, to: string): Promise<FileDiff[]>;
   /** A file's lines at a commit. */
   loadLines(path: string, sha: string): Promise<string[]>;
+  /** Taking over the PR's text as his (see mine.ts); without it, the pane doesn't offer that. The pane supplies `unseen`. */
+  mine?: Omit<MineHooks, "unseen">;
 }
 
 /** An open review ask naming this PR: the tracker issue, and the head the bot asked about. */
@@ -507,6 +510,9 @@ class Pane implements PrPane {
       ...d.warnings.map((w) => h("p", { class: "warn" }, w)),
       entry?.item?.why ? h("section", {}, h("h3", {}, "Why (board)"), h("div", { class: "md" }, render(entry.item.why))) : null,
       form,
+      handlers.mine && d.state === "open" && d.author === BOT_LOGIN && d.ref.owner === FORGE_ORG
+        ? mineSection(d, { ...handlers.mine, unseen: () => unseenNote(this.unseen()) })
+        : null,
       h("section", {}, h("h3", {}, "Description"), h("div", { class: "md" }, render(withoutBotMeta(d.body) || "(empty)"))),
       checksSection(d),
       commitsSection(d),

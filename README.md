@@ -38,6 +38,27 @@ is flagged as a bot bug.
   never expanded and the review guide's hotspots you never saw. A
   checkbox adds the `/draft` line that asks promote for a draft upstream
   PR. **Request changes** and **Comment** submit reviews with your text.
+- **Make it mine**, on the bot's forge PRs, is for upstreams whose
+  contribution policy is human-text: the title, description and commit
+  messages must be yours. You edit them in place, starting from the
+  bot's text as it is: nothing saves while any field still has a
+  `Generated-by` line, a title promote would refuse (the bot's), or
+  without your "This text is mine". You check every change as a diff,
+  and push: with your token the app rewrites each commit with your
+  message and you as committer (same tree, parents and author, checked
+  for each new commit), moves the branch only if it is still at the
+  head you were shown (a compare-and-swap through GraphQL's
+  `updateRefs`), sets the title and description (keeping the bot-meta
+  section, and re-reading the body first), and comments `/promote
+  --human-text` once GitHub shows the push on the PR. That comment
+  approves the new head, so it is ticked by default only if you
+  approved the head it replaces (the code is the same); otherwise the
+  confirmation says what you haven't seen, as Approve's does. The
+  committer starts as promote's sign-off identity. GitHub then records you as the one who pushed the
+  head, set the title and edited the body last, which is what `bot-pr
+  promote` checks. Only `bot/` branches of the bot's PRs within a
+  cgwalters-forge fork, and no code edits yet.
+  `test/e2e/make-it-mine.ts` runs it against a scratch PR.
 - **The diff** is unified or split (remembered per browser), syntax
   colored, with word-level changes marked and the unchanged lines
   between hunks expandable from the file at the head. A file tree gives
@@ -162,7 +183,16 @@ page lists the scopes a token needs:
   covers everything (`repo` instead, to see private repositories);
 - a fine-grained token acts on one resource owner only: owned by
   cgwalters-forge, with Pull requests and Issues read and write, it
-  reviews forge PRs and answers questions in the tracker.
+  reviews forge PRs and answers questions in the tracker; Make it mine
+  also needs Contents read and write.
+
+Make it mine needs no scope beyond these for a classic token
+(`public_repo` covers the Git Data API and the ref update on public
+forks), except for a PR that changes `.github/workflows`: GitHub guards
+pushes of workflow changes with the `workflow` scope (Workflows: write),
+so for such a PR the app asks for it up front (a classic token lacking
+it gets no form; a fine-grained one gets a warning, since its
+permissions aren't reported).
 
 The answers and reviews it posts are real, so test against throwaway
 items.
