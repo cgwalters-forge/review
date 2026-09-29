@@ -98,14 +98,20 @@ The **ops** pane (`d`, or Ops in the header) shows what the bot is
 running now, refreshed every minute while it is open and the tab is
 visible. Devspaces are the live runs of `devspace.yml` in
 bootc-dev/cgwalters-devspace-sandbox, each with its tailnet host, cores,
-uptime and time left (bounded by the longest duration, 4 hours, since a
-run doesn't say its own), plus the last 24 hours: how many, their
+uptime and time left (exact when the run's title carries its duration,
+as in "Devspace NAME (16c, 120m)"; for older runs only bounded by the
+longest, 4 hours), plus the last 24 hours: how many, their
 core-hours per hour, and how they ended; cancelled is how `bot-devspace
-stop` ends one, so it counts as stopped, not failed. Below that are the
+stop` ends one, so it counts as stopped, not failed. **Local agents** are
+the workers the coordinator runs on its own machine, which the browser
+can't see: the coordinator publishes them with `bot-heartbeat publish`
+(homegit) to one comment on cgwalters-forge/tracker#176, which the pane
+reads with an ETag and lists with their item links, devspaces and
+elapsed time, warning when the heartbeat is more than 15 minutes old
+(and past the wake time it gave). Below that are the
 runs of `agent.yml` once that workflow exists there, the board's In
 Progress items split like the Composefs and Our infra presets, and the
-bot's recent public activity. Agents running on the coordinator's own
-machine aren't visible to the browser and aren't shown. The runner repo
+bot's recent public activity. The runner repo
 is outside cgwalters-forge, so a fine-grained token scoped to it can't
 read the devspaces; a classic token can.
 

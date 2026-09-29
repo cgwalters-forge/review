@@ -346,8 +346,13 @@ details.history summary { cursor: pointer; color: var(--accent); }
 .past { display: grid; grid-template-columns: 7.5em minmax(0, 1fr) 3em 5em 4em auto; gap: 2px 10px; align-items: center; padding: 4px 0; font-size: 14px; }
 .past .ran, .past .age { font: 12px var(--mono); color: var(--muted); font-variant-numeric: tabular-nums; }
 .past-list .past .name { overflow-wrap: anywhere; }
-.ops-sec .local { font-size: 14px; color: var(--muted); margin: 10px 0 0; padding-top: 8px; border-top: 1px dashed var(--line); }
-.ops-sec .local .st { color: var(--ink); }
+.ops-sec .coord { font-size: 14px; margin: 4px 0 8px; color: var(--muted); }
+.ops-sec .coord .loop { color: var(--ink); font-weight: 500; }
+.lw { display: grid; grid-template-columns: 7.5em minmax(0, 1fr) auto 5em; gap: 2px 10px; align-items: center; padding: 4px 0; font-size: 14px; }
+.lw .name { overflow-wrap: anywhere; }
+.lw .ds { font: 12px var(--mono); color: var(--muted); }
+.lw .up { font: 12px var(--mono); font-variant-numeric: tabular-nums; text-align: right; }
+.past-list.stale { opacity: 0.6; }
 .work { padding: 6px 0; border-top: 1px solid var(--line); display: grid; gap: 3px; }
 .work:first-child { border-top: 0; }
 .work .title { font-weight: 500; }
@@ -371,6 +376,8 @@ details.history summary { cursor: pointer; color: var(--accent); }
   .ds-row > a { grid-column: 2 / 4; }
   .past { grid-template-columns: 7.5em minmax(0, 1fr) auto; }
   .past .ran, .past .age { grid-column: 2; }
+  .lw { grid-template-columns: 7.5em minmax(0, 1fr) auto; }
+  .lw .ds { grid-column: 2; }
 }
 /* Data shown from the browser's cache until GitHub confirms it. */
 .meta .cached { color: var(--ink); background: var(--p1-soft); border: 1px solid var(--p1); border-radius: 4px; padding: 0 5px; }
