@@ -1,0 +1,440 @@
+{
+ "_comment": "Synthetic REST answers for the bot's PRs outside the forge, one per case loadWaiting classifies; see test/prs.test.ts.",
+ "searches": {
+  "other": {
+   "total_count": 8,
+   "items": [
+    {
+     "html_url": "https://github.com/bootc-dev/bootc/pull/10",
+     "pull_request": {},
+     "title": "resign",
+     "user": {
+      "login": "cgwalters-bot"
+     },
+     "created_at": "2026-08-10T00:00:00Z",
+     "updated_at": "2026-09-01T00:00:00Z"
+    },
+    {
+     "html_url": "https://github.com/bootc-dev/bootc/pull/11",
+     "pull_request": {},
+     "title": "rerun",
+     "user": {
+      "login": "cgwalters-bot"
+     },
+     "created_at": "2026-08-11T00:00:00Z",
+     "updated_at": "2026-09-01T00:00:00Z"
+    },
+    {
+     "html_url": "https://github.com/cgwalters-bot/homegit/pull/45",
+     "pull_request": {},
+     "title": "requested",
+     "user": {
+      "login": "cgwalters-bot"
+     },
+     "created_at": "2026-08-45T00:00:00Z",
+     "updated_at": "2026-09-01T00:00:00Z"
+    },
+    {
+     "html_url": "https://github.com/bootc-dev/bcvk/pull/12",
+     "pull_request": {},
+     "title": "on the bot",
+     "user": {
+      "login": "cgwalters-bot"
+     },
+     "created_at": "2026-08-12T00:00:00Z",
+     "updated_at": "2026-09-01T00:00:00Z"
+    },
+    {
+     "html_url": "https://github.com/coreos/bootupd/pull/13",
+     "pull_request": {},
+     "title": "nothing",
+     "user": {
+      "login": "cgwalters-bot"
+     },
+     "created_at": "2026-08-13T00:00:00Z",
+     "updated_at": "2026-09-01T00:00:00Z"
+    },
+    {
+     "html_url": "https://github.com/bootc-dev/bootc/pull/14",
+     "pull_request": {},
+     "title": "closed",
+     "user": {
+      "login": "cgwalters-bot"
+     },
+     "created_at": "2026-08-14T00:00:00Z",
+     "updated_at": "2026-09-01T00:00:00Z"
+    },
+    {
+     "html_url": "https://github.com/cgwalters-forge/workflow-compiler/pull/15",
+     "pull_request": {},
+     "title": "forge repo, requested",
+     "draft": false,
+     "user": {
+      "login": "cgwalters-bot"
+     },
+     "created_at": "2026-08-15T00:00:00Z",
+     "updated_at": "2026-09-01T00:00:00Z"
+    },
+    {
+     "html_url": "https://github.com/cgwalters-forge/bootc/pull/16",
+     "pull_request": {},
+     "title": "forge draft",
+     "draft": true,
+     "user": {
+      "login": "cgwalters-bot"
+     },
+     "created_at": "2026-08-16T00:00:00Z",
+     "updated_at": "2026-09-01T00:00:00Z"
+    }
+   ]
+  },
+  "requested": {
+   "total_count": 3,
+   "items": [
+    {
+     "html_url": "https://github.com/cgwalters-bot/homegit/pull/45",
+     "pull_request": {},
+     "title": "requested",
+     "user": {
+      "login": "cgwalters-bot"
+     },
+     "created_at": "2026-08-45T00:00:00Z",
+     "updated_at": "2026-09-01T00:00:00Z"
+    },
+    {
+     "html_url": "https://github.com/cgwalters-forge/workflow-compiler/pull/15",
+     "pull_request": {},
+     "title": "forge repo, requested",
+     "draft": false,
+     "user": {
+      "login": "cgwalters-bot"
+     },
+     "created_at": "2026-08-15T00:00:00Z",
+     "updated_at": "2026-09-01T00:00:00Z"
+    },
+    {
+     "html_url": "https://github.com/cgwalters-forge/bootc/pull/16",
+     "pull_request": {},
+     "title": "forge draft",
+     "draft": true,
+     "user": {
+      "login": "cgwalters-bot"
+     },
+     "created_at": "2026-08-16T00:00:00Z",
+     "updated_at": "2026-09-01T00:00:00Z"
+    }
+   ]
+  }
+ },
+ "routes": {
+  "/repos/bootc-dev/bootc/pulls/10": {
+   "number": 10,
+   "html_url": "https://github.com/bootc-dev/bootc/pull/10",
+   "state": "open",
+   "draft": false,
+   "mergeable_state": "blocked",
+   "user": {
+    "login": "cgwalters-bot"
+   },
+   "head": {
+    "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "ref": "bot/x10"
+   },
+   "base": {
+    "ref": "main"
+   }
+  },
+  "/repos/bootc-dev/bootc/pulls/10/reviews?per_page=100": [],
+  "/repos/bootc-dev/bootc/issues/10/comments?per_page=100": [],
+  "/repos/bootc-dev/bootc/rules/branches/main?per_page=100": [
+   {
+    "type": "required_status_checks",
+    "parameters": {
+     "required_status_checks": [
+      {
+       "context": "DCO"
+      },
+      {
+       "context": "required-checks"
+      }
+     ]
+    }
+   },
+   {
+    "type": "pull_request"
+   }
+  ],
+  "/repos/bootc-dev/bootc/commits/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/check-runs?filter=latest&per_page=100&page=1": {
+   "total_count": 2,
+   "check_runs": [
+    {
+     "name": "DCO",
+     "status": "completed",
+     "conclusion": "action_required",
+     "app": {
+      "slug": "dco-2"
+     },
+     "details_url": "https://github.com/apps/dco",
+     "html_url": "https://github.com/o/r/runs/1"
+    },
+    {
+     "name": "required-checks",
+     "status": "completed",
+     "conclusion": "success",
+     "app": {
+      "slug": "github-actions"
+     },
+     "details_url": "https://github.com/bootc-dev/bootc/actions/runs/800/job/1",
+     "html_url": "https://github.com/o/r/runs/1"
+    }
+   ]
+  },
+  "/repos/bootc-dev/bootc/pulls/10/commits?per_page=100": [
+   {
+    "sha": "1111111111111111111111111111111111111111",
+    "commit": {
+     "message": "lib: Fix it\n\nGenerated-by: AI\n",
+     "author": {
+      "name": "Colin Walters",
+      "email": "walters+llm@verbum.org"
+     },
+     "committer": {
+      "name": "Colin Walters",
+      "email": "walters+llm@verbum.org"
+     }
+    }
+   }
+  ],
+  "/repos/bootc-dev/bootc/pulls/11": {
+   "number": 11,
+   "html_url": "https://github.com/bootc-dev/bootc/pull/11",
+   "state": "open",
+   "draft": false,
+   "mergeable_state": "blocked",
+   "user": {
+    "login": "cgwalters-bot"
+   },
+   "head": {
+    "sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "ref": "bot/x11"
+   },
+   "base": {
+    "ref": "main"
+   }
+  },
+  "/repos/bootc-dev/bootc/pulls/11/reviews?per_page=100": [
+   {
+    "user": {
+     "login": "cgwalters"
+    },
+    "state": "COMMENTED",
+    "commit_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "submitted_at": "2026-09-01T00:00:00Z"
+   }
+  ],
+  "/repos/bootc-dev/bootc/issues/11/comments?per_page=100": [],
+  "/repos/bootc-dev/bootc/commits/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/check-runs?filter=latest&per_page=100&page=1": {
+   "total_count": 3,
+   "check_runs": [
+    {
+     "name": "DCO",
+     "status": "completed",
+     "conclusion": "success",
+     "app": {
+      "slug": "dco-2"
+     },
+     "details_url": "https://github.com/apps/dco",
+     "html_url": "https://github.com/o/r/runs/1"
+    },
+    {
+     "name": "required-checks",
+     "status": "completed",
+     "conclusion": "failure",
+     "app": {
+      "slug": "github-actions"
+     },
+     "details_url": "https://github.com/bootc-dev/bootc/actions/runs/900/job/5",
+     "html_url": "https://github.com/o/r/runs/1"
+    },
+    {
+     "name": "test-integration (fedora-44)",
+     "status": "completed",
+     "conclusion": "failure",
+     "app": {
+      "slug": "github-actions"
+     },
+     "details_url": "https://github.com/bootc-dev/bootc/actions/runs/900/job/4",
+     "html_url": "https://github.com/o/r/runs/1"
+    }
+   ]
+  },
+  "/repos/cgwalters-bot/homegit/pulls/45": {
+   "number": 45,
+   "html_url": "https://github.com/cgwalters-bot/homegit/pull/45",
+   "state": "open",
+   "draft": false,
+   "mergeable_state": "blocked",
+   "user": {
+    "login": "cgwalters-bot"
+   },
+   "head": {
+    "sha": "cccccccccccccccccccccccccccccccccccccccc",
+    "ref": "bot/x45"
+   },
+   "base": {
+    "ref": "main"
+   }
+  },
+  "/repos/cgwalters-bot/homegit/pulls/45/reviews?per_page=100": [],
+  "/repos/cgwalters-bot/homegit/issues/45/comments?per_page=100": [],
+  "/repos/bootc-dev/bcvk/pulls/12": {
+   "number": 12,
+   "html_url": "https://github.com/bootc-dev/bcvk/pull/12",
+   "state": "open",
+   "draft": false,
+   "mergeable_state": "blocked",
+   "user": {
+    "login": "cgwalters-bot"
+   },
+   "head": {
+    "sha": "dddddddddddddddddddddddddddddddddddddddd",
+    "ref": "bot/x12"
+   },
+   "base": {
+    "ref": "main"
+   }
+  },
+  "/repos/bootc-dev/bcvk/pulls/12/reviews?per_page=100": [
+   {
+    "user": {
+     "login": "cgwalters"
+    },
+    "state": "CHANGES_REQUESTED",
+    "commit_id": "dddddddddddddddddddddddddddddddddddddddd",
+    "submitted_at": "2026-09-02T00:00:00Z",
+    "html_url": "https://github.com/bootc-dev/bcvk/pull/12#r1"
+   }
+  ],
+  "/repos/bootc-dev/bcvk/issues/12/comments?per_page=100": [
+   {
+    "user": {
+     "login": "cgwalters-bot"
+    },
+    "created_at": "2026-09-01T00:00:00Z",
+    "body": "Tested"
+   }
+  ],
+  "/repos/bootc-dev/bcvk/pulls/12/comments?per_page=100": [
+   {
+    "user": {
+     "login": "someone"
+    },
+    "created_at": "2026-09-03T00:00:00Z"
+   }
+  ],
+  "/repos/bootc-dev/bcvk/rules/branches/main?per_page=100": [
+   {
+    "type": "required_status_checks",
+    "parameters": {
+     "required_status_checks": [
+      {
+       "context": "DCO"
+      },
+      {
+       "context": "required-checks"
+      }
+     ]
+    }
+   },
+   {
+    "type": "pull_request"
+   }
+  ],
+  "/repos/bootc-dev/bcvk/commits/dddddddddddddddddddddddddddddddddddddddd/check-runs?filter=latest&per_page=100&page=1": {
+   "total_count": 1,
+   "check_runs": [
+    {
+     "name": "required-checks",
+     "status": "completed",
+     "conclusion": "failure",
+     "app": {
+      "slug": "github-actions"
+     },
+     "details_url": "https://github.com/bootc-dev/bcvk/actions/runs/901/job/1",
+     "html_url": "https://github.com/o/r/runs/1"
+    }
+   ]
+  },
+  "/repos/coreos/bootupd/pulls/13": {
+   "number": 13,
+   "html_url": "https://github.com/coreos/bootupd/pull/13",
+   "state": "open",
+   "draft": false,
+   "mergeable_state": "blocked",
+   "user": {
+    "login": "cgwalters-bot"
+   },
+   "head": {
+    "sha": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "ref": "bot/x13"
+   },
+   "base": {
+    "ref": "main"
+   }
+  },
+  "/repos/coreos/bootupd/pulls/13/reviews?per_page=100": [],
+  "/repos/coreos/bootupd/issues/13/comments?per_page=100": [],
+  "/repos/coreos/bootupd/rules/branches/main?per_page=100": [],
+  "/repos/coreos/bootupd/commits/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee/check-runs?filter=latest&per_page=100&page=1": {
+   "total_count": 1,
+   "check_runs": [
+    {
+     "name": "ci",
+     "status": "completed",
+     "conclusion": "failure",
+     "app": {
+      "slug": "github-actions"
+     },
+     "details_url": "https://github.com/o/r/actions/runs/1/job/1",
+     "html_url": "https://github.com/o/r/runs/1"
+    }
+   ]
+  },
+  "/repos/bootc-dev/bootc/pulls/14": {
+   "number": 14,
+   "html_url": "https://github.com/bootc-dev/bootc/pull/14",
+   "state": "closed",
+   "draft": false,
+   "mergeable_state": "blocked",
+   "user": {
+    "login": "cgwalters-bot"
+   },
+   "head": {
+    "sha": "ffffffffffffffffffffffffffffffffffffffff",
+    "ref": "bot/x14"
+   },
+   "base": {
+    "ref": "main"
+   }
+  },
+  "/repos/cgwalters-forge/workflow-compiler/pulls/15": {
+   "number": 15,
+   "html_url": "https://github.com/cgwalters-forge/workflow-compiler/pull/15",
+   "state": "open",
+   "draft": false,
+   "mergeable_state": "clean",
+   "user": {
+    "login": "cgwalters-bot"
+   },
+   "head": {
+    "sha": "9999999999999999999999999999999999999999",
+    "ref": "bot/x15"
+   },
+   "base": {
+    "ref": "main"
+   }
+  },
+  "/repos/cgwalters-forge/workflow-compiler/pulls/15/reviews?per_page=100": [],
+  "/repos/cgwalters-forge/workflow-compiler/issues/15/comments?per_page=100": []
+ }
+}

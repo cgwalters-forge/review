@@ -1,13 +1,16 @@
-// The one ranked queue: forge PRs waiting for his review, the bot's asks
-// (questions, reviews and chores) and the board items they block, P0
-// first, then oldest first. Pure, so tests can check the ranking and what
-// gets merged or dropped.
+// The one ranked queue: the bot's PRs waiting on him (forge PRs to
+// review, and PRs elsewhere with something only he can do: see
+// waiting.ts), the bot's asks (questions, reviews and chores) and the
+// board items they block, P0 first, then oldest first; PRs waiting on
+// the bot come last, apart. Pure, so tests can check the ranking and
+// what gets merged or dropped.
 
 import { askKind, blockedBy, type Item, NO_PRIORITY, PRIORITY_ORDER } from "./board.ts";
 import { DRAFT, FORGE_ORG, NEEDS_HUMAN } from "./config.ts";
 import { type ForgePr, parseBotMeta, refKey, type Verdict, waitsOnReviewer } from "./forge.ts";
+import { forgeWait, type PrWait } from "./waiting.ts";
 
-/** A forge PR, an ask of one kind, or another board item. */
+/** A PR, an ask of one kind, or another board item. */
 export type EntryKind = "pr" | "question" | "review" | "chore" | "item";
 
 /** The kinds that are asks. */
@@ -29,6 +32,10 @@ export interface Entry {
   item?: Item;
   pr?: ForgePr;
   verdict?: Verdict;
+  /** A PR's turn beyond its verdict: what he is asked to do, or that it waits on the bot. */
+  wait?: PrWait;
+  /** The board item is folded into this PR entry: its asks nest here. */
+  folded?: boolean;
   /** A question he answered, or the bot closed: waiting on the bot, not him. */
   settled?: boolean;
   /** The asks about this entry's item, nested under it. */
@@ -46,6 +53,13 @@ export interface Entry {
 
 /** Group heading for settled questions, listed after everything else. */
 export const SETTLED_GROUP = "Answered, waiting on the bot";
+/** Group heading for PRs he sent back, listed last: none of them is his. */
+export const ON_BOT_GROUP = "Changes requested, waiting on the bot";
+
+/** Whether an entry waits on the bot rather than on him. */
+export function onBot(e: Entry): boolean {
+  return e.wait?.onBot === true;
+}
 
 /** Rank in PRIORITY_ORDER; anything else ranks after it, and none last. */
 export function priorityRank(p: string | undefined): number {
@@ -59,15 +73,16 @@ export function effectivePriority(e: Entry): string | undefined {
   return e.rankPriority ?? e.priority;
 }
 
-/** Settled last, then priority, then oldest first (no date last), then by key for stability. */
+/** Settled, then waiting on the bot, last; then priority, then oldest first (no date last), then by key for stability. */
 export function rankEntries(entries: readonly Entry[]): Entry[] {
   const time = (e: Entry) => {
     const t = e.since ? Date.parse(e.since) : Number.NaN;
     return Number.isNaN(t) ? Number.POSITIVE_INFINITY : t;
   };
+  const tier = (e: Entry) => (onBot(e) ? 2 : e.settled ? 1 : 0);
   return [...entries].sort(
     (a, b) =>
-      Number(a.settled === true) - Number(b.settled === true) ||
+      tier(a) - tier(b) ||
       priorityRank(effectivePriority(a)) - priorityRank(effectivePriority(b)) ||
       time(a) - time(b) ||
       a.key.localeCompare(b.key),
@@ -89,15 +104,36 @@ function itemWhere(item: Item): string {
   return item.kind === "draft" ? "draft item" : "item";
 }
 
+/** What buildEntries takes besides the board and the forge. */
+export interface QueueInputs {
+  /**
+   * The bot's PRs other than the forge's drafts that are listed, with
+   * where each stands (see classifyPr): those with something for him, and those
+   * waiting on the bot.
+   */
+  others?: readonly { pr: ForgePr; wait: PrWait }[];
+  /** Forge PRs (refKeys) where the bot commented after his latest decision. */
+  replied?: ReadonlySet<string>;
+  /** Board items outside the queue (In Review) that only rank the PRs in their Branch. */
+  linked?: readonly Item[];
+}
+
 /**
- * Merge the board and the forge into one ranked list.
+ * Merge the board and the PRs into one ranked list.
  *
  * - A forge PR is listed while it waits on him (see waitsOnReviewer; an
- *   unknown verdict counts as waiting). Its priority is its board item's,
+ *   unknown verdict counts as waiting). One he sent back at its head is
+ *   the bot's turn (listed last, apart) until the bot replies
+ *   (`replied`), then his again. Its priority is its board item's,
  *   found by the item id in its bot-meta section, else by Branch.
+ * - Another PR of the bot's (`others`) is listed as classifyPr found it:
+ *   what he is asked to do on it, or waiting on the bot. Its priority is
+ *   its board item's, by Branch; In Review items (`linked`) count too.
  * - A Draft board item tracking a forge PR is that PR's entry, never a
- *   second one. One whose Branch holds only forge PRs, none of them open
- *   and waiting, is stale (promoted or closed) and dropped.
+ *   second one, and so is a Needs human item tracking another PR that
+ *   waits on him: its asks nest under the PR. A Draft item whose Branch
+ *   holds only forge PRs, none of them open and waiting, is stale
+ *   (promoted or closed) and dropped.
  * - Ask issues in the tracker (questions, reviews, chores) are listed by
  *   kind: settled (listed last) once he commented after the bot
  *   (`answered`, by node id) or the bot closed them. One whose blocked
@@ -116,25 +152,47 @@ export function buildEntries(
   verdicts: ReadonlyMap<string, Verdict>,
   forgeKnown = true,
   answered: ReadonlySet<string> = new Set(),
+  inputs: QueueInputs = {},
 ): Entry[] {
   const byNode = new Map(items.map((i) => [i.nodeId, i]));
   const byBranch = new Map<string, Item>();
-  for (const i of items) for (const u of i.branch) if (!byBranch.has(u)) byBranch.set(u, i);
+  for (const i of [...items, ...(inputs.linked ?? [])]) for (const u of i.branch) if (!byBranch.has(u)) byBranch.set(u, i);
   const tracked = new Set<string>();
   const out: Entry[] = [];
+  const prEntry = (pr: ForgePr, item: Item | undefined, fold: boolean): Entry => {
+    const key = refKey(pr.ref);
+    const e: Entry = { key: `pr:${key}`, kind: "pr", title: pr.title, where: key, href: prHref(pr), pr };
+    if (item?.priority) e.priority = item.priority;
+    if (item) e.item = item;
+    if (item && fold) {
+      tracked.add(item.nodeId);
+      e.folded = true;
+    }
+    if (pr.createdAt) e.since = pr.createdAt;
+    return e;
+  };
 
   for (const pr of prs) {
     const metaItem = parseBotMeta(pr.body).item;
     const item = (metaItem ? byNode.get(metaItem) : undefined) ?? byBranch.get(pr.url);
+    // Tracked even when not listed: a Draft item isn't a second entry for its own PR.
     if (item?.status === DRAFT) tracked.add(item.nodeId);
     const key = refKey(pr.ref);
     const verdict = verdicts.get(key);
-    if (verdict && !waitsOnReviewer(verdict)) continue;
-    const e: Entry = { key: `pr:${key}`, kind: "pr", title: pr.title, where: key, href: prHref(pr), pr };
-    if (item?.priority) e.priority = item.priority;
-    if (item) e.item = item;
-    if (pr.createdAt) e.since = pr.createdAt;
+    const wait = verdict ? forgeWait(verdict, inputs.replied?.has(key) === true) : undefined;
+    if (verdict && !wait && !waitsOnReviewer(verdict)) continue;
+    const e = prEntry(pr, item, item?.status === DRAFT);
     if (verdict) e.verdict = verdict;
+    if (wait) e.wait = wait;
+    out.push(e);
+  }
+
+  const listed = new Set(out.map((e) => e.key));
+  for (const { pr, wait } of inputs.others ?? []) {
+    if (listed.has(`pr:${refKey(pr.ref)}`)) continue;
+    const item = byBranch.get(pr.url);
+    const e = prEntry(pr, item, !wait.onBot && item?.status === NEEDS_HUMAN);
+    e.wait = wait;
     out.push(e);
   }
 
@@ -173,14 +231,14 @@ export function isAskEntry(e: Entry): boolean {
 }
 
 /**
- * The issues and PRs an entry is about, as refKeys: a forge PR entry
- * stands for its PR and for the Draft board item it folded in (often a
- * tracker issue, whose asks name that issue). A PR entry's item that
- * wasn't folded in (say, Needs human) has an entry of its own, which is
- * where its asks belong.
+ * The issues and PRs an entry is about, as refKeys: a PR entry stands
+ * for its PR and for the board item it folded in (a forge PR's Draft
+ * item, often a tracker issue whose asks name that issue, or the Needs
+ * human item of a PR waiting on him). A PR entry's item that wasn't
+ * folded in has an entry of its own, which is where its asks belong.
  */
 function entryRefs(e: Entry): string[] {
-  const item = e.kind !== "pr" || e.item?.status === DRAFT ? e.item : undefined;
+  const item = e.kind !== "pr" || e.folded ? e.item : undefined;
   return [e.pr?.ref, item?.ref].flatMap((r) => (r ? [refKey(r).toLowerCase()] : []));
 }
 
@@ -193,7 +251,8 @@ function entryRefs(e: Entry): string[] {
 function nestAsks(entries: Entry[]): Entry[] {
   const parents = new Map<string, Entry>();
   for (const e of entries) {
-    if (isAskEntry(e)) continue;
+    // An ask is his: never buried under a PR waiting on the bot.
+    if (isAskEntry(e) || onBot(e)) continue;
     for (const ref of entryRefs(e)) if (!parents.has(ref)) parents.set(ref, e);
   }
   const top: Entry[] = [];
@@ -227,7 +286,7 @@ export interface EntryGroup {
 export function groupRanked(entries: readonly Entry[]): EntryGroup[] {
   const out: EntryGroup[] = [];
   for (const e of entries) {
-    const p = e.settled ? SETTLED_GROUP : (effectivePriority(e) ?? NO_PRIORITY);
+    const p = onBot(e) ? ON_BOT_GROUP : e.settled ? SETTLED_GROUP : (effectivePriority(e) ?? NO_PRIORITY);
     const last = out.at(-1);
     if (last?.priority === p) last.entries.push(e);
     else out.push({ priority: p, entries: [e] });

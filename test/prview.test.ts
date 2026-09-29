@@ -9,6 +9,8 @@ import type { DraftComment, ReviewAction } from "../src/github/forge.ts";
 import type { GuideState } from "../src/github/guide.ts";
 import type { PrDetail } from "../src/github/prs.ts";
 import { buildTree, canReview, hotspotsFor, movedFrom, type PrViewHandlers, prView, rangeEnds, type ReviewAskInfo, unseenNote } from "../src/github/prview.ts";
+import type { Entry } from "../src/github/queue.ts";
+import type { PrWait } from "../src/github/waiting.ts";
 import { createRenderer } from "../src/markdown.ts";
 import { installDom } from "./helpers.ts";
 
@@ -341,6 +343,62 @@ describe("prView", () => {
       assert.equal(el.querySelectorAll("td.ln.can-comment").length > 0, want, "line comments only with a form");
       assert.equal(canReview(detail(over)), want);
     }
+  });
+
+  describe("a PR the queue lists outside the bot's space", () => {
+    const up = (over: Partial<PrDetail> = {}) =>
+      detail({ ref: { owner: "bootc-dev", repo: "bootc", number: 2501 }, url: "https://github.com/bootc-dev/bootc/pull/2501", body: "fix", draft: false, ...over });
+    const listed = (wait: PrWait): Entry => ({ key: "pr:bootc-dev/bootc#2501", kind: "pr", title: "t", where: "", href: "#", wait });
+
+    it("gets a review form only for what the queue asks of him", () => {
+      const cases: [string, PrDetail, PrWait | undefined, boolean][] = [
+        ["not listed", up(), undefined, false],
+        ["review requested", up(), { reasons: ["review-requested"], onBot: false }, true],
+        ["approve to re-sign", up(), { reasons: ["resign"], onBot: false, unsigned: ["abc"] }, true],
+        ["the bot responded", up(), { reasons: ["updated"], onBot: false }, true],
+        ["a rerun only", up(), { reasons: ["rerun"], onBot: false }, false],
+        ["waiting on the bot", up(), { reasons: [], onBot: true }, false],
+        ["someone else's PR, requested", up({ author: "someone" }), { reasons: ["review-requested"], onBot: false }, false],
+        ["closed", up({ state: "closed" }), { reasons: ["review-requested"], onBot: false }, false],
+      ];
+      for (const [name, d, wait, want] of cases) {
+        assert.equal(canReview(d, undefined, wait), want, name);
+        const p = prView(d, wait ? listed(wait) : undefined, render, handlers(), opts);
+        assert.equal(p.el.querySelector("form.review") !== null, want, name);
+        p.dispose();
+      }
+    });
+
+    it("says what it is listed for", () => {
+      const p = prView(up(), listed({ reasons: ["review-requested", "resign"], onBot: false, unsigned: ["aaaaaaaaaaaa"] }), render, handlers(), opts);
+      const text = p.el.querySelector(".review-ask")?.textContent ?? "";
+      assert.match(text, /Your review is requested/);
+      assert.match(text, /DCO fails: 1 commit \(aaaaaaaaaaaa\) lacks your Signed-off-by\. Approving head e{10} is your sign-off/);
+      p.dispose();
+    });
+
+    it("lists the failed required checks' runs, each with a Rerun button that comments nowhere", async () => {
+      const RUN = "https://github.com/bootc-dev/bootc/actions/runs/900";
+      const run = { url: RUN, owner: "bootc-dev", repo: "bootc", id: "900" };
+      const reran: string[] = [];
+      const reruns = {
+        load: async () => [{ run, name: "CI", status: "completed", conclusion: "failure", headSha: HEAD, failed: [{ name: "required-checks" }] }],
+        hooks: { rerun: async (url: string) => (reran.push(url), url) },
+      };
+      const p = prView(up(), listed({ reasons: ["rerun"], onBot: false, failed: ["required-checks"], runs: [run] }), render, handlers(), { ...opts, reruns });
+      win.document.body.replaceChildren(p.el);
+      await tick();
+      const button = p.el.querySelector<HTMLButtonElement>(".runs li.run button");
+      assert.ok(button && !button.disabled);
+      let asked = "";
+      win.confirm = (m?: string) => ((asked = m ?? ""), true);
+      button.click();
+      await tick();
+      assert.deepEqual(reran, [RUN]);
+      assert.doesNotMatch(asked, /comments on the chore/);
+      assert.match(p.el.querySelector(".runs .status")?.textContent ?? "", /^Rerun started: /);
+      p.dispose();
+    });
   });
 
   describe("a PR a review ask names", () => {

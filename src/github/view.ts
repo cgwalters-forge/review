@@ -9,7 +9,7 @@ import { ASK_LABELS, askKind, type IssueRef, isAsk, isQuestion, type Item, quest
 import type { Context, RunStatus, SubIssue } from "./backend.ts";
 import { BOARD_URL, OPERATOR } from "./config.ts";
 import { ALL, applyFilter, type Chip, chips, filterToken, type QueueFilter } from "./filter.ts";
-import { type Entry, type EntryKind, groupRanked } from "./queue.ts";
+import { type Entry, type EntryKind, groupRanked, onBot } from "./queue.ts";
 
 /** Characters of Why shown on a queue row. */
 const WHY_EXCERPT = 160;
@@ -85,7 +85,7 @@ export interface RowLabel {
 
 const KIND_LABEL: Record<EntryKind, string> = { pr: "PR", question: "Q", review: "rev", chore: "do", item: "item" };
 const KIND_TITLE: Record<EntryKind, string> = {
-  pr: "forge PR to review",
+  pr: "PR waiting on you (or, last, on the bot)",
   question: "question for you",
   review: "PR the bot asks you to review",
   chore: "something the bot asks you to do",
@@ -180,12 +180,15 @@ export function queueView(
   }
   const counts = { pr: 0, question: 0, review: 0, chore: 0, item: 0 };
   let bugs = 0;
+  let botTurn = 0;
   for (const e of entries) {
     if (e.bug) bugs++;
-    for (const x of [e, ...(e.children ?? [])]) if (!x.settled) counts[x.kind]++;
+    if (onBot(e)) botTurn++;
+    for (const x of [e, ...(e.children ?? [])]) if (!x.settled && !onBot(x)) counts[x.kind]++;
   }
-  const parts = [`${counts.pr} PRs to review`, `${counts.question} questions`, `${counts.review} reviews`, `${counts.chore} chores`];
+  const parts = [`${counts.pr} PRs`, `${counts.question} questions`, `${counts.review} reviews`, `${counts.chore} chores`];
   if (bugs) parts.push(`${bugs} without an ask`);
+  if (botTurn) parts.push(`${botTurn} PRs waiting on the bot`);
   root.append(h("p", { class: "summary" }, `${parts.join(" · ")} · j/k to move, o to open, ? for keys`));
   for (const group of groupRanked(entries)) {
     const count = group.entries.reduce((n, e) => n + 1 + (e.children?.length ?? 0), 0);
@@ -355,14 +358,14 @@ function subIssuesView(item: Item, subs: readonly SubIssue[], boardHref: BoardHr
   return h("section", { class: "sub-issues" }, h("h3", {}, `Sub-issues${summary}`), h("ul", {}, ...subs.map((s) => subIssueView(s, boardHref))));
 }
 
-/** One run a chore asks to rerun: its failed jobs, and the button, only when GitHub says it can be rerun. */
 /** A note when a run is on an older commit than the PR the chore blocks, else undefined. */
 export function oldHeadNote(r: RunStatus): string | undefined {
   if (!r.headSha || !r.prHead || r.headSha === r.prHead) return undefined;
   return `This run is on ${r.headSha.slice(0, 12)}, an older head: the PR is now at ${r.prHead.slice(0, 12)}. Rerunning it tests old code.`;
 }
 
-function runView(r: RunStatus, hooks: ContextHooks): HTMLElement {
+/** One run to rerun (a chore's, or behind a PR's failed required check): its failed jobs, and the button, only when GitHub says it can be rerun. */
+export function runView(r: RunStatus, hooks: ContextHooks): HTMLElement {
   const { run } = r;
   const { rerun } = hooks;
   const state = [r.status, r.conclusion, r.attempt ? `attempt ${r.attempt}` : "", r.headSha ? `on ${r.headSha.slice(0, 12)}` : ""].filter(Boolean).join(", ");
@@ -380,15 +383,16 @@ function runView(r: RunStatus, hooks: ContextHooks): HTMLElement {
     if (!rerun || r.problem !== undefined || hooks.rerunning?.(run.url)) return;
     const names = r.failed.map((j) => j.name).join(", ");
     const commit = r.headSha ? ` on ${r.headSha.slice(0, 12)}` : "";
+    const after = hooks.rerunOnPr ? "" : ", then comments on the chore so the bot knows";
     const ok = window.confirm(
-      `Rerun the ${r.failed.length} failed job${r.failed.length === 1 ? "" : "s"} (${names}) of ${run.url}${commit}?${old ? `\n\n${old}` : ""}\n\nThis uses your token to write to ${run.owner}/${run.repo}, then comments on the chore so the bot knows.`,
+      `Rerun the ${r.failed.length} failed job${r.failed.length === 1 ? "" : "s"} (${names}) of ${run.url}${commit}?${old ? `\n\n${old}` : ""}\n\nThis uses your token to write to ${run.owner}/${run.repo}${after}.`,
     );
     if (!ok) return;
     button.disabled = true;
     status.textContent = "Rerunning…";
     rerun(run.url)
       .then((url) => {
-        status.textContent = "Rerun started; told the bot: ";
+        status.textContent = hooks.rerunOnPr ? "Rerun started: " : "Rerun started; told the bot: ";
         status.append(link(url, url));
       })
       .catch((e: unknown) => {
@@ -424,6 +428,8 @@ export interface ContextHooks {
   rerun?: (runUrl: string) => Promise<string>;
   /** Whether a rerun of this run is still in flight. */
   rerunning?: (runUrl: string) => boolean;
+  /** The runs are a PR's failed required checks, not a chore's: nothing is commented. */
+  rerunOnPr?: boolean;
 }
 
 /** The part of the item view that needs the loaded context. */

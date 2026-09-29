@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import type { Item } from "../src/github/board.ts";
+import { type Item, NO_PRIORITY } from "../src/github/board.ts";
 import type { ForgePr, Verdict } from "../src/github/forge.ts";
-import { buildEntries, effectivePriority, type Entry, groupRanked, priorityRank, rankEntries, SETTLED_GROUP } from "../src/github/queue.ts";
+import { buildEntries, effectivePriority, type Entry, groupRanked, ON_BOT_GROUP, onBot, priorityRank, rankEntries, SETTLED_GROUP } from "../src/github/queue.ts";
+import type { PrWait } from "../src/github/waiting.ts";
 
 function item(nodeId: string, over: Partial<Item> = {}): Item {
   return { id: 0, nodeId, kind: "draft", title: nodeId, body: "", why: "", branch: [], gist: [], labels: [], assignees: [], status: "Needs human", ...over };
@@ -106,20 +107,28 @@ describe("buildEntries", () => {
     assert.equal(entries.find((e) => e.kind === "question")?.href, "#item/PVTI_q");
   });
 
-  it("keeps a PR while it waits on him, and drops it and its Draft item otherwise", () => {
+  it("keeps a PR while it waits on him, lists it apart while it waits on the bot, and drops it and its Draft item otherwise", () => {
     const items = [item("PVTI_t", { status: "Draft", priority: "P0", branch: ["https://github.com/cgwalters-forge/a/pull/1"] })];
-    const cases: [Verdict["state"], boolean][] = [
-      ["none", true],
-      ["approved-older", true],
-      ["changes-requested-older", true],
-      ["approved", false],
-      ["changes-requested", false],
-      ["promoted", true],
+    // verdict, whether the bot replied since, listed, on the bot
+    const cases: [Verdict["state"], boolean, boolean, boolean][] = [
+      ["none", false, true, false],
+      ["approved-older", false, true, false],
+      ["changes-requested-older", false, true, false],
+      ["approved", false, false, false],
+      ["changes-requested", false, true, true],
+      ["changes-requested", true, true, false],
+      ["promoted", false, true, false],
     ];
-    for (const [state, listed] of cases) {
-      const entries = buildEntries(items, [pr("cgwalters-forge", "a", 1)], verdicts([["cgwalters-forge/a#1", state]]));
-      assert.deepEqual(entries.map((e) => e.key), listed ? ["pr:cgwalters-forge/a#1"] : [], state);
-      if (listed) assert.equal(entries[0]?.verdict?.state, state);
+    for (const [state, replied, listed, bot] of cases) {
+      const name = `${state}, replied: ${replied}`;
+      const entries = buildEntries(items, [pr("cgwalters-forge", "a", 1)], verdicts([["cgwalters-forge/a#1", state]]), true, new Set(), {
+        replied: new Set(replied ? ["cgwalters-forge/a#1"] : []),
+      });
+      assert.deepEqual(entries.map((e) => e.key), listed ? ["pr:cgwalters-forge/a#1"] : [], name);
+      if (!listed) continue;
+      assert.equal(entries[0]?.verdict?.state, state);
+      assert.equal(onBot(entries[0] as Entry), bot, name);
+      assert.deepEqual(groupRanked(entries).map((g) => g.priority), [bot ? ON_BOT_GROUP : "P0"], name);
     }
   });
 
@@ -272,5 +281,70 @@ describe("buildEntries", () => {
   it("keeps a Draft item whose Branch is not only forge PRs", () => {
     const items = [item("PVTI_up", { status: "Draft", branch: ["https://github.com/up/r/compare/main...cgwalters-bot:bot/x"] })];
     assert.deepEqual(buildEntries(items, [], verdicts([])).map((e) => e.kind), ["item"]);
+  });
+
+  describe("the bot's PRs other than the forge's drafts", () => {
+    const UP = "https://github.com/bootc-dev/bootc/pull";
+    const up = (n: number, over: Partial<ForgePr> = {}) => pr("bootc-dev", "bootc", n, { draft: false, createdAt: `2026-02-0${n % 10}T00:00:00Z`, ...over });
+    const wait = (reasons: PrWait["reasons"], onBotToo = false): PrWait => ({ reasons, onBot: onBotToo });
+
+    it("lists each as classified, ranked by the board item holding it in Branch, those waiting on the bot last", () => {
+      const items = [
+        // Needs human about #3: folded into its PR, its question nested there.
+        item("PVTI_nh3", { priority: "P1", branch: [`${UP}/3`] }),
+        question("PVTI_q3", 30, "https://github.com/cgwalters-bot/homegit/pull/9", { priority: "P1" }),
+        tracked("PVTI_t5", 5, { priority: "P2", branch: [`${UP}/5`] }),
+        question("PVTI_q5", 31, `${TRACKER}/5`, { priority: "P2" }),
+      ];
+      const linked = [item("PVTI_ir1", { status: "In Review", priority: "P0", org: "bootc-dev", branch: [`${UP}/1`] })];
+      const others = [
+        { pr: up(1), wait: wait(["resign"]) },
+        { pr: up(2), wait: wait(["rerun"]) },
+        { pr: up(3), wait: wait(["review-requested"]) },
+        { pr: pr("cgwalters-bot", "homegit", 9, { draft: false }), wait: wait([], true) },
+        { pr: up(4, { title: "no item" }), wait: wait(["updated"]) },
+      ];
+      const entries = buildEntries(items, [], verdicts([]), true, new Set(), { others, linked });
+      assert.deepEqual(
+        entries.map((e) => [e.key, e.priority ?? "-", e.wait?.reasons.join(","), e.children?.map((c) => c.key)]),
+        [
+          ["pr:bootc-dev/bootc#1", "P0", "resign", undefined],
+          ["pr:bootc-dev/bootc#3", "P1", "review-requested", undefined],
+          // A question about a PR waiting on the bot isn't nested under it: it is his.
+          ["item:PVTI_q3", "P1", undefined, undefined],
+          ["item:PVTI_t5", "P2", undefined, ["item:PVTI_q5"]],
+          ["pr:bootc-dev/bootc#2", "-", "rerun", undefined],
+          ["pr:bootc-dev/bootc#4", "-", "updated", undefined],
+          ["pr:cgwalters-bot/homegit#9", "-", "", undefined],
+        ],
+      );
+      const byKey = new Map(entries.map((e) => [e.key, e]));
+      assert.equal(byKey.get("pr:bootc-dev/bootc#3")?.item?.nodeId, "PVTI_nh3");
+      assert.equal(byKey.get("pr:bootc-dev/bootc#1")?.item?.nodeId, "PVTI_ir1", "an In Review item ranks its PR");
+      assert.ok(!entries.some((e) => e.key === "item:PVTI_nh3"), "a Needs human item whose PR waits on him isn't listed twice");
+      assert.ok(!entries.some((e) => e.bug), "nor flagged as left without an ask");
+      assert.deepEqual(groupRanked(entries).map((g) => g.priority), ["P0", "P1", "P2", NO_PRIORITY, ON_BOT_GROUP]);
+    });
+
+    it("keeps an ask about a PR under the PR's entry", () => {
+      const items = [
+        item("PVTI_nh", { priority: "P1", branch: [`${UP}/7`] }),
+        tracked("PVTI_rev", 40, { labels: ["review"], body: `Blocks: ${UP}/7\nAsk: Re-approve\n` }),
+      ];
+      const entries = buildEntries(items, [], verdicts([]), true, new Set(), { others: [{ pr: up(7), wait: wait(["resign"]) }] });
+      assert.deepEqual(entries.map((e) => [e.key, e.children?.map((c) => c.key)]), [["pr:bootc-dev/bootc#7", ["item:PVTI_rev"]]]);
+    });
+
+    it("leaves a Needs human item whose PR waits on the bot as its own entry", () => {
+      const items = [item("PVTI_nh", { priority: "P1", branch: [`${UP}/7`] })];
+      const entries = buildEntries(items, [], verdicts([]), true, new Set(), { others: [{ pr: up(7), wait: wait([], true) }] });
+      assert.deepEqual(entries.map((e) => [e.key, e.bug === true]), [["item:PVTI_nh", true], ["pr:bootc-dev/bootc#7", false]]);
+    });
+
+    it("never lists a forge PR twice", () => {
+      const forge = pr("cgwalters-forge", "a", 1);
+      const entries = buildEntries([], [forge], verdicts([]), true, new Set(), { others: [{ pr: forge, wait: wait(["review-requested"]) }] });
+      assert.deepEqual(entries.map((e) => e.key), ["pr:cgwalters-forge/a#1"]);
+    });
   });
 });

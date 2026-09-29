@@ -14,6 +14,7 @@ import {
   MaybeSentError,
   postAskComment,
   rerunFailedJobs,
+  rerunPrRun,
   submitAskedReview,
 } from "../src/github/backend.ts";
 import { fields, rawItems, scriptedFetch } from "./helpers.ts";
@@ -46,9 +47,24 @@ describe("loadQueue", () => {
     assert.equal(first.items.length, 11);
     const itemsUrl = new URL(calls[1]?.url ?? "");
     assert.equal(itemsUrl.searchParams.get("fields"), "102,104,103,105,106,107");
-    assert.equal(itemsUrl.searchParams.get("q"), 'status:"Needs human","Draft"');
+    assert.equal(itemsUrl.searchParams.get("q"), 'status:"Needs human","Draft","In Review"');
 
     assert.equal((await loadQueue(gh)).changed, false);
+  });
+
+  it("keeps In Review items apart, only to rank the PRs in their Branch", async () => {
+    const raw = rawItems();
+    const inReview = structuredClone(raw[0]) as (typeof raw)[number];
+    inReview.node_id = "PVTI_in_review";
+    for (const f of inReview.fields ?? []) if (f.name === "Status") f.value = { name: { raw: "In Review" } };
+    const { fetchImpl } = scriptedFetch((_m, url) => {
+      if (url.startsWith(`${PROJECT}/fields`)) return { body: fields() };
+      if (url.startsWith(`${PROJECT}/items`)) return { body: [...raw, inReview] };
+      return undefined;
+    });
+    const q = await loadQueue(new GitHub(token, fetchImpl));
+    assert.equal(q.items.length, 11);
+    assert.deepEqual(q.linked.map((i) => [i.nodeId, i.status]), [["PVTI_in_review", "In Review"]]);
   });
 });
 
@@ -540,6 +556,50 @@ describe("submitAskedReview", () => {
       const { fetchImpl, calls } = github(issue);
       await assert.rejects(submitAskedReview(new GitHub(token, fetchImpl), ASK, PR, HEAD, approve), want);
       assert.deepEqual(calls.map((c) => c.method), ["GET"]);
+    });
+  }
+});
+
+describe("rerunPrRun", () => {
+  const PR = { owner: "example-upstream", repo: "widget", number: 9 };
+  const PULL_API = `${API}/repos/example-upstream/widget/pulls/9`;
+  const allowed = [{ url: RUN, owner: "example-upstream", repo: "widget", id: "777" }];
+  /** The chore's GitHub, plus the PR at `head` (the failed run's by default). */
+  const prGitHub = (over: Parameters<typeof rerunGitHub>[0] & { pull?: unknown } = {}) => {
+    const base = rerunGitHub(over);
+    const pull = over.pull ?? { state: "open", head: { sha: "1".repeat(40) }, user: { login: "cgwalters-bot" } };
+    const fetchImpl = async (url: string, init?: RequestInit) =>
+      (init?.method ?? "GET") === "GET" && url === PULL_API ? new Response(JSON.stringify(pull), { status: 200 }) : base.fetchImpl(url, init);
+    return { fetchImpl, calls: base.calls };
+  };
+
+  it("reruns a failed required check's run on the PR's head, commenting nowhere", async () => {
+    const { fetchImpl, calls } = prGitHub();
+    assert.equal(await rerunPrRun(new GitHub(token, fetchImpl), PR, RUN, allowed), RUN);
+    assert.deepEqual(
+      calls.map((c) => `${c.method} ${c.url.replace(API, "")}`),
+      [
+        "GET /repos/example-upstream/widget/actions/runs/777",
+        "GET /repos/example-upstream/widget/actions/runs/777/jobs?filter=latest&per_page=100",
+        "POST /repos/example-upstream/widget/actions/runs/777/rerun-failed-jobs",
+      ],
+    );
+  });
+
+  const refusals: [string, string, readonly (typeof allowed)[number][], Parameters<typeof prGitHub>[0], RegExp][] = [
+    ["a URL that isn't a run", `${RUN}/job/2`, allowed, {}, /not a workflow run URL/],
+    ["a run the queue didn't find for the PR", "https://github.com/example-upstream/widget/actions/runs/778", allowed, {}, /isn't a failed required check/],
+    ["a run in another repository", "https://github.com/evil/widget/actions/runs/777", [{ url: "https://github.com/evil/widget/actions/runs/777", owner: "evil", repo: "widget", id: "777" }], {}, /not in example-upstream\/widget/],
+    ["a closed PR", RUN, allowed, { pull: { state: "closed", head: { sha: "1".repeat(40) }, user: { login: "cgwalters-bot" } } }, /is closed/],
+    ["someone else's PR", RUN, allowed, { pull: { state: "open", head: { sha: "1".repeat(40) }, user: { login: "someone" } } }, /is not cgwalters-bot's/],
+    ["a run on an older head", RUN, allowed, { pull: { state: "open", head: { sha: "2".repeat(40) } , user: { login: "cgwalters-bot" } } }, /ran on 111111111111.*now at 222222222222/],
+    ["a successful run", RUN, allowed, { run: { ...failedRun, conclusion: "success" } }, /ended success/],
+  ];
+  for (const [name, url, ok, over, want] of refusals) {
+    it(`refuses ${name}, rerunning nothing`, async () => {
+      const { fetchImpl, calls } = prGitHub(over);
+      await assert.rejects(rerunPrRun(new GitHub(token, fetchImpl), PR, url, ok), want);
+      assert.equal(calls.filter((c) => c.method === "POST").length, 0);
     });
   }
 });

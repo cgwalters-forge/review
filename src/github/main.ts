@@ -5,9 +5,21 @@ import { h } from "../dom.ts";
 import { createRenderer } from "../markdown.ts";
 import { GitHub, GitHubError } from "./api.ts";
 import { missingScopes, type Persistence, savedToken, type TokenSource, useToken } from "./auth.ts";
-import { itemAction, reviewAskFor, reviewComment } from "./asks.ts";
+import { itemAction, reviewAskFor, reviewComment, type RunRef } from "./asks.ts";
 import type { Item } from "./board.ts";
-import { type Context, loadAnswered, loadContext, loadQueue, postAnswer, postAskComment, rerunFailedJobs, submitAskedReview, viewer } from "./backend.ts";
+import {
+  type Context,
+  loadAnswered,
+  loadContext,
+  loadQueue,
+  loadRuns,
+  postAnswer,
+  postAskComment,
+  rerunFailedJobs,
+  rerunPrRun,
+  submitAskedReview,
+  viewer,
+} from "./backend.ts";
 import { cachedLabel, type CacheSession, forgetCache, openCache } from "./cache.ts";
 import {
   CLASSIC_SCOPES,
@@ -31,11 +43,26 @@ import { deleteCacheDatabase, IdbStore } from "./idbstore.ts";
 import { type JobCache, loadOps, type Ops } from "./ops.ts";
 import { opsView, tickOps } from "./opsview.ts";
 import { saveMine } from "./mine.ts";
-import { loadFileLines, loadForgePrs, loadPrDetail, loadRangeFiles, mapLimit, type PrDetail, refreshVerdicts, submitReview, type VerdictEntry } from "./prs.ts";
+import {
+  loadFileLines,
+  loadForgePrs,
+  loadOtherPrs,
+  loadPrDetail,
+  loadRangeFiles,
+  loadWaiting,
+  mapLimit,
+  type OtherPr,
+  type PrDetail,
+  refreshVerdicts,
+  submitReview,
+  type VerdictEntry,
+  type WaitingPr,
+} from "./prs.ts";
 import { APPROVE_ACTION, canReview, type PrPane, prView, REVIEW_FORM_CLASS, type ReviewAskInfo } from "./prview.ts";
-import { buildEntries, type Entry, itemHref } from "./queue.ts";
+import { buildEntries, type Entry, itemHref, onBot } from "./queue.ts";
 import { loadFilter, saveFilter } from "./store.ts";
 import { answerState, type BoardHref, type ContextHooks, CONTEXT_CLASS, contextView, itemView, queueView, ROW_CLASS, ROW_KEY_ATTR, type RowLabel, STATE_LABEL } from "./view.ts";
+import { ON_BOT_LABEL, REASON_LABEL } from "./waiting.ts";
 
 const render = createRenderer(window);
 
@@ -49,9 +76,15 @@ interface State {
   rejecting?: Promise<void>;
   login?: string;
   items: Item[];
+  /** In Review items, which only rank the PRs in their Branch. */
+  linked: Item[];
   loaded: boolean;
   /** The bot's open draft PRs on the forge, from the last search. */
   prs: ForgePr[];
+  /** The bot's open PRs other than the forge's drafts, from the last searches. */
+  others: OtherPr[];
+  /** Those of them the queue lists, and why, from the last read. */
+  waiting: WaitingPr[];
   /** Their verdicts and heads, by refKey. */
   verdicts: Map<string, VerdictEntry>;
   lastForgePoll: number;
@@ -62,6 +95,7 @@ interface State {
   /** The queue's filter: the hash's, else the last chosen (remembered if storage allows). */
   filter: QueueFilter;
   verdictsRunning: boolean;
+  waitingRunning: boolean;
   polling: boolean;
   /** The ranked queue. */
   entries: Entry[];
@@ -85,8 +119,8 @@ interface State {
   reloadedFor: Map<string, string>;
   /** The open item as it was rendered, to notice changes under it. */
   shown?: { nodeId: string; key: string };
-  /** The open PR as it was rendered: its key and updated_at. */
-  shownPr?: { key: string; updatedAt: string };
+  /** The open PR as it was rendered: its key, updated_at, and what the queue listed it for (JSON). */
+  shownPr?: { key: string; updatedAt: string; wait: string | undefined };
   /** A note about the open item or PR, e.g. that it changed. */
   itemNote?: string;
   /** The news pane's last read, and which merged PRs touched the harness. */
@@ -192,6 +226,8 @@ function labelOf(state: State): (e: Entry) => RowLabel | undefined {
   return (e) => {
     if (e.kind === "pr") {
       if (e.pr && state.reviewed.has(refKey(e.pr.ref))) return { text: "reviewed from here", cls: "answered" };
+      if (onBot(e)) return { text: ON_BOT_LABEL, cls: "on-bot" };
+      if (e.wait?.reasons.length) return { text: e.wait.reasons.map((r) => REASON_LABEL[r]).join(" · "), cls: "w-yours" };
       const v = e.verdict;
       if (!v) return { text: "checking reviews…", cls: "pending" };
       return v.state === "none" ? undefined : { text: VERDICT_LABEL[v.state], cls: `v-${v.state}` };
@@ -329,13 +365,27 @@ async function rerun(state: State, item: Item, url: string): Promise<string> {
   }
 }
 
+/** Rerun a listed PR's failed required check run, one request per run at a time. */
+async function rerunPr(state: State, ref: { owner: string; repo: string; number: number }, url: string, allowed: readonly RunRef[]): Promise<string> {
+  if (state.rerunning.has(url)) throw new Error("a rerun of this run is already in flight");
+  state.rerunning.add(url);
+  try {
+    const out = await rerunPrRun(state.gh, ref, url, allowed);
+    state.forceForge = true;
+    return out;
+  } finally {
+    state.rerunning.delete(url);
+  }
+}
+
 /** What an item's loaded context acts through. */
 function contextHooks(state: State, item: Item): ContextHooks {
   return { boardHref: boardHref(state), rerun: (url) => rerun(state, item, url), rerunning: (url) => state.rerunning.has(url) };
 }
 
 function prEntry(state: State, key: string): Entry | undefined {
-  return state.entries.find((e) => e.key === `pr:${key}`);
+  const want = `pr:${key}`.toLowerCase();
+  return state.entries.find((e) => e.key.toLowerCase() === want);
 }
 
 function renderPr(state: State, ref: { owner: string; repo: string; number: number }): void {
@@ -349,14 +399,14 @@ function renderPr(state: State, ref: { owner: string; repo: string; number: numb
   // Opening a PR the forge says changed since we read it reads it again,
   // once per search result, in case the two timestamps never agree. (A
   // cached copy is being re-read already.)
-  const searched = state.prs.find((p) => refKey(p.ref) === key)?.updatedAt;
+  const searched = [...state.prs, ...state.others.map((o) => o.pr)].find((p) => refKey(p.ref) === key)?.updatedAt;
   if (searched && detail.updatedAt && searched > detail.updatedAt && !state.prCachedAt.has(key) && state.reloadedFor.get(key) !== searched) {
     state.reloadedFor.set(key, searched);
     state.details.delete(key);
     renderPr(state, ref);
     return;
   }
-  state.shownPr = { key, updatedAt: detail.updatedAt };
+  state.shownPr = { key, updatedAt: detail.updatedAt, wait: JSON.stringify(prEntry(state, key)?.wait) };
   const found = reviewAskFor(state.items, ref);
   const ask: ReviewAskInfo | undefined = found && {
     pr: found.target.ref,
@@ -365,7 +415,15 @@ function renderPr(state: State, ref: { owner: string; repo: string; number: numb
     ...(found.item.url ? { issueUrl: found.item.url } : {}),
     ...(found.body.ask ? { text: found.body.ask } : {}),
   };
-  const pane = prView(detail, prEntry(state, key), render, {
+  const entry = prEntry(state, key);
+  const runs = entry?.wait?.reasons.includes("rerun") ? (entry.wait.runs ?? []) : [];
+  const reruns = runs.length
+    ? {
+        load: () => loadRuns(state.gh, runs, detail.url),
+        hooks: { rerun: (url: string) => rerunPr(state, ref, url, runs), rerunning: (url: string) => state.rerunning.has(url) },
+      }
+    : undefined;
+  const pane = prView(detail, entry, render, {
     review: async (action, text, draft, comments, sent) => {
       const reviews = composeReviews(action, text, detail.head, { draft, comments });
       const onSent = (i: number) => sent(reviews[i]?.commit_id ?? "");
@@ -413,7 +471,7 @@ function renderPr(state: State, ref: { owner: string; repo: string; number: numb
         return r;
       },
     },
-  }, { reviewedHere: state.reviewed.has(key), ...(ask ? { ask } : {}) });
+  }, { reviewedHere: state.reviewed.has(key), ...(ask ? { ask } : {}), ...(reruns ? { reruns } : {}) });
   state.pane = pane;
   showMain(pane.el);
 }
@@ -564,7 +622,10 @@ async function pollForge(state: State): Promise<boolean> {
   if (Date.now() - state.lastForgePoll < wait) return false;
   state.forceForge = false;
   try {
-    const prs = await loadForgePrs(state.gh);
+    // Settled apart: a failed search of the other PRs keeps them as they were, and the drafts still refresh.
+    const [forge, others] = await Promise.allSettled([loadForgePrs(state.gh), loadOtherPrs(state.gh)]);
+    if (forge.status === "rejected") throw forge.reason;
+    const prs = forge.value;
     state.lastForgePoll = Date.now();
     state.forgeKnown = true;
     delete state.forgeError;
@@ -572,10 +633,37 @@ async function pollForge(state: State): Promise<boolean> {
     const changed = sig(prs) !== sig(state.prs);
     state.prs = prs;
     void pollVerdicts(state);
+    if (others.status === "fulfilled") {
+      state.others = others.value;
+      void pollWaiting(state);
+    } else {
+      state.forgeError = `Couldn't search the bot's other PRs: ${message(others.reason)}`;
+    }
     return changed;
   } catch (e) {
-    state.forgeError = `Couldn't read the forge's PRs: ${message(e)}`;
+    state.forgeError = `Couldn't search the bot's PRs: ${message(e)}`;
     return false;
+  }
+}
+
+/** Whose turn each PR other than a forge draft is, re-read every forge poll (check runs move without the PR); update the view if that changed. */
+async function pollWaiting(state: State): Promise<void> {
+  if (state.waitingRunning) return;
+  state.waitingRunning = true;
+  try {
+    const { prs: read, errors, failed } = await loadWaiting(state.gh, state.others);
+    // A PR that couldn't be read this time keeps its last standing rather than flicker out.
+    const prs = [...read, ...state.waiting.filter((w) => failed.has(refKey(w.pr.ref)))];
+    const sig = (w: readonly WaitingPr[]) => JSON.stringify(w.map((x) => [refKey(x.pr.ref), x.pr.title, x.head, x.wait]));
+    const changed = sig(prs) !== sig(state.waiting);
+    state.waiting = prs;
+    if (errors.length) {
+      state.forgeError = `Couldn't read ${errors.length} of the bot's PRs: ${errors.join("; ")}`;
+      renderChrome(state);
+    }
+    if (changed && state.loaded) update(state, false, false);
+  } finally {
+    state.waitingRunning = false;
   }
 }
 
@@ -586,7 +674,7 @@ async function pollVerdicts(state: State): Promise<void> {
   state.verdictsRunning = true;
   try {
     const verdicts = await refreshVerdicts(state.gh, state.prs, state.verdicts);
-    const sig = (v: ReadonlyMap<string, VerdictEntry>) => JSON.stringify([...v].map(([k, e]) => [k, e.head, e.verdict.state]).sort());
+    const sig = (v: ReadonlyMap<string, VerdictEntry>) => JSON.stringify([...v].map(([k, e]) => [k, e.head, e.verdict.state, e.botReplied === true]).sort());
     const changed = sig(verdicts) !== sig(state.verdicts);
     state.verdicts = verdicts;
     if (changed && state.loaded) update(state, false, false);
@@ -612,21 +700,29 @@ async function showCached(state: State): Promise<void> {
   const queueReads = state.gh.cacheOnly();
   const otherReads = state.gh.cacheOnly();
   let items: Item[];
+  let linked: Item[];
   try {
-    items = (await loadQueue(queueReads)).items;
+    ({ items, linked } = await loadQueue(queueReads));
   } catch {
     return;
   }
   const prs = await loadForgePrs(queueReads).catch(() => undefined);
+  const others = await loadOtherPrs(queueReads).catch(() => undefined);
+  const waiting = others ? (await loadWaiting(otherReads, others)).prs : [];
   const verdicts = new Map<string, VerdictEntry>();
   const parts = await mapLimit(prs ?? [], FETCH_CONCURRENCY, (p) => refreshVerdicts(otherReads, [p], new Map()).catch(() => new Map<string, VerdictEntry>()));
   for (const part of parts) for (const [k, v] of part) verdicts.set(k, v);
   const answered = await loadAnswered(otherReads, items);
   if (state.loaded || state.closed) return;
   state.items = items;
+  state.linked = linked;
   if (prs) {
     state.prs = prs;
     state.forgeKnown = true;
+  }
+  if (others) {
+    state.others = others;
+    state.waiting = waiting;
   }
   state.verdicts = verdicts;
   state.answered = answered;
@@ -651,7 +747,12 @@ async function refreshAnswered(state: State, items: readonly Item[]): Promise<vo
 
 function rebuildEntries(state: State): void {
   const verdicts = new Map([...state.verdicts].map(([k, v]) => [k, v.verdict]));
-  state.entries = buildEntries(state.items, state.prs, verdicts, state.forgeKnown, new Set([...state.answered, ...state.sent]));
+  const replied = new Set([...state.verdicts].filter(([, v]) => v.botReplied).map(([k]) => k));
+  state.entries = buildEntries(state.items, state.prs, verdicts, state.forgeKnown, new Set([...state.answered, ...state.sent]), {
+    others: state.waiting,
+    replied,
+    linked: state.linked,
+  });
 }
 
 /**
@@ -677,7 +778,11 @@ function update(state: State, boardChanged: boolean, first: boolean): void {
     renderChrome(state);
   } else {
     const key = refKey(r.ref);
-    const now = state.prs.find((p) => refKey(p.ref) === key)?.updatedAt;
+    // The pane was built for what the queue listed it for (review form, re-sign, reruns).
+    if (state.shownPr?.key === key && JSON.stringify(prEntry(state, key)?.wait) !== state.shownPr.wait) {
+      state.itemNote = "The queue now lists this PR for something else (a review, re-sign or rerun); press r to reload.";
+    }
+    const now = [...state.prs, ...state.others.map((o) => o.pr)].find((p) => refKey(p.ref) === key)?.updatedAt;
     if (state.shownPr?.key === key && now && state.shownPr.updatedAt && now > state.shownPr.updatedAt) {
       state.itemNote = "This PR changed since you opened it (new commits or reviews); press r to reload.";
     }
@@ -705,6 +810,7 @@ async function poll(state: State): Promise<void> {
     delete state.cachedAt;
     if (q.changed || first || revalidated) {
       state.items = q.items;
+      state.linked = q.linked;
       // Keep "sent" only for items still waiting on the bot.
       const ids = new Set(q.items.map((i) => i.nodeId));
       for (const s of state.sent) if (!ids.has(s)) state.sent.delete(s);
@@ -882,14 +988,18 @@ async function start(source: TokenSource): Promise<void> {
     closed: false,
     prCachedAt: new Map(),
     items: [],
+    linked: [],
     loaded: false,
     prs: [],
+    others: [],
+    waiting: [],
     verdicts: new Map(),
     lastForgePoll: 0,
     forceForge: false,
     forgeKnown: false,
     filter: loadFilter(),
     verdictsRunning: false,
+    waitingRunning: false,
     polling: false,
     entries: [],
     sent: new Set(),

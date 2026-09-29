@@ -2,10 +2,24 @@
 // their verdicts, one PR's details for the review pane, and the review
 // itself. Views call these; tests drive them with a scripted fetch.
 
-import type { GitHub } from "./api.ts";
+import { type GitHub, GitHubError } from "./api.ts";
+import type { RunRef } from "./asks.ts";
 import type { IssueRef } from "./board.ts";
 import { findGuide, type GuideState } from "./guide.ts";
 import { BOT_LOGIN, FETCH_CONCURRENCY, FORGE_ORG, OPERATOR, PAGE_SIZE } from "./config.ts";
+import {
+  botRepliedSince,
+  classifyPr,
+  dcoFailing,
+  failedRequired,
+  isOwnOwner,
+  type PrFacts,
+  type PrWait,
+  type RawAppCheckRun,
+  type RawPrCommit,
+  type RawTimed,
+  unsignedCommits,
+} from "./waiting.ts";
 import {
   type CiCheck,
   ciChecks,
@@ -24,13 +38,54 @@ import {
 
 /** The search for the bot's open draft PRs on the forge. */
 export const FORGE_QUERY = `is:pr is:open draft:true org:${FORGE_ORG} author:${BOT_LOGIN}`;
+/**
+ * The bot's open PRs anywhere that request his review, from him
+ * directly (review-requested: would also match teams he is on, such as
+ * CODEOWNERS' automatic requests). GitHub drops the request once he
+ * reviews.
+ */
+export const REQUESTED_QUERY = `is:pr is:open author:${BOT_LOGIN} user-review-requested:${OPERATOR}`;
+/**
+ * All the bot's open PRs: upstream, in its own repositories, and in the
+ * forge's own (non-fork) repositories, which open ready rather than as
+ * drafts. The forge's drafts among them are FORGE_QUERY's, and dropped.
+ */
+export const OTHER_QUERY = `is:pr is:open author:${BOT_LOGIN}`;
 /** Search pages to read at most (100 each). */
 const MAX_SEARCH_PAGES = 5;
 
 /** The bot's open draft PRs on the forge, oldest first. Search has no ETags, so poll it sparingly. */
-export async function loadForgePrs(gh: GitHub): Promise<ForgePr[]> {
+export function loadForgePrs(gh: GitHub): Promise<ForgePr[]> {
+  return searchPrs(gh, FORGE_QUERY);
+}
+
+/** A PR other than a forge draft, and whether his review is requested on it. */
+export interface OtherPr {
+  pr: ForgePr;
+  requested: boolean;
+}
+
+/** Whether a PR is one of FORGE_QUERY's: a draft in the forge. */
+function isForgeDraft(pr: ForgePr): boolean {
+  return pr.draft && pr.ref.owner.toLowerCase() === FORGE_ORG.toLowerCase();
+}
+
+/**
+ * The bot's open PRs other than the forge's drafts (which loadForgePrs
+ * lists), oldest first, each marked with whether it requests his
+ * review: two searches, side by side.
+ */
+export async function loadOtherPrs(gh: GitHub): Promise<OtherPr[]> {
+  const [all, requested] = await Promise.all([searchPrs(gh, OTHER_QUERY), searchPrs(gh, REQUESTED_QUERY)]);
+  const want = new Set(requested.map((p) => refKey(p.ref).toLowerCase()));
+  // The search asks for the bot's PRs; check, since the queue acts on them.
+  return all.filter((pr) => pr.author === BOT_LOGIN && !isForgeDraft(pr)).map((pr) => ({ pr, requested: want.has(refKey(pr.ref).toLowerCase()) }));
+}
+
+/** Every PR a search finds, oldest first. */
+async function searchPrs(gh: GitHub, query: string): Promise<ForgePr[]> {
   const out: ForgePr[] = [];
-  const q = encodeURIComponent(FORGE_QUERY);
+  const q = encodeURIComponent(query);
   for (let page = 1; page <= MAX_SEARCH_PAGES; page++) {
     const r = await gh.get<{ items?: RawSearchIssue[]; total_count?: number }>(
       `/search/issues?q=${q}&sort=created&order=asc&per_page=${PAGE_SIZE}&page=${page}`,
@@ -83,6 +138,8 @@ export interface VerdictEntry {
   updatedAt: string;
   head: string;
   verdict: Verdict;
+  /** The bot commented after his latest decision (see botRepliedSince). */
+  botReplied?: boolean;
 }
 
 /**
@@ -116,10 +173,19 @@ export async function refreshVerdicts(
       out.set(key, { updatedAt: p.updatedAt, head: "", verdict: { state: "none" } });
       return;
     }
-    const { reviews, comments } = await readDecisions(gh, p.ref);
-    out.set(key, { updatedAt: p.updatedAt, head, verdict: reviewVerdict(reviews, head, OPERATOR, comments) });
+    out.set(key, { updatedAt: p.updatedAt, head, ...(await readVerdict(gh, p.ref, head)) });
   });
   return out;
+}
+
+/** His verdict on a PR at `head`, and whether the bot replied since he asked for changes. */
+async function readVerdict(gh: GitHub, ref: IssueRef, head: string): Promise<{ verdict: Verdict; botReplied: boolean }> {
+  const { reviews, comments } = await readDecisions(gh, ref);
+  const verdict = reviewVerdict(reviews, head, OPERATOR, comments);
+  if (verdict.state !== "changes-requested") return { verdict, botReplied: false };
+  // Replies to his line comments are review comments; read them only when they matter.
+  const replies = await gh.getAll<RawTimed>(`/repos/${ref.owner}/${ref.repo}/pulls/${ref.number}/comments?per_page=${PAGE_SIZE}`);
+  return { verdict, botReplied: botRepliedSince(verdict.at, [...comments, ...replies.data]) };
 }
 
 /** His reviews and conversation comments on a PR: what bot-pr decides by. */
@@ -130,6 +196,103 @@ async function readDecisions(gh: GitHub, ref: IssueRef): Promise<{ reviews: RawR
     gh.getAll<RawIssueComment>(`${repo}/issues/${ref.number}/comments?per_page=${PAGE_SIZE}`),
   ]);
   return { reviews: reviews.data, comments: comments.data };
+}
+
+/**
+ * The required status checks of a branch, from its rulesets (readable
+ * without admin rights). Classic branch protection isn't readable, so a
+ * repository using only that never lists a PR for a rerun.
+ */
+async function requiredChecks(gh: GitHub, repo: string, branch: string): Promise<string[]> {
+  const r = await gh.get<{ type?: string; parameters?: { required_status_checks?: { context?: string }[] } }[]>(
+    `/repos/${repo}/rules/branches/${branch.split("/").map(encodeURIComponent).join("/")}?per_page=${PAGE_SIZE}`,
+  );
+  return r.data.filter((x) => x.type === "required_status_checks").flatMap((x) => (x.parameters?.required_status_checks ?? []).flatMap((c) => (c.context ? [c.context] : [])));
+}
+
+/** Pages of a head's check runs to read at most (a big CI matrix runs past one). */
+const MAX_CHECK_PAGES = 3;
+
+/** The latest check runs on a commit, every page up to MAX_CHECK_PAGES. */
+async function headCheckRuns(gh: GitHub, repo: string, sha: string): Promise<RawAppCheckRun[]> {
+  const out: RawAppCheckRun[] = [];
+  for (let page = 1; page <= MAX_CHECK_PAGES; page++) {
+    const r = await gh.get<{ total_count?: number; check_runs?: RawAppCheckRun[] }>(
+      `/repos/${repo}/commits/${sha}/check-runs?filter=latest&per_page=${PAGE_SIZE}&page=${page}`,
+    );
+    const runs = r.data.check_runs ?? [];
+    out.push(...runs);
+    if (runs.length < PAGE_SIZE || out.length >= (r.data.total_count ?? 0)) break;
+  }
+  return out;
+}
+
+/** A PR other than a forge draft the queue lists, and where it stands. */
+export interface WaitingPr {
+  pr: ForgePr;
+  head: string;
+  wait: PrWait;
+}
+
+/**
+ * Read what decides whose turn each PR other than a forge draft is (see
+ * classifyPr), and keep those that are listed. Every read is
+ * conditional, so an unchanged PR costs nothing but its round trips:
+ * the PR, his decisions, and upstream the head's check runs, the base's
+ * rules and, only when DCO fails, the commits. Check runs move without
+ * the PR's updated_at, so all are re-read each time. A PR that can't be
+ * read is left out, reported in `errors` and named in `failed`.
+ */
+export async function loadWaiting(gh: GitHub, others: readonly OtherPr[]): Promise<{ prs: WaitingPr[]; errors: string[]; failed: Set<string> }> {
+  const rules = new Map<string, Promise<string[]>>();
+  const errors: string[] = [];
+  const failed = new Set<string>();
+  const read = await mapLimit(others, FETCH_CONCURRENCY, async ({ pr, requested }): Promise<WaitingPr | undefined> => {
+    try {
+      const { ref } = pr;
+      const repo = `${ref.owner}/${ref.repo}`;
+      const pull = (await gh.get<RawPull & { mergeable_state?: string }>(pullPath(ref))).data;
+      if (pull.state !== "open") return undefined;
+      const head = pull.head.sha;
+      const { verdict, botReplied } = await readVerdict(gh, ref, head);
+      const facts: PrFacts = {
+        owner: ref.owner,
+        requested,
+        verdict,
+        botReplied,
+        conflicting: pull.mergeable_state === "dirty",
+        dcoFailing: false,
+        unsigned: [],
+        failedRequired: [],
+      };
+      if (!isOwnOwner(ref.owner)) {
+        const base = pull.base.ref ?? "";
+        const key = `${repo}:${base}`;
+        // Rules this token can't read mean none; any other failure fails
+        // the PR's read, so it keeps its last standing instead of losing a rerun.
+        if (!rules.has(key)) rules.set(key, requiredChecks(gh, repo, base).catch((e: unknown) => (e instanceof GitHubError && (e.status === 403 || e.status === 404) ? [] : Promise.reject(e))));
+        const [required, runs] = await Promise.all([
+          rules.get(key) as Promise<string[]>,
+          headCheckRuns(gh, repo, head),
+        ]);
+        facts.dcoFailing = dcoFailing(runs, required);
+        // A check's details can link a run anywhere; only this repo's can be rerun from here.
+        const here = (run: RunRef) => run.owner.toLowerCase() === ref.owner.toLowerCase() && run.repo.toLowerCase() === ref.repo.toLowerCase();
+        facts.failedRequired = failedRequired(runs, required).map(({ run, ...c }) => (run && here(run) ? { ...c, run } : c));
+        if (facts.dcoFailing) {
+          const commits = await gh.getAll<RawPrCommit>(`${pullPath(ref)}/commits?per_page=${PAGE_SIZE}`, 3);
+          facts.unsigned = unsignedCommits(commits.data);
+        }
+      }
+      const wait = classifyPr(facts);
+      return wait ? { pr, head, wait } : undefined;
+    } catch (e) {
+      errors.push(`${refKey(pr.ref)}: ${e instanceof Error ? e.message : String(e)}`);
+      failed.add(refKey(pr.ref));
+      return undefined;
+    }
+  });
+  return { prs: read.filter((w): w is WaitingPr => w !== undefined), errors, failed };
 }
 
 export interface Commit {

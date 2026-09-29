@@ -1,4 +1,4 @@
-// The review pane for one forge PR: description, commits with their full
+// The review pane for one PR (a forge PR, or another the queue lists): description, commits with their full
 // messages, CI, the diff, the bot's review guide, and the review form.
 // Commit messages, diffs and the guide are untrusted too, and go in as
 // text nodes only.
@@ -38,7 +38,9 @@ import {
   ViewedMarks,
   viewedKey,
 } from "./store.ts";
-import { pill, time } from "./view.ts";
+import type { RunStatus } from "./backend.ts";
+import { type ContextHooks, pill, runView, time } from "./view.ts";
+import type { PrReason, PrWait } from "./waiting.ts";
 
 export { FILE_CLASS };
 /** Classes the keyboard handler looks for. */
@@ -81,6 +83,11 @@ export interface PrViewOptions {
   reviewedHere: boolean;
   /** The review ask for this PR, if there is one. */
   ask?: ReviewAskInfo;
+  /**
+   * For a PR listed for a rerun: its runs' state, and how to rerun them.
+   * The section fills in when `load` answers.
+   */
+  reruns?: { load(): Promise<RunStatus[]>; hooks: ContextHooks };
 }
 
 /** The pane, and the keyboard commands it carries out itself. */
@@ -99,16 +106,55 @@ function samePr(a: IssueRef, b: IssueRef): boolean {
   return a.owner.toLowerCase() === b.owner.toLowerCase() && a.repo.toLowerCase() === b.repo.toLowerCase() && a.number === b.number;
 }
 
+/** The reasons a listed PR asks for his review (a rerun alone doesn't). */
+const REVIEW_REASONS: readonly PrReason[] = ["review-requested", "resign", "updated"];
+
 /**
  * Whether the pane offers a review form: for the bot's own PRs in its own
- * space, and for any PR an open review ask from the bot names (say, an
- * upstream PR he approves). Nothing else, so a crafted link can't turn
- * this page into a one-click approval of someone else's PR.
+ * space, for any PR an open review ask from the bot names (say, an
+ * upstream PR he approves), and for the bot's PRs the queue lists for
+ * his review (`wait`, read from GitHub: his review requested, a re-sign,
+ * or the bot's response to his change request). Nothing else, so a
+ * crafted link can't turn this page into a one-click approval of
+ * someone else's PR.
  */
-export function canReview(d: PrDetail, ask?: ReviewAskInfo): boolean {
+export function canReview(d: PrDetail, ask?: ReviewAskInfo, wait?: PrWait): boolean {
   if (d.state !== "open") return false;
   if (ask && samePr(ask.pr, d.ref)) return true;
-  return d.author === BOT_LOGIN && REVIEWABLE_OWNERS.includes(d.ref.owner);
+  if (d.author !== BOT_LOGIN) return false;
+  return REVIEWABLE_OWNERS.includes(d.ref.owner) || (wait?.reasons.some((r) => REVIEW_REASONS.includes(r)) ?? false);
+}
+
+/** What the queue lists a PR for, above its review form. */
+function waitBanner(d: PrDetail, wait: PrWait): HTMLElement | null {
+  const lines: string[] = [];
+  if (wait.onBot) lines.push("You requested changes, and the bot hasn't pushed or replied since: this one is the bot's turn.");
+  for (const r of wait.reasons) {
+    if (r === "review-requested") lines.push("Your review is requested.");
+    if (r === "resign") {
+      const n = wait.unsigned?.length ?? 0;
+      lines.push(
+        `DCO fails: ${n} commit${n === 1 ? "" : "s"} (${(wait.unsigned ?? []).join(", ")}) lack${n === 1 ? "s" : ""} your Signed-off-by. Approving head ${short(d.head)} is your sign-off: the bot then adds it with bot-pr signoff.`,
+      );
+    }
+    if (r === "rerun") lines.push(`Required checks failed (${(wait.failed ?? []).join(", ")}); their runs are below, to rerun if it looks like a flake.`);
+    if (r === "updated") lines.push("You requested changes, and the bot pushed or replied since.");
+  }
+  return lines.length ? h("div", { class: "review-ask" }, ...lines.map((l) => h("p", { class: "note" }, l))) : null;
+}
+
+/** The runs behind a PR's failed required checks, filled in once read. */
+function rerunSection(reruns: NonNullable<PrViewOptions["reruns"]>): HTMLElement {
+  const section = h("section", { class: "runs" }, h("h3", {}, "Failed required checks"), h("p", { class: "note" }, "Loading their runs…"));
+  reruns
+    .load()
+    .then((runs) => {
+      section.replaceChildren(h("h3", {}, "Failed required checks"), h("ul", {}, ...runs.map((r) => runView(r, { ...reruns.hooks, rerunOnPr: true }))));
+    })
+    .catch((e: unknown) => {
+      section.append(h("p", { class: "warn" }, `Couldn't read the runs: ${e instanceof Error ? e.message : String(e)}`));
+    });
+  return section;
 }
 
 /** The ask's expected head, when the PR's head is no longer it. */
@@ -449,7 +495,7 @@ class Pane implements PrPane {
   constructor(d: PrDetail, entry: Entry | undefined, render: Renderer, handlers: PrViewHandlers, opts: PrViewOptions) {
     this.#d = d;
     this.#handlers = handlers;
-    this.#canReview = canReview(d, opts.ask);
+    this.#canReview = canReview(d, opts.ask, entry?.wait);
     this.#guide = d.guide;
     this.#seen = loadSeen(this.#guideKey());
     this.#drafts = load(this.#draftsKey(), [], (v): v is DraftComment[] => Array.isArray(v) && v.every(isDraft));
@@ -484,7 +530,7 @@ class Pane implements PrPane {
       });
       form = this.#form.form;
     } else if (d.state !== "open") form = h("p", { class: "warn" }, `This PR is ${d.state}; there is nothing to review.`);
-    else form = h("p", { class: "note" }, `Reviews from here are only for ${BOT_LOGIN}'s PRs in ${REVIEWABLE_OWNERS.join(" and ")}, and PRs a review ask from the bot names; use GitHub for this one.`);
+    else form = h("p", { class: "note" }, `Reviews from here are only for ${BOT_LOGIN}'s PRs in ${REVIEWABLE_OWNERS.join(" and ")}, and its PRs the queue lists for your review; use GitHub for this one.`);
     const files = h(
       "section",
       { class: "files" },
@@ -509,6 +555,8 @@ class Pane implements PrPane {
       linkRow(d, entry),
       ...d.warnings.map((w) => h("p", { class: "warn" }, w)),
       entry?.item?.why ? h("section", {}, h("h3", {}, "Why (board)"), h("div", { class: "md" }, render(entry.item.why))) : null,
+      entry?.wait ? waitBanner(d, entry.wait) : null,
+      opts.reruns ? rerunSection(opts.reruns) : null,
       form,
       handlers.mine && d.state === "open" && d.author === BOT_LOGIN && d.ref.owner === FORGE_ORG
         ? mineSection(d, { ...handlers.mine, unseen: () => unseenNote(this.unseen()) })

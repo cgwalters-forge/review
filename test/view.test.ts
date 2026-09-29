@@ -117,7 +117,7 @@ describe("queueView", () => {
     assert.equal(row("PVTI_synthetic_epic")?.querySelector(".tag")?.textContent, "cgwalters-forge/tracker#20 · 1/3 sub-issues done");
     assert.equal(row("PVTI_synthetic_review_ask")?.querySelector(".why")?.textContent, "Re-approve widget#50 at its new head, then the bot signs off");
     assert.equal(row("PVTI_synthetic_chore_ask")?.querySelector(".kind")?.textContent, "do");
-    assert.match(root.querySelector(".summary")?.textContent ?? "", /0 PRs to review · 2 questions · 1 reviews · 1 chores · 3 without an ask/);
+    assert.match(root.querySelector(".summary")?.textContent ?? "", /0 PRs · 2 questions · 1 reviews · 1 chores · 3 without an ask/);
   });
 
   it("labels answered and closed questions", () => {

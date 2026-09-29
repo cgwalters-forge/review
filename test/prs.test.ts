@@ -2,8 +2,22 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { GitHub } from "../src/github/api.ts";
 import { composeReview, composeReviews, type ForgePr } from "../src/github/forge.ts";
-import { FORGE_QUERY, loadFileLines, loadForgePrs, loadPrDetail, loadRangeFiles, mapLimit, refreshVerdicts, submitReview, type VerdictEntry } from "../src/github/prs.ts";
-import { scriptedFetch } from "./helpers.ts";
+import {
+  FORGE_QUERY,
+  loadFileLines,
+  loadForgePrs,
+  loadOtherPrs,
+  loadPrDetail,
+  loadRangeFiles,
+  loadWaiting,
+  mapLimit,
+  OTHER_QUERY,
+  refreshVerdicts,
+  REQUESTED_QUERY,
+  submitReview,
+  type VerdictEntry,
+} from "../src/github/prs.ts";
+import { fixture, scriptedFetch } from "./helpers.ts";
 
 const token = async () => "t";
 const API = "https://api.github.com";
@@ -45,6 +59,108 @@ describe("loadForgePrs", () => {
     assert.equal(calls.length, 2);
     assert.equal(new URL(calls[0]?.url ?? "").searchParams.get("q"), FORGE_QUERY);
     assert.match(FORGE_QUERY, /is:open draft:true org:cgwalters-forge author:cgwalters-bot/);
+  });
+});
+
+describe("the bot's PRs other than the forge's drafts", () => {
+  const fix = fixture<{ searches: Record<"other" | "requested", unknown>; routes: Record<string, unknown> }>("waiting-prs.json");
+  const github = () =>
+    scriptedFetch((method, url) => {
+      if (method !== "GET") return undefined;
+      const u = new URL(url);
+      if (u.pathname === "/search/issues") {
+        const q = u.searchParams.get("q");
+        return { body: q === OTHER_QUERY ? fix.searches.other : q === REQUESTED_QUERY ? fix.searches.requested : { items: [] } };
+      }
+      const body = fix.routes[url.replace(API, "")];
+      return body === undefined ? undefined : { body };
+    });
+
+  it("searches them and those requesting his review, with GitHub's own qualifiers", async () => {
+    assert.equal(OTHER_QUERY, "is:pr is:open author:cgwalters-bot");
+    assert.equal(REQUESTED_QUERY, "is:pr is:open author:cgwalters-bot user-review-requested:cgwalters");
+    const { fetchImpl } = github();
+    const others = await loadOtherPrs(new GitHub(token, fetchImpl));
+    assert.deepEqual(
+      others.map((o) => [o.pr.url.replace("https://github.com/", ""), o.requested]),
+      [
+        ["bootc-dev/bootc/pull/10", false],
+        ["bootc-dev/bootc/pull/11", false],
+        ["cgwalters-bot/homegit/pull/45", true],
+        ["bootc-dev/bcvk/pull/12", false],
+        ["coreos/bootupd/pull/13", false],
+        ["bootc-dev/bootc/pull/14", false],
+        // A PR in the forge's own repository is here; its drafts are loadForgePrs'.
+        ["cgwalters-forge/workflow-compiler/pull/15", true],
+      ],
+    );
+  });
+
+  it("classifies each from GitHub: re-sign, rerun, requested, waiting on the bot, or not listed", async () => {
+    const { fetchImpl, calls } = github();
+    const gh = new GitHub(token, fetchImpl);
+    const { prs, errors } = await loadWaiting(gh, await loadOtherPrs(gh));
+    assert.deepEqual(errors, []);
+    assert.deepEqual(
+      prs.map((w) => [w.pr.title, w.wait.reasons, w.wait.onBot]),
+      [
+        ["resign", ["resign"], false],
+        ["rerun", ["rerun"], false],
+        ["requested", ["review-requested"], false],
+        ["on the bot", [], true],
+        ["forge repo, requested", ["review-requested"], false],
+      ],
+    );
+    const [resign, rerun] = prs;
+    assert.deepEqual(resign?.wait.unsigned, ["111111111111"]);
+    assert.deepEqual([rerun?.wait.failed, rerun?.wait.runs?.map((r) => r.url)], [["required-checks"], ["https://github.com/bootc-dev/bootc/actions/runs/900"]]);
+    const paths = calls.map((c) => c.url.replace(API, ""));
+    // The bot's own repositories have no DCO or maintainer reruns to read.
+    assert.ok(!paths.some((p) => /^\/repos\/cgwalters-(bot|forge)\/[^/]+\/(commits|rules)/.test(p)));
+    // Commits are read only where DCO fails, review comments only after a change request.
+    assert.deepEqual(paths.filter((p) => p.endsWith("/commits?per_page=100")), ["/repos/bootc-dev/bootc/pulls/10/commits?per_page=100"]);
+    assert.deepEqual(paths.filter((p) => /pulls\/\d+\/comments/.test(p)), ["/repos/bootc-dev/bcvk/pulls/12/comments?per_page=100"]);
+    // One rules read per repository and branch.
+    assert.equal(paths.filter((p) => p === "/repos/bootc-dev/bootc/rules/branches/main?per_page=100").length, 1);
+  });
+
+  it("reads unreadable rules as none, and fails the PRs on any other rules error", async () => {
+    const { fetchImpl } = github();
+    const rules = (status: number) => async (url: string, init?: RequestInit) =>
+      url.includes("/repos/bootc-dev/bootc/rules/") ? new Response(JSON.stringify({ message: "x" }), { status }) : fetchImpl(url, init);
+    const hidden = new GitHub(token, rules(404));
+    const none = await loadWaiting(hidden, await loadOtherPrs(hidden));
+    assert.deepEqual(none.errors, []);
+    assert.ok(!none.prs.some((w) => w.wait.reasons.includes("rerun")));
+    const flaky = new GitHub(token, rules(502));
+    const failing = await loadWaiting(flaky, await loadOtherPrs(flaky));
+    assert.ok(failing.failed.has("bootc-dev/bootc#11"), "the rerun PR keeps its last standing");
+  });
+
+  it("offers no rerun of a run in another repository", async () => {
+    const { fetchImpl } = github();
+    const moved = async (url: string, init?: RequestInit) => {
+      const res = await fetchImpl(url, init);
+      if (!url.includes("/repos/bootc-dev/bootc/commits/")) return res;
+      const text = (await res.text()).replaceAll("https://github.com/bootc-dev/bootc/actions/runs/", "https://github.com/evil/other/actions/runs/");
+      return new Response(text, { status: res.status, headers: res.headers });
+    };
+    const gh = new GitHub(token, moved);
+    // Nothing there to rerun from here, so it isn't listed for one.
+    const { prs } = await loadWaiting(gh, await loadOtherPrs(gh));
+    assert.equal(prs.find((w) => w.pr.title === "rerun"), undefined);
+  });
+
+  it("reports a PR it can't read, and keeps the rest", async () => {
+    const { fetchImpl } = github();
+    const broken = async (url: string, init?: RequestInit) =>
+      url.endsWith("/repos/bootc-dev/bootc/pulls/11") ? new Response(JSON.stringify({ message: "Server Error" }), { status: 500 }) : fetchImpl(url, init);
+    const gh = new GitHub(token, broken);
+    const { prs, errors, failed } = await loadWaiting(gh, await loadOtherPrs(gh));
+    assert.deepEqual(prs.map((w) => w.pr.title), ["resign", "requested", "on the bot", "forge repo, requested"]);
+    assert.equal(errors.length, 1);
+    assert.match(errors[0] ?? "", /^bootc-dev\/bootc#11: /);
+    assert.deepEqual([...failed], ["bootc-dev/bootc#11"]);
   });
 });
 
@@ -114,6 +230,26 @@ describe("refreshVerdicts", () => {
     });
     const out = await refreshVerdicts(new GitHub(token, fetchImpl), [forgePr(6, "u")], new Map());
     assert.equal(out.get("cgwalters-forge/widget#6")?.verdict.state, "promoted");
+  });
+
+  it("notes whether the bot replied after his change request, inline replies included", async () => {
+    const cases: [string, { user: { login: string }; created_at: string }[], boolean][] = [
+      ["no reply", [], false],
+      ["an inline reply", [{ user: { login: "cgwalters-bot" }, created_at: "2026-01-02T00:00:00Z" }], true],
+      ["someone else's", [{ user: { login: "someone" }, created_at: "2026-01-02T00:00:00Z" }], false],
+      ["the bot's, before", [{ user: { login: "cgwalters-bot" }, created_at: "2025-12-31T00:00:00Z" }], false],
+    ];
+    for (const [name, replies, want] of cases) {
+      const { fetchImpl } = scriptedFetch((_m, url) => {
+        if (url.includes("/pulls?")) return { body: [pull({ number: 8 })] };
+        if (url.includes("/pulls/8/reviews")) return { body: [{ user: { login: "cgwalters" }, state: "CHANGES_REQUESTED", commit_id: HEAD, submitted_at: "2026-01-01T00:00:00Z" }] };
+        if (url.includes("/issues/8/comments")) return { body: [] };
+        if (url.includes("/pulls/8/comments")) return { body: replies };
+        return undefined;
+      });
+      const out = await refreshVerdicts(new GitHub(token, fetchImpl), [forgePr(8, "u")], new Map());
+      assert.deepEqual([out.get("cgwalters-forge/widget#8")?.verdict.state, out.get("cgwalters-forge/widget#8")?.botReplied], ["changes-requested", want], name);
+    }
   });
 
   it("makes no requests when nothing changed", async () => {

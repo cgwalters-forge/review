@@ -143,6 +143,9 @@ details.help summary { cursor: pointer; color: var(--accent); }
 .state.pending { color: var(--muted); background: var(--p3-soft); }
 .state.v-approved-older, .state.v-changes-requested-older { color: var(--p2); background: var(--p2-soft); }
 .state.v-changes-requested { color: var(--p1); background: var(--p1-soft); }
+.state.w-yours { color: var(--accent); background: var(--accent-soft); }
+.row.on-bot { opacity: .6; }
+.state.on-bot { color: var(--muted); background: var(--p3-soft); }
 .state a { color: inherit; }
 button.small, header.top button { font-size: 12px; padding: 4px 9px; }
 
