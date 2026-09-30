@@ -20,6 +20,7 @@ export type Command =
   | "ops"
   | "triage"
   | "decisions"
+  | "capture"
   // The PR pane's own, which it carries out itself.
   | "next-file"
   | "prev-file"
@@ -41,7 +42,9 @@ export interface KeyPress {
   editing: boolean;
 }
 
-const COMMON: Record<string, Command> = { r: "refresh", "?": "help" };
+// b ("board") focuses the capture bar from anywhere; c is taken by the
+// item and PR views.
+const COMMON: Record<string, Command> = { r: "refresh", "?": "help", b: "capture" };
 
 const BY_ROUTE: Record<Route, Record<string, Command>> = {
   queue: { j: "next", k: "prev", ArrowDown: "next", ArrowUp: "prev", o: "open", Enter: "open", n: "news", d: "ops", t: "triage", q: "decisions" },
@@ -80,13 +83,13 @@ export function keyCommand(press: KeyPress, route: Route): Command | "blur" | un
 }
 
 export const HELP: Record<Route, string> = {
-  queue: "j/k or ↓/↑ move · o or Enter open · t triage · q decisions · n news · d ops · r refresh · ? keys",
-  news: "u, Esc or n back to the queue · t triage · q decisions · d ops · r refresh",
-  ops: "u, Esc or d back to the queue · t triage · q decisions · n news · r refresh",
-  triage: "u, Esc or t back to the queue · q decisions · n news · d ops · r refresh",
-  decisions: "u, Esc or q back to the queue · t triage · n news · d ops · r refresh",
-  item: "u or Esc back to the queue · c write an answer · r refresh",
-  pr: "n/p next/previous file · j/k next/previous hunk · v mark viewed · x fold · c comment on the focused line (or write the review) · s unified/split · [/] previous/next commit · g guided review (then n/p between hotspots, Esc leaves) · a approve · u or Esc back · r reload",
+  queue: "j/k or ↓/↑ move · o or Enter open · t triage · q decisions · n news · d ops · b file to the board · r refresh · ? keys",
+  news: "u, Esc or n back to the queue · t triage · q decisions · d ops · b file to the board · r refresh",
+  ops: "u, Esc or d back to the queue · t triage · q decisions · n news · b file to the board · r refresh",
+  triage: "u, Esc or t back to the queue · q decisions · n news · d ops · b file to the board · r refresh",
+  decisions: "u, Esc or q back to the queue · t triage · n news · d ops · b file to the board · r refresh",
+  item: "u or Esc back to the queue · c write an answer · b file to the board · r refresh",
+  pr: "n/p next/previous file · j/k next/previous hunk · v mark viewed · x fold · c comment on the focused line (or write the review) · s unified/split · [/] previous/next commit · g guided review (then n/p between hotspots, Esc leaves) · a approve · b file to the board · u or Esc back · r reload",
 };
 
 export type RouteInfo =

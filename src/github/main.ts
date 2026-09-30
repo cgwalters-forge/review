@@ -38,6 +38,8 @@ import {
   writingElsewhere,
 } from "./advance.ts";
 import { cachedLabel, type CacheSession, forgetCache, openCache } from "./cache.ts";
+import { fileCapture, loadLinkTitle } from "./capture.ts";
+import { type CaptureBar, captureBar, forgetDraft } from "./captureview.ts";
 import {
   CLASSIC_SCOPES,
   DONE_NOTICE_MS,
@@ -162,6 +164,8 @@ interface State {
   ticker?: ReturnType<typeof setInterval>;
   /** The open PR's pane, which handles its own keys. */
   pane?: PrPane;
+  /** The capture bar, shown to OPERATOR only. */
+  capture?: CaptureBar;
   help: boolean;
   /** The location hash last routed to, to tell which list an entry was opened from. */
   hash: string;
@@ -1326,6 +1330,9 @@ function run(state: State, cmd: Command, where: Route): void {
       state.help = !state.help;
       renderChrome(state);
       return;
+    case "capture":
+      state.capture?.focus();
+      return;
   }
 }
 
@@ -1488,8 +1495,10 @@ async function start(source: TokenSource): Promise<void> {
   }
   byId("signout").hidden = false;
   byId("nav").hidden = false;
+  if (state.login === OPERATOR) showCapture(state);
   byId("signout").onclick = () => {
     state.closed = true;
+    forgetDraft(sessionStore());
     void Promise.allSettled([forgetCache(session, () => deleteCacheDatabase()), source.signOut()]).then(() => window.location.reload());
   };
   window.addEventListener("hashchange", () => {
@@ -1521,6 +1530,31 @@ async function start(source: TokenSource): Promise<void> {
   if (state.loaded) renderChrome(state);
   else renderRoute(state);
   await poll(state);
+}
+
+/**
+ * Mount the capture bar. Only for OPERATOR: the bot triages only his
+ * issues, so anyone else's would sit there with the label.
+ */
+function sessionStore(): Storage | undefined {
+  try {
+    return window.sessionStorage;
+  } catch {
+    // Blocked: the draft won't survive a reload.
+    return undefined;
+  }
+}
+
+function showCapture(state: State): void {
+  const storage = sessionStore();
+  state.capture = captureBar({
+    file: (draft) => fileCapture(state.gh, draft),
+    linkTitle: (ref) => loadLinkTitle(state.gh, ref),
+    storage,
+  });
+  const slot = byId("capture");
+  slot.replaceChildren(state.capture.el);
+  slot.hidden = false;
 }
 
 function scopeList(): HTMLElement {
@@ -1572,7 +1606,7 @@ function signInView(reason: SignInReason): HTMLElement {
       h(
         "p",
         {},
-        "A fine-grained token acts on one resource owner only: with owner cgwalters-forge and Pull requests: read and write, Issues: read and write, and Contents and Commit statuses: read, it can review forge PRs and answer the bot's questions in cgwalters-forge/tracker. Make it mine also needs Contents: read and write, to rewrite a PR's commits.",
+        "A fine-grained token acts on one resource owner only: with owner cgwalters-forge and Pull requests: read and write, Issues: read and write, and Contents and Commit statuses: read, it can review forge PRs and answer the bot's questions in cgwalters-forge/tracker. Make it mine also needs Contents: read and write, to rewrite a PR's commits. The capture bar files issues with Issues: write, and adds them to the board with the organization's Projects: read and write (on a classic token, the project scope).",
       ),
       h("p", {}, "Anyone who can change this site's code could read a pasted token, so prefer one that expires soon."),
     ),
@@ -1595,6 +1629,8 @@ function showSignIn(reason: SignInReason): void {
   byId("meta").textContent = "";
   byId("signout").hidden = true;
   byId("nav").hidden = true;
+  byId("capture").hidden = true;
+  byId("capture").replaceChildren();
   setNotice(undefined);
   byId("view").replaceChildren(signInView(reason));
 }
