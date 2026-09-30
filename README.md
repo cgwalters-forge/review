@@ -207,7 +207,22 @@ bot's recent public activity. The runner repo
 is outside cgwalters-forge, so a fine-grained token scoped to it can't
 read the devspaces; a classic token can.
 
-Keys: `j`/`k` move, `o` opens, `u` goes back, `r` reloads, `t` triage, `q` decisions, `n` news, `d` ops; in a PR,
+The **capture bar** under the header, shown to cgwalters only, puts a
+note on the board for the bot: `b` focuses it from any view, and Enter
+files the title (Ctrl+Enter from the note) as an issue in
+cgwalters-forge/tracker labelled `needs-triage`, added to the Workstream
+board. A pasted GitHub link goes into the body and, with no title typed,
+suggests one (`owner/repo#N: its title`). The label is what the bot acts
+on: homegit's bot-notify wakes the coordinator for each of his open
+issues carrying it, and the bot sets its board fields, turns it into
+work or a question on the issue, and removes the label. So a board add
+the token isn't allowed to make (it needs the `project` scope, or the
+organization's Projects permission on a fine-grained token) leaves the
+issue filed, with a note saying so (the bot adds it when it triages).
+An unsent draft is kept in the tab's sessionStorage, so a reload keeps
+it, and signing out drops it.
+
+Keys: `j`/`k` move, `o` opens, `u` goes back, `r` reloads, `t` triage, `q` decisions, `n` news, `d` ops, `b` capture; in a PR,
 `n`/`p` step through files and `j`/`k` through hunks, `v` marks a file
 viewed, `x` folds one, `s` switches unified and split, `[`/`]` step
 through the commits, `g` starts (or leaves) the guided review, whose

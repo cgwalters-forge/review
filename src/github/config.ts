@@ -91,6 +91,12 @@ export const CHORE_LABEL = "chore";
  * "D<n>: ..." and listing the items it unblocks (see triage.ts).
  */
 export const DECISION_LABEL = "decision";
+/**
+ * The label on an issue he files from the capture bar: the bot hasn't
+ * triaged it yet. bot-notify in homegit routes his open issues carrying
+ * it, and the bot removes it once it has turned the issue into work.
+ */
+export const CAPTURE_LABEL = "needs-triage";
 
 /** Poll every this many ms while the tab is visible. */
 export const POLL_INTERVAL_MS = 30_000;
@@ -177,6 +183,9 @@ export const OPS_EVENTS_SHOWN = 20;
 
 /** localStorage key for the chosen theme (auto, light, dark). */
 export const THEME_KEY = "review.theme";
+
+/** sessionStorage key for the capture bar's unsent draft: it survives a reload, not the tab. */
+export const CAPTURE_DRAFT_KEY = "review.capture.draft";
 
 /** Storage key for the pasted token (sessionStorage, or localStorage if remembered). */
 export const TOKEN_KEY = "review.token";

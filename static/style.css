@@ -183,6 +183,16 @@ pre.msg { white-space: pre-wrap; overflow-wrap: anywhere; margin: 6px 0; }
 .nav { display: flex; flex-wrap: wrap; gap: 4px 10px; font-size: 14px; }
 .nav a { color: var(--muted); text-decoration: none; }
 .nav a.on { color: var(--ink); font-weight: 600; }
+
+/* The capture bar under the header: one row, the note below when open */
+form.capture { display: grid; gap: 6px; margin: 8px 0 0; }
+.capture-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.capture-row input { font: 14px var(--sans); color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; min-width: 0; }
+.capture-title { flex: 3 1 240px; }
+.capture-url { flex: 2 1 160px; }
+.capture-body { font-size: 14px; }
+.capture-status:empty { display: none; }
+.capture-status.warn { padding: 6px 10px; }
 .news-item { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 8px 14px; margin-bottom: 8px; overflow-wrap: anywhere; }
 .news-item.harness { border-left: 4px solid var(--p1); }
 .news-item h3 { margin: 4px 0; font-size: 15px; }
