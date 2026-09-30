@@ -4,7 +4,7 @@
 // tracking. `fetch` is injected so tests can script responses.
 
 import { type CachedResponse, ResponseCache, staleAfterWrite } from "./cache.ts";
-import { API_ROOT } from "./config.ts";
+import { API_ROOT, REQUEST_TIMEOUT_MS } from "./config.ts";
 
 export type Fetch = (input: string, init?: RequestInit) => Promise<Response>;
 export type TokenGetter = () => Promise<string>;
@@ -83,6 +83,8 @@ export class GitHub {
   rate: RateLimit | undefined;
   /** A classic token's scopes, from X-OAuth-Scopes; unset for other tokens. */
   scopes: string | undefined;
+  /** Give up on a request unanswered for this long (ms). */
+  timeoutMs = REQUEST_TIMEOUT_MS;
 
   constructor(token: TokenGetter, fetchImpl: Fetch = (i, init) => fetch(i, init), cache: ResponseCache = new ResponseCache()) {
     this.#token = token;
@@ -129,6 +131,7 @@ export class GitHub {
   async #send(method: string, url: string, headers: Record<string, string>, body?: unknown): Promise<Response> {
     const init: RequestInit = {
       method,
+      signal: AbortSignal.timeout(this.timeoutMs),
       // We do our own conditional requests; the browser cache would
       // otherwise answer from its copy for max-age=60 without asking.
       cache: "no-store",
@@ -143,7 +146,13 @@ export class GitHub {
       init.body = JSON.stringify(body);
       (init.headers as Record<string, string>)["Content-Type"] = "application/json";
     }
-    const res = await this.#fetch(url, init);
+    let res: Response;
+    try {
+      res = await this.#fetch(url, init);
+    } catch (e) {
+      if (e instanceof Error && e.name === "TimeoutError") throw new Error(`${method} ${url}: GitHub didn't answer within ${Math.round(this.timeoutMs / 1000)} s`);
+      throw e;
+    }
     this.#noteRate(res);
     if (res.status === 401) this.onUnauthorized?.();
     return res;
