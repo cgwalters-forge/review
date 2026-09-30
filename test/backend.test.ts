@@ -20,7 +20,7 @@ import { fields, rawItems, scriptedFetch } from "./helpers.ts";
 
 const token = async () => "t";
 const API = "https://api.github.com";
-const PROJECT = `${API}/users/cgwalters-bot/projectsV2/1`;
+const PROJECT = `${API}/orgs/cgwalters-forge/projectsV2/1`;
 
 async function queue(): Promise<Map<string, Item>> {
   const { fetchImpl } = scriptedFetch((_m, url) => {
