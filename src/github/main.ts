@@ -23,7 +23,20 @@ import {
   submitAskedReview,
   viewer,
 } from "./backend.ts";
-import { decideAdvance, EDITED_ATTR, type Origin, overlayVerdicts, type PendingVerdict, pickNext, queueStops, writingElsewhere } from "./advance.ts";
+import {
+  decideAdvance,
+  decisionKey,
+  decisionStops,
+  decisionTitle,
+  EDITED_ATTR,
+  type Origin,
+  overlayVerdicts,
+  type PendingVerdict,
+  pickNext,
+  queueStops,
+  triageStops,
+  writingElsewhere,
+} from "./advance.ts";
 import { cachedLabel, type CacheSession, forgetCache, openCache } from "./cache.ts";
 import {
   CLASSIC_SCOPES,
@@ -67,8 +80,8 @@ import {
 import { APPROVE_ACTION, canReview, type PrPane, prView, REVIEW_FORM_CLASS, type ReviewAskInfo } from "./prview.ts";
 import { buildEntries, type Entry, itemHref, onBot } from "./queue.ts";
 import { loadAdvance, loadFilter, saveAdvance, saveFilter } from "./store.ts";
-import { type Decision, parseDecision, sortDecisions } from "./triage.ts";
-import { decisionsView, triageView } from "./triageview.ts";
+import { buildTriage, type Decision, parseDecision, sortDecisions, triageOrder } from "./triage.ts";
+import { decisionCardId, decisionsView, triageView } from "./triageview.ts";
 import { answerState, type BoardHref, type ContextHooks, CONTEXT_CLASS, contextView, itemView, queueView, ROW_CLASS, ROW_KEY_ATTR, type RowLabel, STATE_LABEL } from "./view.ts";
 import { afterReview, ON_BOT_LABEL, REASON_LABEL } from "./waiting.ts";
 
@@ -597,6 +610,10 @@ interface Done {
   from: Element | null;
   /** The entry still waits on him whatever the queue says, e.g. a chore with runs left to rerun. */
   stillWaiting?: boolean;
+  /** The list to step through, when not the one the entry was opened from (a view acting in place). */
+  origin?: Origin;
+  /** Move on by focusing the next stop, by key, on the same page instead of changing the hash. */
+  focus?: (key: string) => void;
 }
 
 /** "" and "#" are both the bare queue. */
@@ -622,7 +639,7 @@ function acted(state: State, done: Done): void {
   // Its own effect isn't news to the page it was done on.
   if (state.shownPr && done.key === `pr:${state.shownPr.key}`) state.shownPr.wait = JSON.stringify(prEntry(state, state.shownPr.key)?.wait);
   refreshSoon(state);
-  const origin = state.origin ?? queueOrigin(state, "#");
+  const origin = done.origin ?? state.origin ?? queueOrigin(state, "#");
   const live = origin.live();
   const next = pickNext(origin.stops, done.key, live);
   const decision = decideAdvance(
@@ -637,10 +654,14 @@ function acted(state: State, done: Done): void {
   );
   switch (decision.kind) {
     case "go":
-      moveOn(state, decision.to.href, `Done: ${done.title} → ${decision.to.title}`, done.hash);
+      if (done.focus) {
+        showDone(state, `Done: ${done.title} → ${decision.to.title}`);
+        done.focus(decision.to.key);
+      } else moveOn(state, decision.to.href, `Done: ${done.title} → ${decision.to.title}`, done.hash);
       return;
     case "caught-up":
-      moveOn(state, origin.hash, `Done: ${done.title}. All caught up.`, done.hash);
+      if (done.focus) showDone(state, `Done: ${done.title}. All caught up.`);
+      else moveOn(state, origin.hash, `Done: ${done.title}. All caught up.`, done.hash);
       return;
     case "stay":
       showDone(state, decision.why === "writing" ? `Done: ${done.title}. Staying here: you have unsent text on this page.` : `Done: ${done.title}.`);
@@ -767,12 +788,17 @@ async function refreshNews(state: State): Promise<void> {
   }
 }
 
+/** Where the triage view opens an item in the app: only one in the queue; others open on GitHub. */
+function triageItemHref(state: State, item: Item): string | undefined {
+  return state.items.some((i) => i.nodeId === item.nodeId) ? itemHref(item) : undefined;
+}
+
 function showTriage(state: State): void {
   const r = route();
   const filter = r.route === "triage" ? r.filter : "all";
   showMain(
     triageView(state.openBoard, filter, {
-      itemHref: (item) => (state.items.some((i) => i.nodeId === item.nodeId) ? itemHref(item) : undefined),
+      itemHref: (item) => triageItemHref(state, item),
       open: state.triageOpen,
       toggled: (theme, open) => {
         if (open) state.triageOpen.add(theme);
@@ -823,6 +849,8 @@ function decisionDraft(): boolean {
 }
 
 function showDecisions(state: State): void {
+  // A redraw keeps him on the card he is on (e.g. the one he moved on to).
+  const on = document.activeElement?.closest("article.decision")?.id;
   showMain(
     decisionsView(
       state.decisions,
@@ -831,15 +859,54 @@ function showDecisions(state: State): void {
         answered: state.decisionsAnswered,
         send: async (d, answer) => {
           if (!d.item.ref) throw new Error("this decision has no issue");
+          const hash = window.location.hash;
           const posted = await postAnswer(state.gh, d.item.ref, answer);
           // The next read confirms it: his comment is now after the bot's last.
           state.decisionsAnswered.add(d.item.nodeId);
+          // Moving on here is focusing the next card: the view answers in place.
+          acted(state, {
+            key: decisionKey(d),
+            title: decisionTitle(d),
+            hash,
+            from: document.getElementById(decisionCardId(d))?.querySelector("form.answer") ?? null,
+            origin: decisionsOrigin(state, hash),
+            focus: (key) => focusDecision(state, key),
+          });
           return posted.url;
         },
       },
       render,
     ),
   );
+  if (on) document.getElementById(on)?.focus({ preventScroll: true });
+}
+
+/** The decisions view as a list to step through, in place. */
+function decisionsOrigin(state: State, hash: string): Origin {
+  const stops = () => decisionStops(state.decisions ?? [], state.decisionsAnswered, hash);
+  return { hash, stops: stops(), live: stops };
+}
+
+/** Move to the decision card with stop key `key`. */
+function focusDecision(state: State, key: string): void {
+  const d = state.decisions?.find((x) => decisionKey(x) === key);
+  const card = d && document.getElementById(decisionCardId(d));
+  if (!card) return;
+  card.scrollIntoView?.({ block: "start" });
+  // The card, not a field in it: the single-key shortcuts keep working.
+  card.focus({ preventScroll: true });
+}
+
+/** The triage view as a list to step through: its rows that open in the app, in its order. */
+function triageOrigin(state: State, hash: string): Origin {
+  const r = parseRoute(hash);
+  const filter = r.route === "triage" ? r.filter : "all";
+  const stops = () =>
+    triageStops(state.openBoard ? triageOrder(buildTriage(state.openBoard.items, filter)) : [], state.entries, {
+      opens: (i) => triageItemHref(state, i),
+      settled: (i) => state.sent.has(i.nodeId) || state.answered.has(i.nodeId),
+    });
+  return { hash, stops: stops(), live: stops };
 }
 
 /**
@@ -1437,6 +1504,7 @@ async function start(source: TokenSource): Promise<void> {
     if (to === "item" || to === "pr") {
       const came = parseRoute(from).route;
       if (came === "queue") state.origin = queueOrigin(state, from || "#");
+      else if (came === "triage") state.origin = triageOrigin(state, from);
       else if (came !== "item" && came !== "pr") delete state.origin;
     }
     renderRoute(state);

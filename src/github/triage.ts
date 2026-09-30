@@ -129,6 +129,12 @@ export function buildTriage(all: readonly Item[], filter: TriageFilter = "all"):
   };
 }
 
+/** The items as the triage view lists them: the P0 lane, then each group's shown items; each once. */
+export function triageOrder(t: Triage): Item[] {
+  const seen = new Set<string>();
+  return [...t.p0, ...[...t.themes, t.untriaged].flatMap((g) => g.shown)].filter((i) => !seen.has(i.nodeId) && seen.add(i.nodeId));
+}
+
 /** A decision issue, parsed. */
 export interface Decision {
   item: Item;

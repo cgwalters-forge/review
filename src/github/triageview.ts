@@ -196,13 +196,17 @@ export interface DecisionsData {
   send(decision: Decision, answer: Answer): Promise<string>;
 }
 
+/** The element id of a decision's card. */
+export const decisionCardId = (d: Decision): string => `decision-${d.item.ref?.number ?? decisionLabel(d)}`;
+
 function decisionCard(d: Decision, data: DecisionsData, render: Renderer): HTMLElement {
   const { item, question } = d;
   const answered = data.answered.has(item.nodeId);
   const id = decisionLabel(d);
   const card = h(
     "article",
-    { class: `decision${answered ? " answered" : ""}`, id: `decision-${item.ref?.number ?? id}` },
+    // Focusable, so moving on after an answer can land on it.
+    { class: `decision${answered ? " answered" : ""}`, id: decisionCardId(d), tabindex: "-1" },
     h(
       "header",
       {},
