@@ -107,6 +107,14 @@ export const OPS_AGENT_RECENT = 6;
  * bin/bot-heartbeat in homegit edits in place.
  */
 export const HEARTBEAT_ISSUE = 176;
+/**
+ * The plan's usage is private: bin/bot-heartbeat keeps it in the one
+ * comment by BOT_LOGIN on this issue ("Bot usage", locked) of a private
+ * repository, read with the viewer's own token. Nothing of it is in the
+ * build.
+ */
+export const USAGE_REPO = "cgwalters-forge/bot-ops";
+export const USAGE_ISSUE = 1;
 /** A heartbeat older than this is stale... */
 export const HEARTBEAT_STALE_MS = 15 * 60_000;
 /** ... unless the coordinator said it sleeps longer, and this grace past its wake time hasn't run out. */

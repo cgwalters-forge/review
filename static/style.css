@@ -352,7 +352,26 @@ details.history summary { cursor: pointer; color: var(--accent); }
 .lw .name { overflow-wrap: anywhere; }
 .lw .ds { font: 12px var(--mono); color: var(--muted); }
 .lw .up { font: 12px var(--mono); font-variant-numeric: tabular-nums; text-align: right; }
-.past-list.stale { opacity: 0.6; }
+.past-list.stale, .uw-list.stale, .uc-list.stale { opacity: 0.6; }
+.uw { display: grid; grid-template-columns: 4.5em minmax(8em, 14em) minmax(0, 1fr) auto; gap: 2px 12px; align-items: center; padding: 5px 0; font-size: 14px; --fill: var(--ok); }
+.uw.u-warn { --fill: var(--p2); }
+.uw.u-crit { --fill: var(--p0); }
+.uw .wl { font: 12px var(--mono); color: var(--muted); }
+.uw .pct { display: grid; grid-template-columns: 3.5em minmax(0, 1fr); gap: 8px; align-items: center; }
+.uw .pct .num { font: 600 14px var(--mono); font-variant-numeric: tabular-nums; text-align: right; color: var(--fill); }
+.uw .pct.unknown { color: var(--muted); }
+.uw .bar, .uc .bar { width: 100%; display: block; }
+.uw .bar { height: 6px; }
+.uw .bar .track { fill: var(--line); }
+.uw .bar .fill { fill: var(--fill); }
+.uw.past-reset .pct { opacity: 0.5; }
+.uw .reset, .uw .tok, .uc .tok { font: 12px var(--mono); color: var(--muted); font-variant-numeric: tabular-nums; }
+.uc-list { list-style: none; margin: 4px 0 0; padding: 0; }
+.uc { display: grid; grid-template-columns: minmax(0, 1fr) 8em 4.5em; gap: 2px 12px; align-items: center; padding: 3px 0; font-size: 14px; }
+.uc .name { overflow-wrap: anywhere; }
+.uc .bar { height: 4px; }
+.uc .bar .fill { fill: var(--accent); }
+.uc .tok { text-align: right; }
 .work { padding: 6px 0; border-top: 1px solid var(--line); display: grid; gap: 3px; }
 .work:first-child { border-top: 0; }
 .work .title { font-weight: 500; }
@@ -377,6 +396,9 @@ details.history summary { cursor: pointer; color: var(--accent); }
   .past { grid-template-columns: 7.5em minmax(0, 1fr) auto; }
   .past .ran, .past .age { grid-column: 2; }
   .lw { grid-template-columns: 7.5em minmax(0, 1fr) auto; }
+  .uw { grid-template-columns: 4.5em minmax(0, 1fr); }
+  .uw .reset, .uw .tok { grid-column: 2; }
+  .uc { grid-template-columns: minmax(0, 1fr) 4em 4.5em; }
   .lw .ds { grid-column: 2; }
 }
 /* Data shown from the browser's cache until GitHub confirms it. */

@@ -26,7 +26,7 @@ import {
   timeLeft,
   workGroups,
 } from "../src/github/ops.ts";
-import { coreHoursText, duration, leftText, opsView, tickOps } from "../src/github/opsview.ts";
+import { coreHoursText, duration, leftText, opsView, tickOps, tokensText } from "../src/github/opsview.ts";
 import { fields, fixture, installDom, scriptedFetch } from "./helpers.ts";
 
 installDom();
@@ -45,6 +45,9 @@ const events = () => fixture<RawEvent[]>("ops-events.json");
 // What bin/bot-heartbeat publish wrote for a sample heartbeat, at 15:05Z.
 const heartbeat = () => fixture<unknown[]>("heartbeat-comments.json");
 const HEARTBEAT_PATH = "/repos/cgwalters-forge/tracker/issues/176/comments";
+// What bin/bot-heartbeat publish wrote to the private repository for the same sample, after someone else's copy.
+const usageComments = () => fixture<unknown[]>("usage-comments.json");
+const USAGE_PATH = "/repos/cgwalters-forge/bot-ops/issues/1/comments";
 
 function row(id: number): Devspace {
   const run = runs().find((r) => r.id === id);
@@ -278,6 +281,10 @@ describe("formatting", () => {
     [leftText(0, false), "ending now"],
     [coreHoursText(7.44), "7.4"],
     [coreHoursText(123.6), "124"],
+    [tokensText(950), "950"],
+    [tokensText(12_400), "12k"],
+    [tokensText(4_210_020), "4.2M"],
+    [tokensText(1_254_000_000), "1.25B"],
   ];
   for (const [got, want] of cases) it(want, () => assert.equal(got, want));
 });
@@ -305,6 +312,7 @@ describe("loadOps", () => {
       if (u.pathname.endsWith("/projectsV2/1/items")) return { body: [raw("In Progress", "bootc-dev", 1), raw("In Progress", "cgwalters-bot", 2), raw("Draft", "bootc-dev", 3)] };
       if (u.pathname === "/users/cgwalters-bot/events/public") return { body: events() };
       if (u.pathname === HEARTBEAT_PATH) return { body: heartbeat() };
+      if (u.pathname === USAGE_PATH) return { body: usageComments() };
       return undefined;
     });
 
@@ -324,6 +332,7 @@ describe("loadOps", () => {
     assert.equal(ops.devspaces?.partial, false);
     assert.deepEqual(ops.work?.map((i) => i.nodeId), ["PVTI_1", "PVTI_2"]);
     assert.equal(ops.events?.length, 14);
+    assert.equal(ops.usage?.state === "ok" && ops.usage.usage.workers.length, 2);
     assert.equal(new URL(calls.find((c) => c.url.includes("/items"))?.url ?? "").searchParams.get("q"), 'status:"In Progress"');
 
     const before = calls.length;
@@ -407,7 +416,7 @@ describe("loadOps", () => {
 });
 
 describe("opsView", () => {
-  async function view(agent: "missing" | "present" = "missing", local: unknown[] = heartbeat(), now = NOW) {
+  async function view(agent: "missing" | "present" = "missing", local: unknown[] = heartbeat(), now = NOW, usage: { status?: number; body?: unknown } = { body: usageComments() }) {
     const { fetchImpl } = scriptedFetch((_m, url) => {
       const u = new URL(url);
       if (u.pathname.endsWith("/workflows/devspace.yml/runs")) return { body: { workflow_runs: runs() } };
@@ -420,6 +429,7 @@ describe("opsView", () => {
         return { body: [{ id: "x", type: "IssueCommentEvent", created_at: "2026-09-28T15:00:00Z", repo: { name: "o/r" }, payload: { issue: { number: 1, title: "<img src=x onerror=alert(1)>" }, comment: { html_url: "javascript:alert(1)" } } }] };
       }
       if (u.pathname === HEARTBEAT_PATH) return { body: local };
+      if (u.pathname === USAGE_PATH) return usage;
       return undefined;
     });
     return opsView(await loadOps(new GitHub(async () => "t", fetchImpl), new Map(), NOW), now);
@@ -465,6 +475,68 @@ describe("opsView", () => {
     assert.match(rows[1]?.textContent ?? "", /starting.*10m 35s/);
     tickOps(el, NOW + 60_000);
     assert.match(sec.querySelector(".lw")?.textContent ?? "", /33m 05s/);
+  });
+
+  it("shows the plan's usage: a bar per window, its reset, and the top consumers", async () => {
+    const usageSec = (el: HTMLElement) => [...el.querySelectorAll(".ops-sec")].find((s) => s.querySelector("h2")?.textContent === "Usage");
+    const sec = usageSec(await view());
+    assert.ok(sec);
+    const rows = [...sec.querySelectorAll(".uw")];
+    assert.deepEqual(rows.map((r) => [r.querySelector(".wl")?.textContent, r.querySelector(".num")?.textContent, r.className]), [
+      ["5-hour", "42.5%", "uw u-ok"],
+      ["7-day", "63%", "uw u-ok"],
+    ]);
+    assert.equal(rows[0]?.querySelector(".bar .fill")?.getAttribute("width"), "42.5");
+    assert.match(rows[0]?.querySelector(".reset")?.textContent ?? "", /^resets .*, in 1h 47m$/);
+    assert.match(rows[1]?.querySelector(".reset")?.textContent ?? "", /^resets .*, in 65h 47m$/);
+    assert.equal(rows[0]?.querySelector(".tok")?.textContent, "45.5M tokens · 219k out");
+    // The coordinator, then the workers, by tokens.
+    const top = [...sec.querySelectorAll(".uc")].map((r) => [r.querySelector(".name strong")?.textContent, r.querySelector(".tok")?.textContent]);
+    assert.deepEqual(top, [["coordinator", "9.2M"], ["ops-v2", "4.2M"], ["bootc-2482", "899k"]]);
+    assert.equal(sec.querySelector(".uc a")?.getAttribute("href"), "https://github.com/cgwalters-forge/review/pull/16");
+    assert.match(sec.querySelector(".fine")?.textContent ?? "", /status line .* as of/);
+    assert.equal(sec.querySelector(".stale"), null);
+
+    // A window near its cap turns red; one without a percent shows tokens only.
+    const edited = usageComments() as { body: string }[];
+    const bot = edited[1];
+    assert.ok(bot);
+    bot.body = bot.body.replace('"used_percent": 42.5', '"used_percent": 93').replace(/("seven_day",\n\s+"since": "[^"]+",)\n\s+"used_percent": 63,/, "$1");
+    const hot = usageSec(await view("missing", heartbeat(), NOW, { body: edited }));
+    assert.deepEqual([...(hot?.querySelectorAll(".uw") ?? [])].map((r) => [r.className, r.querySelector(".pct")?.textContent]), [
+      ["uw u-crit", "93%"],
+      ["uw", "—"],
+    ]);
+
+    // Stale with the heartbeat: dimmed.
+    assert.ok(usageSec(await view("missing", heartbeat(), Date.parse("2026-09-28T15:31:00Z")))?.querySelector(".uw-list.stale"));
+    // Stale on its own, while the heartbeat is fresh: dimmed too, and so without a heartbeat.
+    const old = usageComments() as { body: string }[];
+    const oldBot = old[1];
+    assert.ok(oldBot);
+    oldBot.body = oldBot.body.replace(/"updated_at": "[^"]+"/, '"updated_at": "2026-09-28T12:00:00Z"');
+    assert.ok(usageSec(await view("missing", heartbeat(), NOW, { body: old }))?.querySelector(".uw-list.stale"));
+    assert.ok(usageSec(await view("missing", [], NOW, { body: old }))?.querySelector(".uw-list.stale"));
+    assert.equal(usageSec(await view("missing", [], NOW))?.querySelector(".stale"), null);
+  });
+
+  it("says quietly when the token can't read the private usage, or none is published", async () => {
+    const usageSec = (el: HTMLElement) => [...el.querySelectorAll(".ops-sec")].find((s) => s.querySelector("h2")?.textContent === "Usage");
+    for (const status of [403, 404]) {
+      const el = await view("missing", heartbeat(), NOW, { status, body: { message: "Not Found" } });
+      assert.equal(el.querySelector(":scope > .warn"), null, `no warning on ${status}`);
+      assert.equal(usageSec(el)?.querySelector(".note")?.textContent, "Private: it's in cgwalters-forge/bot-ops, which this token can't read.");
+      assert.ok(el.querySelector(".lw"), "the local agents still show");
+    }
+    assert.equal(usageSec(await view("missing", heartbeat(), NOW, { body: usageComments().slice(0, 1) }))?.querySelector(".note")?.textContent, "No usage published to cgwalters-forge/bot-ops yet.");
+    // A rate limit is a failed read, not a private repository.
+    const limited = await view("missing", heartbeat(), NOW, { status: 403, body: { message: "API rate limit exceeded for user ID 1." } });
+    assert.match(limited.querySelector(":scope > .warn")?.textContent ?? "", /the plan's usage.*rate limit/);
+    assert.equal(usageSec(limited), undefined);
+    // Any other failure is a warning like any section's.
+    const broken = await view("missing", heartbeat(), NOW, { status: 500, body: { message: "boom" } });
+    assert.match(broken.querySelector(":scope > .warn")?.textContent ?? "", /the plan's usage.*HTTP 500/);
+    assert.equal(usageSec(broken), undefined);
   });
 
   it("warns when the heartbeat is stale", async () => {
