@@ -8,6 +8,7 @@ import {
   parseUnblocks,
   shortRef,
   sortDecisions,
+  triageOrder,
   UNTRIAGED,
   verdictOf,
   verdictTargetOf,
@@ -89,6 +90,11 @@ describe("buildTriage", () => {
     assert.deepEqual(t.themes.map((g) => g.shown.map((i) => i.id)), [[4], [], []]);
     assert.equal(t.themes[0]?.items.length, 3);
     assert.deepEqual(buildTriage(items, "none").untriaged.shown.map((i) => i.id), [5]);
+  });
+
+  it("lists the items in the view's order, each once: the P0 lane, then the shown items per group", () => {
+    assert.deepEqual(triageOrder(buildTriage(items)).map((i) => i.id), [2, 5, 7, 4, 1, 6]);
+    assert.deepEqual(triageOrder(buildTriage(items, "close")).map((i) => i.id), [2, 5, 4]);
   });
 });
 

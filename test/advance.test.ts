@@ -1,10 +1,24 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { type AdvanceFacts, decideAdvance, EDITED_ATTR, overlayVerdicts, type PendingVerdict, pickNext, queueStops, type Stop, writingElsewhere } from "../src/github/advance.ts";
+import {
+  type AdvanceFacts,
+  decideAdvance,
+  decisionStops,
+  EDITED_ATTR,
+  overlayVerdicts,
+  type PendingVerdict,
+  pickNext,
+  queueStops,
+  type Stop,
+  triageStops,
+  writingElsewhere,
+} from "../src/github/advance.ts";
+import { parseItem } from "../src/github/board.ts";
+import { parseDecision } from "../src/github/triage.ts";
 import { OPTIMISTIC_TTL_MS } from "../src/github/config.ts";
 import type { VerdictEntry } from "../src/github/prs.ts";
 import type { Entry } from "../src/github/queue.ts";
-import { installDom } from "./helpers.ts";
+import { installDom, rawBoardItem } from "./helpers.ts";
 
 const stop = (key: string, waiting = true): Stop => ({ key, href: `#item/${key}`, title: key, waiting });
 const stops = (spec: string) => spec.split(" ").filter(Boolean).map((k) => (k.endsWith("~") ? stop(k.slice(0, -1), false) : stop(k)));
@@ -150,5 +164,43 @@ describe("overlayVerdicts", () => {
   it("leaves other PRs as GitHub read them", () => {
     const got = overlayVerdicts(new Map([["o/r#2", read("changes-requested")]]), new Map([["o/r#1", approved]]), T);
     assert.equal(got.verdicts.get("o/r#2")?.state, "changes-requested");
+  });
+});
+
+describe("triageStops and decisionStops", () => {
+  const item = (n: number) => parseItem(rawBoardItem(n, { Status: "Needs human" }));
+  const entry = (n: number, over: Partial<Entry> = {}): Entry => ({ key: `item:PVTI_t${n}`, kind: "item", title: `item ${n}`, where: "w", href: `#item/PVTI_t${n}`, ...over });
+
+  it("keeps the triage order, only for rows opening in the app, waiting as their queue row says", () => {
+    const entries = [entry(3, { children: [entry(4, { kind: "question", settled: true })] }), entry(1)];
+    // 5 opens in the app without a row of its own (folded into its PR's), and is done from here; 6 likewise, not done.
+    const links = { opens: (i: { nodeId: string }) => (i.nodeId === "PVTI_t2" ? undefined : `#item/${i.nodeId}`), settled: (i: { nodeId: string }) => i.nodeId === "PVTI_t5" };
+    const got = triageStops([item(1), item(2), item(4), item(5), item(3), item(6)], entries, links);
+    assert.deepEqual(
+      got.map((s) => [s.key, s.href, s.waiting]),
+      [
+        ["item:PVTI_t1", "#item/PVTI_t1", true],
+        ["item:PVTI_t4", "#item/PVTI_t4", false],
+        ["item:PVTI_t5", "#item/PVTI_t5", false],
+        ["item:PVTI_t3", "#item/PVTI_t3", true],
+        ["item:PVTI_t6", "#item/PVTI_t6", true],
+      ],
+    );
+    // From 1, the next still waiting is 3: 2 opens on GitHub, 4 and 5 are settled.
+    assert.equal(pickNext(got, "item:PVTI_t1", got)?.key, "item:PVTI_t3");
+    assert.equal(pickNext(got, "item:PVTI_t3", got)?.key, "item:PVTI_t6");
+  });
+
+  it("steps through the decisions in place, skipping answered ones", () => {
+    const withRef = (n: number) => ({ ...item(n), ref: { owner: "cgwalters-forge", repo: "tracker", number: n } });
+    const ds = [7, 8, 9].map((n) => parseDecision({ ...withRef(n), title: `D${n}: pick` }));
+    const answered = new Set(["PVTI_t8"]);
+    const got = decisionStops(ds, answered, "#decisions");
+    assert.deepEqual(got.map((s) => [s.key, s.href, s.title, s.waiting]), [
+      ["decision:PVTI_t7", "#decisions", "D7: pick", true],
+      ["decision:PVTI_t8", "#decisions", "D8: pick", false],
+      ["decision:PVTI_t9", "#decisions", "D9: pick", true],
+    ]);
+    assert.equal(pickNext(got, "decision:PVTI_t7", got)?.key, "decision:PVTI_t9");
   });
 });

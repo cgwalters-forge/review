@@ -133,8 +133,11 @@ from, in the order you saw it, with a small "Done: … → …" line and a
 link back; with nothing left, the queue says you're all caught up. It
 stays put when the action failed, when the entry still waits on you
 (a comment-only review), when you left for another view meanwhile, or
-when you have unsent text elsewhere on the page. "Auto-next" in the
-header turns this off (remembered per browser).
+when you have unsent text elsewhere on the page. An item opened from
+the triage view moves on in the triage view's order instead, among
+its items that are in the queue. On the decisions view, an answer
+moves on in place, to the next card still waiting on you. "Auto-next"
+in the header turns this off (remembered per browser).
 
 **Filters** above the queue narrow it by the organization an entry
 targets and by priority, with each chip's count. The target is the
