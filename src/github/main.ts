@@ -51,6 +51,8 @@ import {
   OPS_POLL_INTERVAL_MS,
   POLL_BACKOFF_FACTOR,
   POLL_INTERVAL_MS,
+  POLL_SLOW_MS,
+  POLL_STALL_MS,
   RATE_LOW_FRACTION,
   THEME_KEY,
 } from "./config.ts";
@@ -62,6 +64,7 @@ import { newsView } from "./newsview.ts";
 import { deleteCacheDatabase, IdbStore } from "./idbstore.ts";
 import { type JobCache, loadOps, type Ops } from "./ops.ts";
 import { opsView, tickOps } from "./opsview.ts";
+import { Poller, pollDelay, pollNote } from "./poller.ts";
 import { saveMine } from "./mine.ts";
 import { MINE_CLASS } from "./mineview.ts";
 import {
@@ -119,9 +122,7 @@ interface State {
   filter: QueueFilter;
   verdictsRunning: boolean;
   waitingRunning: boolean;
-  polling: boolean;
-  /** Poll again as soon as the running poll ends: an action changed what it read. */
-  pollAgain: boolean;
+  poller: Poller;
   /** The ranked queue. */
   entries: Entry[];
   /** The queue row the keyboard is on. */
@@ -197,7 +198,8 @@ interface State {
   forgeError?: string;
   /** What the token lacks, e.g. classic scopes. */
   tokenWarning?: string;
-  timer?: ReturnType<typeof setTimeout>;
+  /** Keeps the header's ages and poll note current between polls. */
+  metaTicker?: ReturnType<typeof setInterval>;
 }
 
 function byId<T extends HTMLElement>(id: string): T {
@@ -205,6 +207,9 @@ function byId<T extends HTMLElement>(id: string): T {
   if (!el) throw new Error(`index.html lacks #${id}`);
   return el as T;
 }
+
+/** Re-render the header this often, so "cached · N min ago" and the poll note don't freeze. */
+const META_TICK_MS = 15_000;
 
 /** Set once GitHub rejected the token: late loads mustn't draw over the sign-in page. */
 let viewClosed = false;
@@ -259,9 +264,16 @@ function renderMeta(state: State): void {
   if (state.login) parts.push(`signed in as ${state.login}`);
   const since = cachedSince(state);
   if (since !== undefined) parts.push(h("span", { class: "cached", title: "Shown from this browser's cache; checking GitHub for changes" }, cachedLabel(since, Date.now())));
-  else if (state.lastPoll) parts.push(`checked ${state.lastPoll.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`);
+  else if (state.lastPoll) parts.push(`checked ${clock(state.lastPoll.getTime())}`);
+  // Why it isn't being refreshed as usual, if it isn't.
+  const note = pollNote(state.poller.status(), Date.now(), POLL_SLOW_MS);
+  if (note) parts.push(h("span", { class: "cached", title: "Not refreshing from GitHub as usual" }, note));
   if (state.gh.rate) parts.push(`API ${state.gh.rate.remaining}/${state.gh.rate.limit}`);
   byId("meta").replaceChildren(...parts.flatMap((p, i) => (i ? [" · ", p] : [p])));
+}
+
+function clock(ms: number): string {
+  return new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
 /** Meta line and notices only: never touches the view, or a half-typed answer. */
@@ -275,7 +287,6 @@ function renderChrome(state: State): void {
   if (state.login && state.login !== OPERATOR) {
     warnings.push(`You are signed in as ${state.login}; the bot acts only on answers and reviews from ${OPERATOR}.`);
   }
-  if (state.gh.rateLow(RATE_LOW_FRACTION)) warnings.push("The API rate budget is low; polling less often.");
   if (state.help) warnings.push(`Keys: ${HELP[r]}`);
   setNotice(warnings.filter(Boolean).join(" ") || undefined);
 }
@@ -1184,11 +1195,12 @@ function update(state: State, boardChanged: boolean, first: boolean): void {
   }
 }
 
-async function poll(state: State): Promise<void> {
-  // One poll at a time; the running one schedules the next.
-  if (state.polling || state.closed) return;
-  state.polling = true;
-  clearTimeout(state.timer);
+/**
+ * One poll; state.poller runs them one at a time and schedules the next.
+ * One it gave up on (no longer `current`) drops what it reads late.
+ */
+async function poll(state: State, current: () => boolean): Promise<void> {
+  if (state.closed) return;
   if (route().route === "news") void refreshNews(state);
   if (route().route === "ops" && opsDue(state)) void refreshOps(state);
   if (route().route === "triage") void refreshTriage(state);
@@ -1197,6 +1209,7 @@ async function poll(state: State): Promise<void> {
   const forge = pollForge(state);
   try {
     const q = await loadQueue(state.gh);
+    if (!current()) return;
     state.lastPoll = new Date();
     delete state.error;
     const first = !state.loaded;
@@ -1221,35 +1234,31 @@ async function poll(state: State): Promise<void> {
       renderChrome(state);
     }
   } catch (e) {
+    if (!current()) return;
     state.error = `Couldn't read the board: ${message(e)}`;
     if (state.loaded) renderChrome(state);
     else renderRoute(state);
   }
-  try {
-    if ((await forge) && state.loaded) update(state, false, false);
-  } finally {
-    // Whatever went wrong above, keep polling.
-    state.polling = false;
-    if (state.pollAgain) {
-      state.pollAgain = false;
-      void poll(state);
-    } else {
-      schedule(state);
-    }
-  }
+  if ((await forge) && current() && state.loaded) update(state, false, false);
 }
 
 /** Re-read the board and the forge now, not at the next poll: an action changed them. */
 function refreshSoon(state: State): void {
   state.forceForge = true;
-  if (state.polling) state.pollAgain = true;
-  else void poll(state);
+  state.poller.now();
 }
 
-function schedule(state: State): void {
-  if (document.hidden || state.closed) return;
-  const slow = state.gh.rateLow(RATE_LOW_FRACTION) ? POLL_BACKOFF_FACTOR : 1;
-  state.timer = setTimeout(() => void poll(state), POLL_INTERVAL_MS * slow);
+/** The poll loop of the state `get` returns (a getter: the state holds the loop). */
+function newPoller(get: () => State): Poller {
+  return new Poller({
+    run: (current) => poll(get(), current),
+    delay: () => pollDelay(get().gh.rate, Date.now(), { interval: POLL_INTERVAL_MS, backoff: POLL_BACKOFF_FACTOR, lowFraction: RATE_LOW_FRACTION, clock }),
+    hidden: () => document.hidden,
+    changed: () => {
+      if (get().loaded) renderChrome(get());
+    },
+    stallMs: POLL_STALL_MS,
+  });
 }
 
 function isEditing(el: Element | null): boolean {
@@ -1314,8 +1323,7 @@ function run(state: State, cmd: Command, where: Route): void {
         void refreshDecisions(state, true);
         return;
       }
-      state.forceForge = true;
-      void poll(state);
+      refreshSoon(state);
       return;
     }
     case "approve":
@@ -1419,7 +1427,8 @@ function rejected(state: State): Promise<void> {
   if (!state.rejecting) {
     state.closed = true;
     viewClosed = true;
-    clearTimeout(state.timer);
+    state.poller.close();
+    clearInterval(state.metaTicker);
     clearInterval(state.ticker);
     state.pane?.dispose();
     state.rejecting = Promise.allSettled([forgetCache(state.session, () => deleteCacheDatabase()), state.source.signOut()]).then(() => showSignIn("rejected"));
@@ -1430,6 +1439,7 @@ function rejected(state: State): Promise<void> {
 async function start(source: TokenSource): Promise<void> {
   const session = await openCache(await source.get(), source.persistence === "local", () => IdbStore.open(), () => deleteCacheDatabase());
   const state: State = {
+    poller: newPoller(() => state),
     gh: new GitHub(() => source.get(), undefined, session.cache),
     source,
     session,
@@ -1448,8 +1458,6 @@ async function start(source: TokenSource): Promise<void> {
     filter: loadFilter(),
     verdictsRunning: false,
     waitingRunning: false,
-    polling: false,
-    pollAgain: false,
     entries: [],
     sent: new Set(),
     answered: new Set(),
@@ -1498,6 +1506,8 @@ async function start(source: TokenSource): Promise<void> {
   if (state.login === OPERATOR) showCapture(state);
   byId("signout").onclick = () => {
     state.closed = true;
+    state.poller.close();
+    clearInterval(state.metaTicker);
     forgetDraft(sessionStore());
     void Promise.allSettled([forgetCache(session, () => deleteCacheDatabase()), source.signOut()]).then(() => window.location.reload());
   };
@@ -1522,14 +1532,14 @@ async function start(source: TokenSource): Promise<void> {
   });
   installKeys(state);
   installAdvance(state);
-  document.addEventListener("visibilitychange", () => {
-    if (!document.hidden) void poll(state);
-    else clearTimeout(state.timer);
-  });
+  document.addEventListener("visibilitychange", () => state.poller.visibilityChanged());
+  state.metaTicker = setInterval(() => {
+    if (state.loaded && !document.hidden) renderChrome(state);
+  }, META_TICK_MS);
   await cached;
   if (state.loaded) renderChrome(state);
   else renderRoute(state);
-  await poll(state);
+  state.poller.now();
 }
 
 /**

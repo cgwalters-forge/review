@@ -85,6 +85,26 @@ describe("GitHub.get", () => {
   });
 });
 
+describe("GitHub request timeout", () => {
+  it("gives up on a request that never gets an answer", async () => {
+    // A connection that died silently: fetch settles only when aborted.
+    const hang = (_url: string, init?: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(init.signal?.reason));
+      });
+    const gh = new GitHub(token, hang);
+    gh.timeoutMs = 20;
+    // AbortSignal.timeout's timer doesn't keep Node's event loop alive.
+    const alive = setInterval(() => {}, 1000);
+    try {
+      await assert.rejects(gh.get("/x"), /GET https:\/\/api\.github\.com\/x: GitHub didn't answer within \d+ s/);
+      await assert.rejects(gh.send("POST", "/y", {}), /POST https:\/\/api\.github\.com\/y: GitHub didn't answer/);
+    } finally {
+      clearInterval(alive);
+    }
+  });
+});
+
 describe("GitHub.getAll", () => {
   it("follows pages and reports a change on any page", async () => {
     const page2 = "https://api.github.com/list?page=2";

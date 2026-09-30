@@ -100,6 +100,16 @@ export const CAPTURE_LABEL = "needs-triage";
 
 /** Poll every this many ms while the tab is visible. */
 export const POLL_INTERVAL_MS = 30_000;
+/**
+ * Give up on a request GitHub hasn't answered in this long. A connection
+ * that died without an error (e.g. across a laptop's sleep) otherwise
+ * leaves the request, and whatever waits on it, hanging forever.
+ */
+export const REQUEST_TIMEOUT_MS = 60_000;
+/** Stop waiting for a poll after this long and start the next one, whatever it is stuck on. */
+export const POLL_STALL_MS = 2 * 60_000;
+/** Say the poll is waiting on GitHub once it has run this long. */
+export const POLL_SLOW_MS = 10_000;
 /** Poll the forge's PR search this often: search has its own, smaller budget. */
 export const FORGE_POLL_INTERVAL_MS = 60_000;
 /** ... and at most this often when asked to refresh (r, or after a review). */

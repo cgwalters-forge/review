@@ -241,6 +241,13 @@ N min ago" until GitHub confirms or replaces it. Signing out, or
 GitHub rejecting the token at any time, deletes that cache; without
 "remember" it lives in memory only.
 
+When the header's time isn't moving, it says why next to it: "paused:
+tab hidden", "slowed: rate limit low", "paused: rate limit until
+14:05", "waiting on GitHub for 45 s". A request GitHub hasn't answered
+in a minute fails, and a poll still running after two minutes is given
+up on ("stalled"), so a connection that died silently never stops the
+polling.
+
 The app contains no data: everything is fetched in your browser with your
 token, from `api.github.com` only.
 
