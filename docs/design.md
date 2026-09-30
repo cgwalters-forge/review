@@ -23,7 +23,7 @@ board mirror and the migration). Auth, hosting, CSP, rendering and deploys
 - **The queue** is the Workstream board: items with Status "Needs human",
   grouped by Priority, with Why, Org, Branch and Gist, plus the item's
   issue or PR and any gist for long context.
-- **Reads are REST, not GraphQL.** `GET /users/{u}/projectsV2/{n}/items`
+- **Reads are REST, not GraphQL.** `GET /orgs/{o}/projectsV2/{n}/items`
   takes `fields=<ids>` and `q=status:"Needs human"`, sends
   `access-control-allow-origin: *` and ETags (checked 2026-09-25). Polls
   are conditional requests, so an unchanged board costs no rate budget.
@@ -181,9 +181,11 @@ client side (see "Hosting v0" below). With answers as issue comments,
 the App needs no Gists permission; Contents write is not needed until PR
 review (v2).
 
-**Open problem:** the board is owned by the `cgwalters-bot` user, and
-GitHub Apps have no account-level Projects permission (§1(c)). The app
-only reads the board, which works for a public board. App user tokens
+**Resolved (2026-09-30):** the board was owned by the `cgwalters-bot`
+user, and GitHub Apps have no account-level Projects permission
+(§1(c)), so it moved to the cgwalters-forge org
+(cgwalters-forge/tracker#144), where an App with Projects write can
+update it. App user tokens
 reach only repositories where the App is installed, which the tracker
 and the forge are; upstream repositories need no write access now that
 answers never go there.

@@ -43,7 +43,7 @@ import { refKey } from "./forge.ts";
 import { mapLimit, submitReview } from "./prs.ts";
 import type { ReviewRequest } from "./forge.ts";
 
-const PROJECT = `/users/${BOARD_OWNER}/projectsV2/${BOARD_NUMBER}`;
+const PROJECT = `/orgs/${BOARD_OWNER}/projectsV2/${BOARD_NUMBER}`;
 
 export interface Queue {
   items: Item[];

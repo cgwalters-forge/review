@@ -1,4 +1,4 @@
-// Parse the Projects v2 REST API (`/users/{u}/projectsV2/{n}/...`) into
+// Parse the Projects v2 REST API (`/orgs/{o}/projectsV2/{n}/...`) into
 // the app's item model. Pure functions over JSON, so tests feed them
 // synthetic payloads.
 

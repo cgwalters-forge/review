@@ -3,10 +3,13 @@
 
 export const API_ROOT = "https://api.github.com";
 
-/** The Workstream board, a Projects v2 board owned by a user. */
-export const BOARD_OWNER = "cgwalters-bot";
+/**
+ * The Workstream board, a Projects v2 board owned by an organization:
+ * GitHub Apps can write org projects, not a user's (cgwalters-forge/tracker#144).
+ */
+export const BOARD_OWNER = "cgwalters-forge";
 export const BOARD_NUMBER = 1;
-export const BOARD_URL = `https://github.com/users/${BOARD_OWNER}/projects/${BOARD_NUMBER}`;
+export const BOARD_URL = `https://github.com/orgs/${BOARD_OWNER}/projects/${BOARD_NUMBER}`;
 
 /** The only login whose answers the bot acts on. */
 export const OPERATOR = "cgwalters";
