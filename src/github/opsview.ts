@@ -1,10 +1,10 @@
-// The ops view: devspaces, local agents, agent runs, active work and
-// the bot's recent activity. Times that move (uptime, time left) are marked so tickOps
+// The ops view: devspaces, local agents and the plan's usage, agent
+// runs, active work and the bot's recent activity. Times that move (uptime, time left) are marked so tickOps
 // can update them in place every second without a re-render.
 
 import { h, link, svg } from "../dom.ts";
 import { type IssueRef, type Item, parseIssueUrl } from "./board.ts";
-import { AGENT_WORKFLOW, BOT_LOGIN, DEVSPACE_REPO, DEVSPACE_WORKFLOW, HEARTBEAT_ISSUE, OPS_EVENTS_SHOWN, OPS_WINDOW_HOURS, TRACKER_REPO } from "./config.ts";
+import { AGENT_WORKFLOW, BOT_LOGIN, DEVSPACE_REPO, DEVSPACE_WORKFLOW, HEARTBEAT_ISSUE, HEARTBEAT_STALE_MS, OPS_EVENTS_SHOWN, OPS_WINDOW_HOURS, TRACKER_REPO, USAGE_REPO } from "./config.ts";
 import { PRESET_LABEL, PRESET_TITLE } from "./filter.ts";
 import { type Heartbeat, isStale, type LocalWorker } from "./heartbeat.ts";
 import {
@@ -21,6 +21,7 @@ import {
   workGroups,
   type WorkGroup,
 } from "./ops.ts";
+import { type Tokens, tokenTotal, type UsageData, type UsageWindow } from "./usage.ts";
 import { age, pill, time } from "./view.ts";
 
 const SECOND = 1000;
@@ -50,6 +51,14 @@ export function duration(ms: number, seconds = true): string {
 export function leftText(ms: number, max: boolean): string {
   if (ms <= 0) return max ? "ending soon at the latest" : "ending now";
   return `${max ? "≤ " : ""}${duration(ms)} left`;
+}
+
+/** A token count: 950, 12k, 4.2M, 1.25B. */
+export function tokensText(n: number): string {
+  if (n >= 1e9) return `${(n / 1e9).toFixed(2)}B`;
+  if (n >= 1e6) return `${(n / 1e6).toFixed(1)}M`;
+  if (n >= 1e3) return `${Math.round(n / 1e3)}k`;
+  return String(Math.round(n));
 }
 
 /** Core-hours, to one decimal below 10. */
@@ -309,6 +318,129 @@ function localSection(hb: Heartbeat | null | undefined, devspaces: DevspaceData 
   return sec;
 }
 
+const WINDOW_LABEL: Record<string, string> = { five_hour: "5-hour", seven_day: "7-day" };
+/** How many consumers the usage section lists. */
+const TOP_CONSUMERS = 5;
+/** Percent used from which a window's bar turns amber, then red. */
+const PCT_WARN = 75;
+const PCT_CRIT = 90;
+
+const tokensTitle = (t: Tokens) =>
+  `${tokensText(t.input)} input, ${tokensText(t.output)} output, ${tokensText(t.cacheRead)} cache read, ${tokensText(t.cacheWrite)} cache write`;
+
+/** A reset time: the clock time, with the weekday if it isn't within a day. */
+function resetText(iso: string, now: number): string {
+  const t = Date.parse(iso);
+  const d = new Date(t);
+  const at = t - now < 20 * HOUR ? clock(iso) : d.toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" });
+  return t > now ? `resets ${at}, in ${duration(t - now, false)}` : `reset at ${at}; the percent is from before`;
+}
+
+function windowRow(w: UsageWindow, now: number): HTMLElement {
+  const label = WINDOW_LABEL[w.kind] ?? w.kind.replace(/_/g, " ");
+  const tokens = h("span", { class: "tok", title: `since ${time(w.since)}: ${tokensTitle(w.tokens)}, in ${w.requests} requests` }, `${tokensText(tokenTotal(w.tokens))} tokens · ${tokensText(w.tokens.output)} out`);
+  if (w.usedPercent === undefined || !w.resetsAt) {
+    return h(
+      "div",
+      { class: "uw" },
+      h("span", { class: "wl" }, label),
+      h("span", { class: "pct unknown", title: "The status line hasn't reported this window; see bot-heartbeat statusline." }, "—"),
+      h("span", { class: "reset" }, `since ${clock(w.since)}`),
+      tokens,
+    );
+  }
+  const pct = w.usedPercent;
+  const level = pct >= PCT_CRIT ? "crit" : pct >= PCT_WARN ? "warn" : "ok";
+  const past = Date.parse(w.resetsAt) <= now;
+  return h(
+    "div",
+    { class: `uw u-${level}${past ? " past-reset" : ""}` },
+    h("span", { class: "wl" }, label),
+    h(
+      "span",
+      { class: "pct" },
+      h("span", { class: "num" }, `${pct % 1 ? pct.toFixed(1) : String(pct)}%`),
+      svg(
+        "svg",
+        { class: "bar", viewBox: "0 0 100 6", preserveAspectRatio: "none", role: "img", "aria-label": `${label} window: ${pct}% used` },
+        svg("rect", { class: "track", x: "0", y: "0", width: "100", height: "6", rx: "3" }),
+        svg("rect", { class: "fill", x: "0", y: "0", width: String(Math.min(100, pct)), height: "6", rx: "3" }),
+      ),
+    ),
+    h("span", { class: "reset", title: time(w.resetsAt) }, resetText(w.resetsAt, now)),
+    tokens,
+  );
+}
+
+interface Consumer {
+  label: Node | string;
+  tokens: Tokens;
+}
+
+function consumerRow(c: Consumer, max: number): HTMLElement {
+  const n = tokenTotal(c.tokens);
+  return h(
+    "li",
+    { class: "uc" },
+    h("span", { class: "name" }, c.label),
+    svg(
+      "svg",
+      { class: "bar", viewBox: "0 0 100 4", preserveAspectRatio: "none", "aria-hidden": "true" },
+      svg("rect", { class: "fill", x: "0", y: "0", width: String(max > 0 ? (n / max) * 100 : 0), height: "4", rx: "2" }),
+    ),
+    h("span", { class: "tok", title: tokensTitle(c.tokens) }, tokensText(n)),
+  );
+}
+
+/**
+ * The plan's usage: a bar per window, and who spent the most, their
+ * items linked from the heartbeat's workers. Null when there is nothing
+ * to say (not read yet, or its read failed: see the warnings).
+ */
+function usageSection(data: UsageData | undefined, hb: Heartbeat | null | undefined, now: number): HTMLElement | null {
+  if (!data) return null;
+  const sec = section("Usage");
+  if (data.state === "unreadable") {
+    sec.append(h("p", { class: "note" }, `Private: it's in ${USAGE_REPO}, which this token can't read.`));
+    return sec;
+  }
+  if (data.state === "none") {
+    sec.append(h("p", { class: "note" }, `No usage published to ${USAGE_REPO} yet.`));
+    return sec;
+  }
+  const usage = data.usage;
+  // Published with the heartbeat but in a comment of its own: stale with
+  // it, or when it fell behind it (its publishing failed); with no
+  // heartbeat, by its own age.
+  const behind = (since: number) => since - Date.parse(usage.updatedAt) > HEARTBEAT_STALE_MS;
+  const stale = hb ? isStale(hb, now) || behind(Date.parse(hb.updatedAt)) : behind(now);
+  sec.append(h("div", { class: `uw-list${stale ? " stale" : ""}` }, ...usage.windows.map((w) => windowRow(w, now))));
+  const listed = new Map((hb?.workers ?? []).map((w) => [w.name, w]));
+  const consumers: Consumer[] = usage.workers.map((w) => {
+    const lw = listed.get(w.name);
+    return { label: h("span", {}, h("strong", {}, w.name), ...(lw ? [" ", link(lw.itemUrl, lw.itemRef)] : [])), tokens: w.tokens };
+  });
+  if (usage.coordinatorTokens) consumers.push({ label: h("span", { title: "the coordinator's own session, in the 5-hour window" }, h("strong", {}, "coordinator"), " (5-hour window)"), tokens: usage.coordinatorTokens });
+  consumers.sort((a, b) => tokenTotal(b.tokens) - tokenTotal(a.tokens));
+  if (consumers.length) {
+    const top = consumers.slice(0, TOP_CONSUMERS);
+    const max = top[0] ? tokenTotal(top[0].tokens) : 0;
+    sec.append(h("h3", { class: "group-h" }, "Top consumers"), h("ul", { class: `uc-list${stale ? " stale" : ""}` }, ...top.map((c) => consumerRow(c, max))));
+  }
+  sec.append(
+    h(
+      "p",
+      { class: "fine" },
+      usage.observedAt ? `Percent used: Claude Code's status line on the coordinator's machine, as of ${time(usage.observedAt)}. ` : "Percent used: not reported yet; it comes from the coordinator's status line (bot-heartbeat statusline). ",
+      "Tokens: that machine's transcripts, cache reads included; a worker's are all of its subagents'. ",
+      `Published at ${time(usage.updatedAt)} to `,
+      usage.commentUrl ? link(usage.commentUrl, USAGE_REPO) : USAGE_REPO,
+      ", private.",
+    ),
+  );
+  return sec;
+}
+
 function refLabel(url: string): string {
   const ref: IssueRef | undefined = parseIssueUrl(url);
   if (ref) return `${ref.owner}/${ref.repo}#${ref.number}`;
@@ -398,9 +530,11 @@ export function opsView(ops: Ops | undefined, now: number = Date.now()): HTMLEle
   for (const w of ops.warnings) root.append(h("p", { class: "warn" }, w));
   const t = tiles(ops.devspaces, now);
   if (t) root.append(t);
+  const usage = usageSection(ops.usage, ops.local, now);
   root.append(
     devspacesSection(ops.devspaces, now, ops.fromCache),
     localSection(ops.local, ops.devspaces, now, ops.fromCache),
+    ...(usage ? [usage] : []),
     agentsSection(ops.agents, now, ops.fromCache),
     workSection(ops.work, now, ops.fromCache),
     eventsSection(ops.events, now, ops.fromCache),

@@ -1,7 +1,8 @@
 // The ops view: what the bot is running now. Devspaces and agent runs
 // are workflow runs in DEVSPACE_REPO (see bin/bot-devspace and
 // bin/bot-runs in homegit), local agents are the coordinator's
-// heartbeat (heartbeat.ts), active work is the board's In Progress
+// heartbeat (heartbeat.ts), usage is the plan's, from a private
+// repository (usage.ts), active work is the board's In Progress
 // items, and bot activity is its public events. Pure parsing and
 // derivation here, plus the reads: conditional (ETags), and a finished
 // run's job is read once.
@@ -24,6 +25,7 @@ import {
 } from "./config.ts";
 import { isOwnOrg, itemOrg, type Preset } from "./filter.ts";
 import { type Heartbeat, loadHeartbeat } from "./heartbeat.ts";
+import { loadUsage, type UsageData } from "./usage.ts";
 import { mapLimit } from "./prs.ts";
 
 const MINUTE = 60_000;
@@ -467,6 +469,8 @@ export interface Ops {
   agents?: AgentData;
   /** The coordinator's heartbeat; null when none is published. */
   local?: Heartbeat | null;
+  /** The plan's usage, from the private repository. */
+  usage?: UsageData;
   work?: Item[];
   events?: BotEvent[];
   warnings: string[];
@@ -542,10 +546,11 @@ export async function loadOps(gh: GitHub, cache: JobCache, now: number = Date.no
       return undefined;
     }
   };
-  const [devspaces, agents, local, work, events] = await Promise.all([
+  const [devspaces, agents, local, usage, work, events] = await Promise.all([
     guard(`the devspaces in ${DEVSPACE_REPO}`, loadDevspaces(gh, cache, now)),
     guard(`the agent runs in ${DEVSPACE_REPO}`, loadAgents(gh)),
     guard("the coordinator's heartbeat", loadHeartbeat(gh)),
+    guard("the plan's usage", loadUsage(gh)),
     guard("the board's In Progress items", loadBoard(gh, [IN_PROGRESS]).then((q) => q.items)),
     guard(`${BOT_LOGIN}'s recent activity`, loadEvents(gh)),
   ]);
@@ -553,6 +558,7 @@ export async function loadOps(gh: GitHub, cache: JobCache, now: number = Date.no
   if (devspaces) ops.devspaces = devspaces;
   if (agents) ops.agents = agents;
   if (local !== undefined) ops.local = local;
+  if (usage) ops.usage = usage;
   if (work) ops.work = work;
   if (events) ops.events = events;
   return ops;

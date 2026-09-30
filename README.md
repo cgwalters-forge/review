@@ -129,7 +129,16 @@ can't see: the coordinator publishes them with `bot-heartbeat publish`
 (homegit) to one comment on cgwalters-forge/tracker#176, which the pane
 reads with an ETag and lists with their item links, devspaces and
 elapsed time, warning when the heartbeat is more than 15 minutes old
-(and past the wake time it gave). Below that are the
+(and past the wake time it gave). **Usage** is the equivalent of
+Claude Code's `/usage` there: a bar per plan window (5-hour and 7-day)
+with its percent used and reset time, as the coordinator's status line
+last reported them, the tokens that machine's transcripts spent in
+each, and the top consumers (workers and the coordinator) by tokens.
+It is private: `bot-heartbeat publish` writes it to one comment on
+cgwalters-forge/bot-ops#1, a private repository, which the pane reads
+with your token; nothing of it is in the build or the public heartbeat,
+and a token that can't read that repository just gets a note saying
+so. Below that are the
 runs of `agent.yml` once that workflow exists there, the board's In
 Progress items split like the Composefs and Our infra presets, and the
 bot's recent public activity. The runner repo
