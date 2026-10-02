@@ -526,3 +526,7 @@ details.unblocks ul { margin: 6px 0 0; padding-left: 18px; columns: 2 16em; font
 @media (hover: none) and (pointer: coarse) {
   .summary-keys { display: none; }
 }
+/* The board items the queue left out as closed, folded at its end. */
+details.stale-items { margin: 12px 0; font-size: 13px; color: var(--muted); }
+details.stale-items summary { cursor: pointer; }
+details.stale-items ul { margin: 4px 0; padding-left: 18px; }

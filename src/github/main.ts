@@ -84,7 +84,7 @@ import {
   type WaitingPr,
 } from "./prs.ts";
 import { APPROVE_ACTION, canReview, type PrPane, prView, REVIEW_FORM_CLASS, type ReviewAskInfo } from "./prview.ts";
-import { buildEntries, type Entry, itemHref, onBot } from "./queue.ts";
+import { buildEntries, type Entry, itemHref, onBot, staleItems } from "./queue.ts";
 import { loadAdvance, loadFilter, saveAdvance, saveFilter } from "./store.ts";
 import { buildTriage, type Decision, parseDecision, sortDecisions, triageOrder } from "./triage.ts";
 import { decisionCardId, decisionsView, triageView } from "./triageview.ts";
@@ -362,7 +362,7 @@ function renderQueue(state: State): void {
     state.filter = r.filter;
     saveFilter(r.filter);
   }
-  showMain(queueView(state.entries, labelOf(state), Date.now(), state.filter));
+  showMain(queueView(state.entries, labelOf(state), Date.now(), state.filter, { stale: staleItems(state.items, state.entries) }));
   markSelected(state, false);
 }
 

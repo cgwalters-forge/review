@@ -11,7 +11,7 @@ import { type Item, queueItems } from "../src/github/board.ts";
 import type { Context, RunStatus } from "../src/github/backend.ts";
 import { createRenderer } from "../src/markdown.ts";
 import { buildEntries, type Entry } from "../src/github/queue.ts";
-import { age, answerState, type AnswerState, CAUGHT_UP_CLASS, contextView, FILTERS_FOLDED_CLASS, type ItemViewHandlers, itemView, queueView, STATE_LABEL } from "../src/github/view.ts";
+import { age, answerState, type AnswerState, CAUGHT_UP_CLASS, contextView, FILTERS_FOLDED_CLASS, type ItemViewHandlers, itemView, queueView, STALE_NOTE_CLASS, STATE_LABEL } from "../src/github/view.ts";
 import { installDom, rawItems } from "./helpers.ts";
 
 const win = installDom();
@@ -191,6 +191,19 @@ describe("queueView", () => {
     // The bot's turns don't wait on him either.
     const botTurn: Entry = { key: "pr:o/r#1", kind: "pr", title: "t", where: "o/r#1", href: "#pr/o/r/1", wait: { reasons: [], onBot: true } };
     assert.ok(queueView([entry("PVTI_a", true), botTurn], () => undefined).querySelector(`.${CAUGHT_UP_CLASS}`));
+  });
+
+  it("names the board items it dropped as closed, whatever else it shows", () => {
+    const merged: Item = { ...fixture("PVTI_synthetic_upstream_pr"), status: "Draft", state: "merged", title: EVIL, url: "javascript:alert(8)" };
+    const listed = entriesOf(items());
+    for (const entries of [[], listed]) {
+      const root = queueView(entries, labels(new Set(), new Set()), Date.now(), undefined, { stale: [merged] });
+      const note = root.querySelector(`.${STALE_NOTE_CLASS}`);
+      assert.match(note?.querySelector("summary")?.textContent ?? "", /Not listed: 1 board item closed or merged/);
+      assert.equal(note?.querySelector("a"), null, "an unsafe URL stays text");
+      assert.equal(note?.querySelector("img, script"), null);
+    }
+    assert.equal(queueView(listed, () => undefined).querySelector(`.${STALE_NOTE_CLASS}`), null);
   });
 });
 

@@ -185,21 +185,46 @@ function filterBar(entries: readonly Entry[], filter: QueueFilter): HTMLElement 
 /** The class of the queue's "all caught up" line. */
 export const CAUGHT_UP_CLASS = "caught-up";
 
+/** The class of the note listing board items the queue dropped as closed. */
+export const STALE_NOTE_CLASS = "stale-items";
+
+/** What the queue shows around its entries. */
+export interface QueueExtras {
+  /** Board items dropped because their issue or PR is closed (see staleItems), named at the end. */
+  stale?: readonly Item[];
+}
+
+/** A folded note naming the board items whose Status is behind their closed issue or PR. */
+function staleNote(stale: readonly Item[]): HTMLElement {
+  const n = stale.length;
+  return h(
+    "details",
+    { class: `fine ${STALE_NOTE_CLASS}` },
+    h("summary", {}, `Not listed: ${n} board item${n === 1 ? "" : "s"} closed or merged, yet still Draft or Needs human on the board`),
+    h("p", {}, "The board is behind GitHub here; the bot should move ", n === 1 ? "it" : "them", " to Done."),
+    h("ul", {}, ...stale.map((i) => h("li", {}, link(i.url, refLabel(i)), ` ${i.status ?? ""}: ${i.title}`))),
+  );
+}
+
 export function queueView(
   all: readonly Entry[],
   labelOf: (e: Entry) => RowLabel | undefined,
   now: number = Date.now(),
   filter: QueueFilter = ALL,
+  extras: QueueExtras = {},
 ): HTMLElement {
   const root = h("main", { class: "queue" });
+  const stale = extras.stale?.length ? staleNote(extras.stale) : null;
   if (all.length === 0) {
     root.append(h("p", { class: `empty ${CAUGHT_UP_CLASS}` }, "All caught up: nothing needs you right now."));
+    if (stale) root.append(stale);
     return root;
   }
   root.append(filterBar(all, filter));
   const entries = applyFilter(all, filter);
   if (entries.length === 0) {
     root.append(h("p", { class: "empty" }, "Nothing here matches this filter. ", h("a", { href: `#${filterToken(ALL)}` }, "Show all")));
+    if (stale) root.append(stale);
     return root;
   }
   // Only settled asks and the bot's turns left: nothing to do here.
@@ -228,6 +253,7 @@ export function queueView(
     }
     root.append(section);
   }
+  if (stale) root.append(stale);
   return root;
 }
 

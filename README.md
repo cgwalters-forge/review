@@ -51,7 +51,11 @@ question (or a chore), nested under the item it blocks; older review
 and chore asks about PRs still show until the bot closes them. Asks you
 answered, or the bot closed, move to the end until the bot acts. A
 Needs human item with neither an open ask nor a PR listed for you is
-flagged as a bot bug.
+flagged as a bot bug. A board item that is itself a PR listed here (as
+`bot-land` adds the bot's own) is that PR's row, never a second one.
+A board item whose own issue or PR is closed or merged is left out,
+whatever its Status still says, and named in a folded note at the end
+of the queue: the board is behind, and the bot should move it to Done.
 
 - **A PR** opens a review pane (the form is there for the bot's PRs in
   its own space, and for the PRs listed for your review): the description (without bot-pr's

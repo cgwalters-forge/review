@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { type Item, NO_PRIORITY } from "../src/github/board.ts";
 import type { ForgePr, Verdict } from "../src/github/forge.ts";
-import { buildEntries, effectivePriority, type Entry, groupRanked, ON_BOT_GROUP, onBot, priorityRank, rankEntries, SETTLED_GROUP } from "../src/github/queue.ts";
+import { buildEntries, effectivePriority, type Entry, groupRanked, ON_BOT_GROUP, onBot, priorityRank, rankEntries, SETTLED_GROUP, staleItems } from "../src/github/queue.ts";
 import type { PrWait } from "../src/github/waiting.ts";
 
 function item(nodeId: string, over: Partial<Item> = {}): Item {
@@ -346,5 +346,134 @@ describe("buildEntries", () => {
       const entries = buildEntries([], [forge], verdicts([]), true, new Set(), { others: [{ pr: forge, wait: wait(["review-requested"]) }] });
       assert.deepEqual(entries.map((e) => e.key), ["pr:cgwalters-forge/a#1"]);
     });
+  });
+});
+
+describe("board items that are behind GitHub", () => {
+  const HOMEGIT = "https://github.com/cgwalters-bot/homegit/pull";
+  const SANDBOX = "https://github.com/cgwalters-forge/cgwalters-devspace-sandbox/pull";
+  /** A board item that is a PR itself, as bot-land adds the bot's own. */
+  const prItem = (nodeId: string, url: string, over: Partial<Item> = {}): Item => {
+    const m = /github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)$/.exec(url);
+    return item(nodeId, { kind: "pr", url, ref: { owner: m?.[1] ?? "", repo: m?.[2] ?? "", number: Number(m?.[3]) }, state: "open", status: "Draft", priority: "P0", ...over });
+  };
+  const sandbox9 = pr("cgwalters-forge", "cgwalters-devspace-sandbox", 9);
+  const review = (p: ForgePr, onBot = false) => ({ pr: { ...p, draft: false }, wait: { reasons: onBot ? [] : (["review-requested"] as PrWait["reasons"]), onBot } });
+
+  // name, items, forge PRs, other PRs, the entries [key, kind, item it carries], the stale items
+  const cases: [string, Item[], ForgePr[], ReturnType<typeof review>[], [string, string, string | undefined][], string[]][] = [
+    [
+      "a merged PR still Draft on the board is dropped, and named as stale",
+      [prItem("PVTI_h77", `${HOMEGIT}/77`, { state: "merged" })],
+      [],
+      [],
+      [],
+      ["PVTI_h77"],
+    ],
+    [
+      "a closed issue still Needs human is dropped too",
+      [tracked("PVTI_done", 5, { state: "closed", why: "done" })],
+      [],
+      [],
+      [],
+      ["PVTI_done"],
+    ],
+    [
+      "a closed ask stays, settled, and isn't stale",
+      [question("PVTI_q", 6, `${TRACKER}/1`, { state: "closed" })],
+      [],
+      [],
+      [["item:PVTI_q", "question", "PVTI_q"]],
+      [],
+    ],
+    [
+      "a forge PR on the board as itself, and in a tracker item's Branch, is one entry",
+      [
+        tracked("PVTI_t60", 60, { status: "Draft", priority: "P0", branch: [`${HOMEGIT}/77`, `${SANDBOX}/9`] }),
+        prItem("PVTI_s9", `${SANDBOX}/9`),
+        prItem("PVTI_h77", `${HOMEGIT}/77`, { state: "merged" }),
+      ],
+      [sandbox9],
+      [],
+      [["pr:cgwalters-forge/cgwalters-devspace-sandbox#9", "pr", "PVTI_t60"]],
+      ["PVTI_h77"],
+    ],
+    [
+      "a forge PR on the board only as itself takes its priority from it",
+      [prItem("PVTI_s9", `${SANDBOX}/9`, { priority: "P1" })],
+      [sandbox9],
+      [],
+      [["pr:cgwalters-forge/cgwalters-devspace-sandbox#9", "pr", "PVTI_s9"]],
+      [],
+    ],
+    [
+      "the bot's own PR requesting his review is one entry, not also an item",
+      [prItem("PVTI_p4", "https://github.com/cgwalters-bot/praxis-credential-broker/pull/4")],
+      [],
+      [review(pr("cgwalters-bot", "praxis-credential-broker", 4))],
+      [["pr:cgwalters-bot/praxis-credential-broker#4", "pr", "PVTI_p4"]],
+      [],
+    ],
+    [
+      "so is one whose Draft tracker item holds it in Branch",
+      [tracked("PVTI_t1", 1, { status: "Draft", branch: [`${HOMEGIT}/80`] })],
+      [],
+      [review(pr("cgwalters-bot", "homegit", 80))],
+      [["pr:cgwalters-bot/homegit#80", "pr", "PVTI_t1"]],
+      [],
+    ],
+    [
+      "a closed tracker item folded into its open PR's row is shown there, not named as stale",
+      [tracked("PVTI_t2", 2, { status: "Draft", state: "closed", branch: [`${SANDBOX}/9`] })],
+      [sandbox9],
+      [],
+      [["pr:cgwalters-forge/cgwalters-devspace-sandbox#9", "pr", "PVTI_t2"]],
+      [],
+    ],
+    [
+      "Branch URLs match whatever their case",
+      [tracked("PVTI_t3", 3, { status: "Draft", branch: [`${SANDBOX.toUpperCase().replace("HTTPS://GITHUB.COM", "https://github.com")}/9`] })],
+      [sandbox9],
+      [],
+      [["pr:cgwalters-forge/cgwalters-devspace-sandbox#9", "pr", "PVTI_t3"]],
+      [],
+    ],
+    [
+      "a Draft tracker item holding the bot's PR isn't listed apart while the PR waits on the bot",
+      [tracked("PVTI_t1", 1, { status: "Draft", branch: [`${HOMEGIT}/80`] })],
+      [],
+      [review(pr("cgwalters-bot", "homegit", 80), true)],
+      [["pr:cgwalters-bot/homegit#80", "pr", "PVTI_t1"]],
+      [],
+    ],
+    [
+      "a question about a PR on the board as itself nests under the PR's row",
+      [
+        prItem("PVTI_p4", "https://github.com/cgwalters-bot/praxis-credential-broker/pull/4", { status: "Needs human" }),
+        question("PVTI_q4", 7, "https://github.com/cgwalters-bot/praxis-credential-broker/pull/4"),
+      ],
+      [],
+      [review(pr("cgwalters-bot", "praxis-credential-broker", 4))],
+      [["pr:cgwalters-bot/praxis-credential-broker#4", "pr", "PVTI_p4"]],
+      [],
+    ],
+  ];
+  for (const [name, items, prs, others, want, stale] of cases) {
+    it(name, () => {
+      const entries = buildEntries(items, prs, new Map(), true, new Set(), { others });
+      assert.deepEqual(entries.map((e) => [e.key, e.kind, e.item?.nodeId]), want);
+      assert.deepEqual(staleItems(items, entries).map((i) => i.nodeId), stale);
+    });
+  }
+
+  it("drops a forge PR he approved together with its own Draft item", () => {
+    const entries = buildEntries([prItem("PVTI_s9", `${SANDBOX}/9`)], [sandbox9], new Map([["cgwalters-forge/cgwalters-devspace-sandbox#9", { state: "approved" as const }]]));
+    assert.deepEqual(entries, []);
+  });
+
+  it("keeps a Needs human PR item whose PR waits on the bot, flagged as the bot's bug", () => {
+    const items = [prItem("PVTI_p4", "https://github.com/cgwalters-bot/praxis-credential-broker/pull/4", { status: "Needs human" })];
+    const entries = buildEntries(items, [], new Map(), true, new Set(), { others: [review(pr("cgwalters-bot", "praxis-credential-broker", 4), true)] });
+    assert.deepEqual(entries.map((e) => [e.key, e.bug === true]), [["item:PVTI_p4", true], ["pr:cgwalters-bot/praxis-credential-broker#4", false]]);
   });
 });
