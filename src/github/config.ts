@@ -56,6 +56,17 @@ export const TRIAGE_FIELD = {
   verdictTarget: "Verdict target",
 } as const;
 
+/**
+ * Board fields the changes feed (boardfeed.ts) reads, by name; optional
+ * too. Lead names the topic session that owns an item; News is the one
+ * dated line the coordinator writes when something notable happens to
+ * it (`bot-board set --news` in homegit).
+ */
+export const FEED_FIELD = {
+  lead: "Lead",
+  news: "News",
+} as const;
+
 /** The Status of a finished item; the triage view shows everything else. */
 export const DONE = "Done";
 

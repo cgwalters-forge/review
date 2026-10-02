@@ -1,9 +1,12 @@
-// The ops view: devspaces, local agents and the plan's usage, agent
-// runs, active work and the bot's recent activity. Times that move (uptime, time left) are marked so tickOps
+// The ops view: the board changes feed (boardfeedview.ts), devspaces,
+// local agents and the plan's usage, agent runs, active work and the
+// bot's recent activity. Times that move (uptime, time left) are marked so tickOps
 // can update them in place every second without a re-render.
 
 import { h, link, svg } from "../dom.ts";
 import { type IssueRef, type Item, parseIssueUrl } from "./board.ts";
+import type { Snapshot } from "./boardfeed.ts";
+import { type FeedOptions, feedSection } from "./boardfeedview.ts";
 import { AGENT_WORKFLOW, BOT_LOGIN, DEVSPACE_REPO, DEVSPACE_WORKFLOW, HEARTBEAT_ISSUE, HEARTBEAT_STALE_MS, OPS_EVENTS_SHOWN, OPS_WINDOW_HOURS, TRACKER_REPO, USAGE_REPO } from "./config.ts";
 import { PRESET_LABEL, PRESET_TITLE } from "./filter.ts";
 import { type Heartbeat, isStale, type LocalWorker } from "./heartbeat.ts";
@@ -517,17 +520,23 @@ function eventsSection(events: BotEvent[] | undefined, now: number, fromCache = 
   return sec;
 }
 
-export function opsView(ops: Ops | undefined, now: number = Date.now()): HTMLElement {
+/** The changes feed's inputs, when the ops view shows it. */
+export interface Feed extends Omit<FeedOptions, "now" | "fromCache"> {
+  seen: Snapshot | undefined;
+}
+
+export function opsView(ops: Ops | undefined, now: number = Date.now(), feed?: Feed): HTMLElement {
   const root = h(
     "main",
     { class: "ops" },
-    h("p", { class: "summary" }, `What the bot is running now · refreshed every minute${ops ? `, last at ${clock(new Date(ops.at).toISOString())}` : ""} · r refresh · u back`),
+    h("p", { class: "summary" }, `What changed on the board, and what the bot is running now · refreshed every minute${ops ? `, last at ${clock(new Date(ops.at).toISOString())}` : ""} · r refresh · u back`),
   );
   if (!ops) {
     root.append(h("p", { class: "empty" }, "Loading…"));
     return root;
   }
   for (const w of ops.warnings) root.append(h("p", { class: "warn" }, w));
+  if (feed) root.append(feedSection(ops.board, feed.seen, { ...feed, now, ...(ops.fromCache ? { fromCache: true } : {}) }));
   const t = tiles(ops.devspaces, now);
   if (t) root.append(t);
   const usage = usageSection(ops.usage, ops.local, now);

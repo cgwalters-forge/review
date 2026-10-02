@@ -333,7 +333,9 @@ describe("loadOps", () => {
     assert.deepEqual(ops.work?.map((i) => i.nodeId), ["PVTI_1", "PVTI_2"]);
     assert.equal(ops.events?.length, 14);
     assert.equal(ops.usage?.state === "ok" && ops.usage.usage.workers.length, 2);
-    assert.equal(new URL(calls.find((c) => c.url.includes("/items"))?.url ?? "").searchParams.get("q"), 'status:"In Progress"');
+    // The whole board, for the changes feed; active work is its In Progress items.
+    assert.equal(new URL(calls.find((c) => c.url.includes("/items"))?.url ?? "").searchParams.get("q"), null);
+    assert.deepEqual(ops.board?.map((i) => i.nodeId), ["PVTI_1", "PVTI_2", "PVTI_3"]);
 
     const before = calls.length;
     await loadOps(gh, cache, NOW);

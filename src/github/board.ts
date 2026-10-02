@@ -3,7 +3,7 @@
 // synthetic payloads.
 
 import { parseBlocks, parseQuestion, type Question, unfencedLines } from "../answer.ts";
-import { BOT_LOGIN, CHORE_LABEL, DONE, FIELD, OPERATOR, QUESTION_LABEL, QUEUE_STATUSES, REVIEW_LABEL, TRACKER_REPO, TRIAGE_FIELD } from "./config.ts";
+import { BOT_LOGIN, CHORE_LABEL, DONE, FEED_FIELD, FIELD, OPERATOR, QUESTION_LABEL, QUEUE_STATUSES, REVIEW_LABEL, TRACKER_REPO, TRIAGE_FIELD } from "./config.ts";
 
 /** The subset of a project field the app uses. */
 export interface RawField {
@@ -112,8 +112,14 @@ export interface Item {
   verdict?: string;
   /** The Verdict target field: what a merge or close verdict points at. */
   verdictTarget?: string;
+  /** The Lead field: the topic session that owns the item. */
+  lead?: string;
+  /** The News field: the latest notable event, one dated line. */
+  news?: string;
   /** When the item was added to the board. */
   createdAt?: string;
+  /** When the board item itself (a field) last changed. */
+  movedAt?: string;
   updatedAt?: string;
 }
 
@@ -170,7 +176,7 @@ export function fieldIds(fields: readonly RawField[]): number[] {
     }
     return id;
   });
-  const optional = Object.values(TRIAGE_FIELD).flatMap((name) => byName.get(name) ?? []);
+  const optional = [...Object.values(TRIAGE_FIELD), ...Object.values(FEED_FIELD)].flatMap((name) => byName.get(name) ?? []);
   return [...required, ...optional];
 }
 
@@ -237,7 +243,10 @@ export function parseItem(raw: RawItem): Item {
   opt("theme", fields.get(TRIAGE_FIELD.theme)?.trim() || undefined);
   opt("verdict", fields.get(TRIAGE_FIELD.verdict)?.trim() || undefined);
   opt("verdictTarget", fields.get(TRIAGE_FIELD.verdictTarget)?.trim() || undefined);
+  opt("lead", fields.get(FEED_FIELD.lead)?.trim() || undefined);
+  opt("news", fields.get(FEED_FIELD.news)?.trim() || undefined);
   opt("createdAt", raw.created_at);
+  opt("movedAt", raw.updated_at);
   opt("updatedAt", c.updated_at ?? raw.updated_at);
   if (kind !== "draft" && c.html_url) {
     item.url = c.html_url;

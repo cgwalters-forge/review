@@ -2,13 +2,14 @@
 // are workflow runs in DEVSPACE_REPO (see bin/bot-devspace and
 // bin/bot-runs in homegit), local agents are the coordinator's
 // heartbeat (heartbeat.ts), usage is the plan's, from a private
-// repository (usage.ts), active work is the board's In Progress
-// items, and bot activity is its public events. Pure parsing and
+// repository (usage.ts), the whole board feeds the changes feed
+// (boardfeed.ts) and active work (its In Progress items), and bot
+// activity is its public events. Pure parsing and
 // derivation here, plus the reads: conditional (ETags), and a finished
 // run's job is read once.
 
 import { CacheMiss, GitHubError, type GitHub } from "./api.ts";
-import { loadBoard } from "./backend.ts";
+import { loadWholeBoard } from "./backend.ts";
 import { type Item, NO_PRIORITY, PRIORITY_ORDER } from "./board.ts";
 import {
   AGENT_WORKFLOW,
@@ -471,6 +472,8 @@ export interface Ops {
   local?: Heartbeat | null;
   /** The plan's usage, from the private repository. */
   usage?: UsageData;
+  /** Every unarchived board item, for the changes feed. */
+  board?: Item[];
   work?: Item[];
   events?: BotEvent[];
   warnings: string[];
@@ -546,12 +549,12 @@ export async function loadOps(gh: GitHub, cache: JobCache, now: number = Date.no
       return undefined;
     }
   };
-  const [devspaces, agents, local, usage, work, events] = await Promise.all([
+  const [devspaces, agents, local, usage, board, events] = await Promise.all([
     guard(`the devspaces in ${DEVSPACE_REPO}`, loadDevspaces(gh, cache, now)),
     guard(`the agent runs in ${DEVSPACE_REPO}`, loadAgents(gh)),
     guard("the coordinator's heartbeat", loadHeartbeat(gh)),
     guard("the plan's usage", loadUsage(gh)),
-    guard("the board's In Progress items", loadBoard(gh, [IN_PROGRESS]).then((q) => q.items)),
+    guard("the board", loadWholeBoard(gh).then((q) => q.items)),
     guard(`${BOT_LOGIN}'s recent activity`, loadEvents(gh)),
   ]);
   const ops: Ops = { warnings, at: now };
@@ -559,7 +562,10 @@ export async function loadOps(gh: GitHub, cache: JobCache, now: number = Date.no
   if (agents) ops.agents = agents;
   if (local !== undefined) ops.local = local;
   if (usage) ops.usage = usage;
-  if (work) ops.work = work;
+  if (board) {
+    ops.board = board;
+    ops.work = board.filter((i) => i.status === IN_PROGRESS);
+  }
   if (events) ops.events = events;
   return ops;
 }

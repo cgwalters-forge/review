@@ -63,10 +63,11 @@ export interface Queue extends Board {
 }
 
 /** Read the board's fields, and the items matching the board search `q`, conditionally: 304s cost nothing. */
-async function readBoard(gh: GitHub, q: string): Promise<{ fields: RawField[]; items: RawItem[]; changed: boolean }> {
+async function readBoard(gh: GitHub, q?: string): Promise<{ fields: RawField[]; items: RawItem[]; changed: boolean }> {
   const fields = await gh.getAll<RawField>(`${PROJECT}/fields?per_page=${PAGE_SIZE}`);
   const ids = fieldIds(fields.data).join(",");
-  const items = await gh.getAll<RawItem>(`${PROJECT}/items?per_page=${PAGE_SIZE}&fields=${ids}&q=${encodeURIComponent(q)}`);
+  const filter = q === undefined ? "" : `&q=${encodeURIComponent(q)}`;
+  const items = await gh.getAll<RawItem>(`${PROJECT}/items?per_page=${PAGE_SIZE}&fields=${ids}${filter}`);
   return { fields: fields.data, items: items.data, changed: fields.changed || items.changed };
 }
 
@@ -76,6 +77,12 @@ export async function loadBoard(gh: GitHub, statuses: readonly string[]): Promis
   // again, in case the filter syntax ever stops matching.
   const r = await readBoard(gh, `status:${statuses.map((s) => `"${s}"`).join(",")}`);
   return { items: boardItems(r.items, statuses), changed: r.changed };
+}
+
+/** Read every unarchived board item, Done ones too (several pages, mostly 304s). */
+export async function loadWholeBoard(gh: GitHub): Promise<Board> {
+  const r = await readBoard(gh);
+  return { items: r.items.filter((i) => !i.archived_at).map(parseItem), changed: r.changed };
 }
 
 export interface OpenBoard extends Board {
