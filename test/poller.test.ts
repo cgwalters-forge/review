@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, it, mock } from "node:test";
-import { type Delay, type PollStatus, Poller, pollDelay, pollNote } from "../src/github/poller.ts";
+import { type Delay, type PollStatus, Poller, pollDelay, pollNote, REFRESHING_NOTE } from "../src/github/poller.ts";
 
 const INTERVAL = 30_000;
 const STALL = 120_000;
@@ -230,6 +230,109 @@ describe("Poller", () => {
     assert.equal(runs, 1);
   });
 
+  it("on showing the tab, re-reads only data older than the interval", async () => {
+    const h = harness();
+    h.poller.now();
+    await flush();
+    h.setHidden(true);
+    mock.timers.tick(INTERVAL / 3);
+    h.setHidden(false);
+    await flush();
+    assert.equal(h.runs(), 1, "still fresh: no poll");
+    assert.deepEqual(h.poller.status().next, { at: INTERVAL }, "the next one is due when it would have been");
+    mock.timers.tick(INTERVAL - INTERVAL / 3);
+    await flush();
+    assert.equal(h.runs(), 2);
+  });
+
+  /** A poller whose polls all hang, recording what it gives up on and abandons. */
+  function hanging() {
+    const aborted: number[] = [];
+    const currents: (() => boolean)[] = [];
+    let hidden = false;
+    const poller = new Poller({
+      run: (current) => {
+        currents.push(current);
+        return new Promise<void>(() => {});
+      },
+      delay: () => ({ ms: INTERVAL }),
+      hidden: () => hidden,
+      abort: (before) => aborted.push(before),
+      stallMs: STALL,
+    });
+    const setHidden = (v: boolean) => {
+      hidden = v;
+      poller.visibilityChanged();
+    };
+    return { poller, aborted, currents, setHidden };
+  }
+
+  // The bug: mobile Safari froze the page mid-poll; back in front, the
+  // poll's request never settled and the header said only "cached".
+  const SUSPENDED_AT = 1_000;
+  const resumes: [string, (h: ReturnType<typeof hanging>) => void][] = [
+    ["shown again", (h) => h.setHidden(false)],
+    // Restored from the back-forward cache, or thawed: no visibilitychange, and the ticker missed its turns.
+    ["woken with its timers frozen", (h) => h.poller.wake(SUSPENDED_AT)],
+  ];
+  for (const [name, resume] of resumes) {
+    it(`drops a poll from before a suspension, and its requests, when ${name}`, async () => {
+      const h = hanging();
+      h.poller.now();
+      mock.timers.tick(SUSPENDED_AT);
+      if (name === "shown again") h.setHidden(true);
+      // Frozen for a while: the stall timer never got to fire.
+      mock.timers.setTime(SUSPENDED_AT + 10 * 60_000);
+      resume(h);
+      await flush();
+      assert.equal(h.currents.length, 2, "a new poll starts at once");
+      assert.equal(h.currents[0]?.(), false, "the old one is given up on");
+      assert.equal(h.currents[1]?.(), true);
+      assert.deepEqual(h.aborted, [SUSPENDED_AT]);
+      assert.equal(h.poller.status().stalls, 0, "not counted as a stall");
+      assert.equal(pollNote(h.poller.status(), Date.now(), 10_000, true), REFRESHING_NOTE);
+    });
+  }
+
+  it("leaves a running poll alone across a quick tab switch, and a refresh asked for meanwhile", async () => {
+    const h = hanging();
+    h.poller.now();
+    mock.timers.tick(5_000);
+    h.setHidden(true);
+    mock.timers.tick(2_000);
+    h.poller.now();
+    h.setHidden(false);
+    await flush();
+    assert.equal(h.currents.length, 1);
+    assert.equal(h.currents[0]?.(), true);
+    assert.deepEqual(h.aborted, []);
+  });
+
+  it("leaves a running poll alone when focused without a suspension", async () => {
+    const h = hanging();
+    h.poller.now();
+    mock.timers.tick(5_000);
+    h.poller.wake();
+    await flush();
+    assert.equal(h.currents.length, 1);
+    assert.deepEqual(h.aborted, []);
+  });
+
+  it("polls on waking when the loop sat idle", async () => {
+    // Shown without hearing of it, and no poll since: wake() restarts it.
+    const h = harness();
+    h.setDelay({ ms: 4 * INTERVAL, why: "slowed: rate limit low" });
+    h.poller.wake();
+    await flush();
+    assert.equal(h.runs(), 1);
+    // Slowed by the rate budget: even after a suspension, waking doesn't poll before the slower delay is up.
+    mock.timers.tick(2 * INTERVAL);
+    h.poller.wake(INTERVAL);
+    await flush();
+    assert.equal(h.runs(), 1);
+    assert.deepEqual(h.poller.status().next, { at: 4 * INTERVAL, why: "slowed: rate limit low" });
+  });
+
   it("waits the delay it is given, and says why", async () => {
     const h = harness();
     h.setDelay({ ms: 4 * INTERVAL, why: "slowed: rate limit low" });
@@ -283,6 +386,20 @@ describe("pollNote", () => {
     ["hidden", { ...base, hidden: true, stalls: 2 }, "paused: tab hidden"],
     ["rate limited", { ...base, next: { at: now + 1, why: "paused: rate limit until 14:05" } }, "paused: rate limit until 14:05"],
     ["closed", { ...base, closed: true, hidden: true }, undefined],
+    ["not started yet", { ...base, starting: true }, undefined],
   ];
   for (const [name, s, want] of cases) it(name, () => assert.equal(pollNote(s, now, 10_000), want));
+
+  // Over a cached copy there is always a reason, never a bare "cached · N min ago".
+  const cachedCases: [string, PollStatus, string][] = [
+    ["re-reading it", { ...base, running: now - 2_000 }, REFRESHING_NOTE],
+    ["re-reading it slowly", { ...base, running: now - 45_000 }, "waiting on GitHub for 45 s"],
+    ["the re-read failed", { ...base, next: { at: now + 20_000 } }, "couldn't refresh; retrying in 20 s"],
+    ["rate limited", { ...base, next: { at: now + 1, why: "paused: rate limit until 14:05" } }, "paused: rate limit until 14:05"],
+    ["the loop idle", base, "not refreshing: press r"],
+    // Shown from the cache at load, while the token is still being checked.
+    ["the first poll not started yet", { ...base, starting: true }, REFRESHING_NOTE],
+    ["hidden", { ...base, hidden: true }, "paused: tab hidden"],
+  ];
+  for (const [name, s, want] of cachedCases) it(`cached, ${name}`, () => assert.equal(pollNote(s, now, 10_000, true), want));
 });

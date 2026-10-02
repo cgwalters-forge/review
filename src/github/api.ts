@@ -85,6 +85,8 @@ export class GitHub {
   scopes: string | undefined;
   /** Give up on a request unanswered for this long (ms). */
   timeoutMs = REQUEST_TIMEOUT_MS;
+  /** The GETs waiting for an answer, and when each was sent, for abandonGets. */
+  readonly #pending = new Set<{ sent: number; abort: AbortController }>();
 
   constructor(token: TokenGetter, fetchImpl: Fetch = (i, init) => fetch(i, init), cache: ResponseCache = new ResponseCache()) {
     this.#token = token;
@@ -128,10 +130,22 @@ export class GitHub {
     if (scopes !== null) this.scopes = scopes;
   }
 
+  /**
+   * Abandon the GETs sent before `before` (epoch ms) still waiting for an
+   * answer: after the page was suspended, one may never get one. Writes
+   * are left alone: abandoning one wouldn't undo it.
+   */
+  abandonGets(before: number): void {
+    for (const p of this.#pending) if (p.sent < before) p.abort.abort();
+  }
+
   async #send(method: string, url: string, headers: Record<string, string>, body?: unknown): Promise<Response> {
+    const timeout = AbortSignal.timeout(this.timeoutMs);
+    // AbortSignal.any is recent (Safari 17.4); without it, GETs just can't be abandoned.
+    const pending = method === "GET" && typeof AbortSignal.any === "function" ? { sent: Date.now(), abort: new AbortController() } : undefined;
     const init: RequestInit = {
       method,
-      signal: AbortSignal.timeout(this.timeoutMs),
+      signal: pending ? AbortSignal.any([timeout, pending.abort.signal]) : timeout,
       // We do our own conditional requests; the browser cache would
       // otherwise answer from its copy for max-age=60 without asking.
       cache: "no-store",
@@ -147,11 +161,15 @@ export class GitHub {
       (init.headers as Record<string, string>)["Content-Type"] = "application/json";
     }
     let res: Response;
+    if (pending) this.#pending.add(pending);
     try {
       res = await this.#fetch(url, init);
     } catch (e) {
       if (e instanceof Error && e.name === "TimeoutError") throw new Error(`${method} ${url}: GitHub didn't answer within ${Math.round(this.timeoutMs / 1000)} s`);
+      if (pending?.abort.signal.aborted) throw new Error(`${method} ${url}: abandoned, the page was suspended while it waited`);
       throw e;
+    } finally {
+      if (pending) this.#pending.delete(pending);
     }
     this.#noteRate(res);
     if (res.status === 401) this.onUnauthorized?.();

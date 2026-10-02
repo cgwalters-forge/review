@@ -257,7 +257,11 @@ tab hidden", "slowed: rate limit low", "paused: rate limit until
 14:05", "waiting on GitHub for 45 s". A request GitHub hasn't answered
 in a minute fails, and a poll still running after two minutes is given
 up on ("stalled"), so a connection that died silently never stops the
-polling.
+polling. Over the queue's cached copy it always says why, "refreshing…"
+while the poll runs. A phone suspends a page in the background without
+running its timers, so showing, restoring or focusing the page gives up
+on a poll (and the reads) from before that and, if the data is older
+than the poll interval, polls at once.
 
 The app contains no data: everything is fetched in your browser with your
 token, from `api.github.com` only.
