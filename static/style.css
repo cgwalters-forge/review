@@ -496,3 +496,33 @@ details.unblocks ul { margin: 6px 0 0; padding-left: 18px; columns: 2 16em; font
 .chip.ch-gone { color: var(--muted); text-decoration: line-through; }
 .chip.ch-news { color: var(--sev-note); background: var(--sev-note-soft); border-color: transparent; }
 .chip.ch-lead { color: var(--sev-look); background: var(--sev-look-soft); border-color: transparent; }
+
+/* Narrow screens: fold what isn't the queue itself (the header's
+   controls, the capture bar, the filter chips, the summary) so the
+   first entry shows near the top. The folds are no-ops on wide screens:
+   their toggles are hidden and what they hold shows as before. */
+.meta .mp + .mp::before { content: " · "; }
+.menu { display: contents; }
+.menu-toggle, .menu-meta, .capture-open, .filters-toggle { display: none; }
+@media (max-width: 600px) {
+  header.top { align-items: center; gap: 4px 10px; }
+  header.top h1 { font-size: 18px; }
+  header.top .nav { flex: 1 1 0; min-width: 0; flex-wrap: nowrap; overflow-x: auto; white-space: nowrap; scrollbar-width: none; }
+  header.top .nav::-webkit-scrollbar { display: none; }
+  header.top .menu-toggle { display: inline-block; font-size: 16px; line-height: 1; padding: 4px 10px; }
+  /* Who and the rate budget move into the menu; how fresh the data is stays. */
+  .meta .mp-who, .meta .mp-api { display: none; }
+  .meta .mp-who + .mp::before { content: none; }
+  .menu { display: none; position: absolute; top: 100%; right: 0; z-index: 6; flex-direction: column; align-items: stretch; gap: 8px; min-width: 14em; padding: 10px; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 6px 18px rgb(0 0 0 / .25); }
+  .menu.open { display: flex; }
+  header.top .menu .menu-meta { display: block; order: 0; flex: none; overflow-wrap: anywhere; }
+  .capture-open, .filters-toggle { display: inline-block; justify-self: start; }
+  form.capture.folded > :not(.capture-open, .capture-status) { display: none; }
+  .filters.folded > .chips { display: none; }
+  .queue-summary { display: none; }
+  .group-h { margin-top: 12px; }
+}
+/* No keys to press on a touch screen. */
+@media (hover: none) and (pointer: coarse) {
+  .summary-keys { display: none; }
+}

@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { GitHub } from "../src/github/api.ts";
 import { captureRequest, type CaptureDraft, fileCapture, type Filed, linkedRef } from "../src/github/capture.ts";
-import { captureBar, type CaptureHooks, forgetDraft, loadDraft } from "../src/github/captureview.ts";
+import { CAPTURE_FOLDED_CLASS, captureBar, type CaptureHooks, forgetDraft, loadDraft } from "../src/github/captureview.ts";
 import { CAPTURE_DRAFT_KEY, CAPTURE_LABEL } from "../src/github/config.ts";
 import { installDom, type Scripted, scriptedFetch } from "./helpers.ts";
 
@@ -179,6 +179,29 @@ describe("captureBar", () => {
     assert.equal(m.q<HTMLInputElement>(".capture-url").value, "https://x.example/");
     assert.equal(m.q<HTMLTextAreaElement>(".capture-body").value, "b");
     assert.equal(m.q<HTMLTextAreaElement>(".capture-body").hidden, false);
+  });
+  it("folds (for narrow screens) unless there is a draft, opens on its button or b, and folds again once filed", async () => {
+    const m = mount(mem(), filedOk, async () => undefined);
+    const folded = () => m.b.el.classList.contains(CAPTURE_FOLDED_CLASS);
+    const fold = m.q<HTMLButtonElement>(".capture-open");
+    assert.ok(folded());
+    assert.equal(fold.getAttribute("aria-expanded"), "false");
+    fold.click();
+    assert.ok(!folded());
+    assert.equal(fold.textContent, "Close");
+    assert.equal(document.activeElement, m.q(".capture-title"));
+    fold.click();
+    assert.ok(folded());
+    m.b.focus();
+    assert.ok(!folded());
+    m.type(".capture-title", "T");
+    await m.submit();
+    assert.ok(folded());
+    assert.equal(m.status().textContent, "Filed #42.");
+
+    const storage = mem();
+    storage.setItem(CAPTURE_DRAFT_KEY, JSON.stringify({ title: "a", body: "", url: "" }));
+    assert.ok(!mount(storage, filedOk, async () => undefined).b.el.classList.contains(CAPTURE_FOLDED_CLASS));
   });
   it("ignores a malformed saved draft", () => {
     const storage = mem();

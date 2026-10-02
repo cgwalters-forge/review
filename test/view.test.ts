@@ -11,7 +11,7 @@ import { type Item, queueItems } from "../src/github/board.ts";
 import type { Context, RunStatus } from "../src/github/backend.ts";
 import { createRenderer } from "../src/markdown.ts";
 import { buildEntries, type Entry } from "../src/github/queue.ts";
-import { age, answerState, type AnswerState, CAUGHT_UP_CLASS, contextView, type ItemViewHandlers, itemView, queueView, STATE_LABEL } from "../src/github/view.ts";
+import { age, answerState, type AnswerState, CAUGHT_UP_CLASS, contextView, FILTERS_FOLDED_CLASS, type ItemViewHandlers, itemView, queueView, STATE_LABEL } from "../src/github/view.ts";
 import { installDom, rawItems } from "./helpers.ts";
 
 const win = installDom();
@@ -117,7 +117,8 @@ describe("queueView", () => {
     assert.equal(row("PVTI_synthetic_epic")?.querySelector(".tag")?.textContent, "cgwalters-forge/tracker#20 · 1/3 sub-issues done");
     assert.equal(row("PVTI_synthetic_review_ask")?.querySelector(".why")?.textContent, "Re-approve widget#50 at its new head, then the bot signs off");
     assert.equal(row("PVTI_synthetic_chore_ask")?.querySelector(".kind")?.textContent, "do");
-    assert.match(root.querySelector(".summary")?.textContent ?? "", /0 PRs · 2 questions · 1 reviews · 1 chores · 3 without an ask/);
+    // Marked as the queue's: only it folds away on a phone, not the panes' summaries (their refresh notes).
+    assert.match(root.querySelector(".summary.queue-summary")?.textContent ?? "", /0 PRs · 2 questions · 1 reviews · 1 chores · 3 without an ask/);
   });
 
   it("labels answered and closed questions", () => {
@@ -154,6 +155,24 @@ describe("queueView", () => {
     // The chosen org stays, so it can be cleared, and the message links to everything.
     assert.equal(none.querySelector(".chip.org.on")?.getAttribute("href"), "#all");
     assert.equal(none.querySelector(".empty a")?.getAttribute("href"), "#all");
+  });
+
+  it("folds the filter bar behind a button naming the active filter, and keeps it open across re-renders", () => {
+    const entries = entriesOf(items());
+    const render = () => queueView(entries, labels(new Set(), new Set()), Date.now(), { scope: "composefs", priority: "P0" });
+    const root = render();
+    const bar = root.querySelector(".filters");
+    const toggle = root.querySelector<HTMLButtonElement>(".filters-toggle");
+    assert.equal(toggle?.textContent, "Filters (active: Composefs · P0)");
+    assert.ok(bar?.classList.contains(FILTERS_FOLDED_CLASS));
+    assert.equal(toggle?.getAttribute("aria-expanded"), "false");
+    toggle?.click();
+    assert.ok(!bar?.classList.contains(FILTERS_FOLDED_CLASS));
+    // The next poll re-renders the queue: it stays open until folded again.
+    const again = render();
+    assert.ok(!again.querySelector(".filters")?.classList.contains(FILTERS_FOLDED_CLASS));
+    again.querySelector<HTMLButtonElement>(".filters-toggle")?.click();
+    assert.ok(render().querySelector(".filters")?.classList.contains(FILTERS_FOLDED_CLASS));
   });
 
   it("says when nothing needs you", () => {
