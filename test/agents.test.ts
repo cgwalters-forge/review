@@ -1,0 +1,260 @@
+import assert from "node:assert/strict";
+import { describe, it } from "node:test";
+import { activeAgents, type ActiveAgent, isClaimed, laneOf } from "../src/github/agents.ts";
+import { agentsStrip, STRIP_CLASS } from "../src/github/agentsview.ts";
+import { type Item, parseItem } from "../src/github/board.ts";
+import { snapshotOf } from "../src/github/boardfeed.ts";
+import type { Heartbeat, LocalWorker } from "../src/github/heartbeat.ts";
+import { installDom } from "./helpers.ts";
+
+installDom();
+
+const MIN = 60_000;
+const NOW = Date.parse("2026-10-02T12:00:00Z");
+const ago = (ms: number) => new Date(NOW - ms).toISOString();
+const TRACKER = "https://github.com/cgwalters-forge/tracker/issues";
+
+function item(nodeId: string, url: string | undefined, over: Partial<Item> = {}): Item {
+  const m = url ? /github\.com\/([^/]+)\/([^/]+)\/(?:issues|pull)\/(\d+)$/.exec(url) : null;
+  return {
+    id: 0,
+    nodeId,
+    kind: url?.includes("/pull/") ? "pr" : "issue",
+    title: nodeId,
+    body: "",
+    why: "",
+    labels: [],
+    assignees: [],
+    branch: [],
+    gist: [],
+    status: "In Progress",
+    ...(url ? { url } : {}),
+    ...(m ? { ref: { owner: m[1] as string, repo: m[2] as string, number: Number(m[3]) } } : {}),
+    ...over,
+  };
+}
+
+function worker(name: string, itemUrl: string, over: Partial<LocalWorker> = {}): LocalWorker {
+  const m = /github\.com\/([^/]+)\/([^/]+)\/(?:issues|pull)\/(\d+)$/.exec(itemUrl);
+  return { name, itemUrl, itemRef: `${m?.[1]}/${m?.[2]}#${m?.[3]}`, startedAt: ago(30 * MIN), status: "working", ...over };
+}
+
+function heartbeat(workers: LocalWorker[], updatedAgo = 2 * MIN, over: Partial<Heartbeat> = {}): Heartbeat {
+  return { updatedAt: ago(updatedAgo), session: "s", loopState: "working", workers, skipped: 0, ...over };
+}
+
+describe("isClaimed", () => {
+  const cases: [string, Partial<Item>, boolean][] = [
+    ["In Progress with a Lead", { lead: "wfc" }, true],
+    ["In Progress with a Run", { run: "https://github.com/o/r/actions/runs/1" }, true],
+    ["In Progress with neither", {}, false],
+    ["a Lead on a Draft item", { status: "Draft", lead: "wfc" }, false],
+  ];
+  for (const [name, over, want] of cases) it(name, () => assert.equal(isClaimed(item("PVTI_x", `${TRACKER}/1`, over)), want));
+});
+
+describe("laneOf", () => {
+  const cases: [string | undefined, string][] = [["cgwalters-bot", "harness"], ["cgwalters-forge", "harness"], ["bootc-dev", "upstream"], [undefined, "unknown"]];
+  for (const [org, want] of cases) it(String(org), () => assert.equal(laneOf(org), want));
+});
+
+describe("activeAgents", () => {
+  type Row = [name: string, source: ActiveAgent["source"], lane: ActiveAgent["lane"], status: string, stale: boolean];
+  const row = (a: ActiveAgent): Row => [a.name, a.source, a.lane, a.status, a.stale];
+
+  // name, board, heartbeat, the agents in order, running, lanes [harness, upstream, unknown], unconfirmed
+  const cases: [string, Item[], Heartbeat | null | undefined, Row[], number, [number, number, number], number][] = [
+    [
+      "a worker on a claimed item is one agent seen in both",
+      [item("PVTI_r", "https://github.com/cgwalters-forge/review/issues/31", { lead: "coordinator", org: "cgwalters-forge" })],
+      heartbeat([worker("strip", "https://github.com/cgwalters-forge/review/issues/31")]),
+      [["strip", "both", "harness", "working", false]],
+      1,
+      [1, 0, 0],
+      0,
+    ],
+    [
+      "a worker on a PR in a claimed item's Branch is matched by it",
+      [item("PVTI_t", `${TRACKER}/173`, { lead: "bootc-fsck-173", org: "bootc-dev", branch: ["https://github.com/bootc-dev/bootc/pull/2501"] })],
+      heartbeat([worker("rebase", "https://github.com/bootc-dev/bootc/pull/2501")]),
+      [["rebase", "both", "upstream", "working", false]],
+      1,
+      [0, 1, 0],
+      0,
+    ],
+    [
+      "a worker on an item that isn't claimed gets its lane from it, and the board adds nothing",
+      [item("PVTI_p4", "https://github.com/cgwalters-bot/praxis-credential-broker/pull/4", { status: "Draft", org: "cgwalters-bot" })],
+      heartbeat([worker("praxis", "https://github.com/cgwalters-bot/praxis-credential-broker/pull/4")]),
+      [["praxis", "heartbeat", "harness", "working", false]],
+      1,
+      [1, 0, 0],
+      0,
+    ],
+    [
+      "a worker on no board item takes its lane from the URL's owner; a tracker issue's is unknown",
+      [],
+      heartbeat([worker("up", "https://github.com/bootc-dev/bootc/issues/9", { startedAt: ago(5 * MIN) }), worker("tr", `${TRACKER}/264`, { startedAt: ago(10 * MIN) })]),
+      [["tr", "heartbeat", "unknown", "working", false], ["up", "heartbeat", "upstream", "working", false]],
+      2,
+      [0, 1, 1],
+      0,
+    ],
+    [
+      "claimed items no worker names are agents of their own: a topic session, a devspace run",
+      [
+        item("PVTI_wfc", "https://github.com/cgwalters-forge/gh-aw/issues/1", { lead: "wfc", priority: "P1", org: "cgwalters-forge" }),
+        item("PVTI_run", `${TRACKER}/58`, { run: "https://github.com/bootc-dev/cgwalters-devspace-sandbox/actions/runs/1", priority: "P0", org: "bootc-dev" }),
+        item("PVTI_idle", `${TRACKER}/62`, { priority: "P0" }),
+      ],
+      heartbeat([]),
+      [["agent run", "board", "upstream", "run", false], ["wfc", "board", "harness", "claimed", false]],
+      2,
+      [1, 1, 0],
+      0,
+    ],
+    [
+      "a stale heartbeat's workers are unconfirmed, unless the board still claims their item",
+      [item("PVTI_c", `${TRACKER}/173`, { lead: "fsck", org: "bootc-dev" })],
+      heartbeat([worker("old", "https://github.com/bootc-dev/bootc/issues/9"), worker("fsck", `${TRACKER}/173`)], 3 * 60 * MIN),
+      [["fsck", "both", "upstream", "working", false], ["old", "heartbeat", "upstream", "working", true]],
+      1,
+      [0, 1, 0],
+      1,
+    ],
+    [
+      "a stopped coordinator's workers are unconfirmed, however fresh its heartbeat",
+      [],
+      heartbeat([worker("left", "https://github.com/bootc-dev/bootc/issues/9")], 2 * MIN, { loopState: "stopped" }),
+      [["left", "heartbeat", "upstream", "working", true]],
+      0,
+      [0, 0, 0],
+      1,
+    ],
+    [
+      "without a heartbeat, the board's claims still count",
+      [item("PVTI_wfc", "https://github.com/cgwalters-forge/gh-aw/issues/1", { lead: "wfc", org: "cgwalters-forge" })],
+      null,
+      [["wfc", "board", "harness", "claimed", false]],
+      1,
+      [1, 0, 0],
+      0,
+    ],
+  ];
+  for (const [name, board, hb, want, running, [harness, upstream, unknown], unconfirmed] of cases) {
+    it(name, () => {
+      const s = activeAgents(board, hb, NOW);
+      assert.deepEqual(s.agents.map(row), want);
+      assert.equal(s.running, running);
+      assert.deepEqual(s.lanes, { harness, upstream, unknown });
+      assert.equal(s.unconfirmed, unconfirmed);
+      assert.equal(s.target, 4);
+    });
+  }
+
+  it("carries the item's title, priority, Lead and Run onto the merged agent", () => {
+    const run = "https://github.com/bootc-dev/cgwalters-devspace-sandbox/actions/runs/7";
+    const board = [item("PVTI_t", `${TRACKER}/60`, { title: "safe outputs", priority: "P0", lead: "wfc", run })];
+    const [a] = activeAgents(board, heartbeat([worker("w", `${TRACKER}/60`, { devspace: "ds-1" })]), NOW).agents;
+    assert.deepEqual(a, {
+      name: "w",
+      itemUrl: `${TRACKER}/60`,
+      itemRef: "cgwalters-forge/tracker#60",
+      status: "working",
+      since: ago(30 * MIN),
+      source: "both",
+      lane: "unknown",
+      stale: false,
+      title: "safe outputs",
+      priority: "P0",
+      lead: "wfc",
+      runUrl: run,
+      devspace: "ds-1",
+    });
+  });
+
+  it("says how fresh the heartbeat is", () => {
+    const cases: [Heartbeat | null | undefined, unknown][] = [
+      [undefined, undefined],
+      [null, null],
+      [heartbeat([], 2 * MIN), { updatedAt: ago(2 * MIN), loopState: "working", stale: false, stopped: false }],
+      [heartbeat([], 3 * 60 * MIN), { updatedAt: ago(3 * 60 * MIN), loopState: "working", stale: true, stopped: false }],
+      [heartbeat([], 3 * 60 * MIN, { loopState: "stopped" }), { updatedAt: ago(3 * 60 * MIN), loopState: "stopped", stale: false, stopped: true }],
+    ];
+    for (const [hb, want] of cases) assert.deepEqual(activeAgents([], hb, NOW).heartbeat, want);
+  });
+
+  it("reads Run from the board", () => {
+    const run = "https://github.com/bootc-dev/cgwalters-devspace-sandbox/actions/runs/7";
+    const parsed = parseItem({ id: 1, node_id: "PVTI_1", content_type: "Issue", fields: [{ name: "Run", value: { raw: ` ${run} ` } }, { name: "Status", value: { name: { raw: "In Progress" } } }] });
+    assert.equal(parsed.run, run);
+    assert.ok(isClaimed(parsed));
+    const junk = parseItem({ id: 1, node_id: "PVTI_1", content_type: "Issue", fields: [{ name: "Run", value: { raw: "javascript:alert(1)" } }] });
+    assert.equal(junk.run, undefined);
+  });
+});
+
+describe("agentsStrip", () => {
+  const text = (el: Element) => (el.textContent ?? "").replace(/\s+/g, " ");
+  const board = [
+    item("PVTI_wfc", "https://github.com/cgwalters-forge/gh-aw/issues/1", { lead: "wfc", org: "cgwalters-forge", priority: "P1" }),
+    item("PVTI_t", `${TRACKER}/173`, { lead: "fsck", org: "bootc-dev" }),
+  ];
+
+  it("shows the count against the target, the lanes, each agent and the heartbeat's age", () => {
+    const el = agentsStrip({ board, local: heartbeat([worker("fsck", `${TRACKER}/173`), worker("old", "https://github.com/bootc-dev/bootc/issues/9")], 3 * 60 * MIN), warnings: [], at: NOW }, undefined, NOW);
+    assert.ok(el.classList.contains(STRIP_CLASS));
+    const t = text(el);
+    assert.match(t, /Active agents/);
+    assert.match(t, /2\/4/);
+    assert.match(t, /harness 1 · upstream 1/);
+    assert.match(t, /\+1 unconfirmed/);
+    assert.match(t, /heartbeat 3h old/);
+    assert.equal(el.querySelector(".as-count")?.classList.contains("under"), true);
+    assert.deepEqual([...el.querySelectorAll(".as-agent strong")].map((s) => s.textContent), ["wfc", "fsck", "old"]);
+    assert.equal(el.querySelectorAll(".as-agent.stale").length, 1);
+    assert.equal(el.querySelector<HTMLAnchorElement>("a.as-ops")?.getAttribute("href"), "#ops");
+    assert.equal(el.querySelector(".as-feed"), null, "no feed before a snapshot");
+  });
+
+  it("says what it couldn't read", () => {
+    const cases: [Parameters<typeof agentsStrip>[0], RegExp][] = [
+      [undefined, /reading…/],
+      [{ warnings: ["x"], at: NOW }, /couldn't read the board or the heartbeat/],
+      [{ board, warnings: [], at: NOW }, /heartbeat unread/],
+      [{ board, local: null, warnings: [], at: NOW }, /no heartbeat/],
+      [{ local: heartbeat([]), warnings: [], at: NOW }, /board unread/],
+      [{ board: [], local: heartbeat([]), warnings: [], at: NOW }, /No agent is working right now/],
+      [{ board: [], local: heartbeat([], 2 * 24 * 60 * MIN, { loopState: "stopped" }), warnings: [], at: NOW }, /coordinator stopped · heartbeat 2d old/],
+    ];
+    for (const [data, want] of cases) assert.match(text(agentsStrip(data, undefined, NOW)), want);
+    const failed = agentsStrip({ local: heartbeat([]), warnings: ["Couldn't read the board: 502"], at: NOW }, undefined, NOW);
+    assert.match(failed.querySelector(".as-head .warn")?.getAttribute("title") ?? "", /502/, "says why on hover");
+  });
+
+  it("puts hostile board and heartbeat text on screen as text", () => {
+    const evil = '<img src=x onerror=alert(1)><script>alert(2)</script>';
+    const hostile = [item("PVTI_e", `${TRACKER}/9`, { lead: evil, title: evil, run: "https://github.com/o/r/actions/runs/1" })];
+    const el = agentsStrip({ board: hostile, local: heartbeat([]), warnings: [], at: NOW }, undefined, NOW);
+    assert.equal(el.querySelector("img, script"), null);
+    assert.match(text(el), /<img src=x/);
+  });
+
+  it("folds the newest board changes since the snapshot into one line", () => {
+    const before = [item("PVTI_a", `${TRACKER}/1`, { status: "Todo" }), item("PVTI_b", `${TRACKER}/2`, { status: "Todo" })];
+    const seen = snapshotOf(before, NOW - 60 * MIN);
+    const after = [
+      item("PVTI_a", `${TRACKER}/1`, { status: "In Progress", movedAt: ago(5 * MIN) }),
+      item("PVTI_b", `${TRACKER}/2`, { status: "Done", movedAt: ago(4 * MIN) }),
+      ...[3, 4, 5].map((n) => item(`PVTI_${n}`, `${TRACKER}/${n}`, { status: "Todo", movedAt: ago(n * MIN) })),
+    ];
+    const el = agentsStrip({ board: after, local: heartbeat([]), warnings: [], at: NOW }, seen, NOW);
+    const feed = el.querySelector("details.as-feed");
+    assert.ok(feed);
+    assert.match(text(feed.querySelector("summary") as Element), /5 board changes since you last looked/);
+    assert.equal(feed.querySelectorAll(".feed-row").length, 3);
+    assert.match(text(feed), /2 more, and Mark all seen, on Ops/);
+    assert.match(text(agentsStrip({ board: before, local: heartbeat([]), warnings: [], at: NOW }, seen, NOW)), /No board changes since you last looked/);
+    assert.equal(agentsStrip({ board: after, local: heartbeat([]), warnings: [], at: NOW, fromCache: true }, seen, NOW).querySelector(".as-feed"), null, "a cached board may be behind");
+  });
+});

@@ -60,11 +60,14 @@ export const TRIAGE_FIELD = {
  * Board fields the changes feed (boardfeed.ts) reads, by name; optional
  * too. Lead names the topic session that owns an item; News is the one
  * dated line the coordinator writes when something notable happens to
- * it (`bot-board set --news` in homegit).
+ * it (`bot-board set --news` in homegit). Run is the devspace agent run
+ * working on it (`bot-runs dispatch` sets it), which the active agents
+ * strip reads too.
  */
 export const FEED_FIELD = {
   lead: "Lead",
   news: "News",
+  run: "Run",
 } as const;
 
 /** The Status of a finished item; the triage view shows everything else. */
@@ -201,6 +204,14 @@ export const HEARTBEAT_WAKE_GRACE_MS = 5 * 60_000;
 export const OPS_EVENTS = 50;
 /** Rows of bot activity shown. */
 export const OPS_EVENTS_SHOWN = 20;
+/**
+ * How many agents the bot aims to keep working at once, split between
+ * its harness and upstream (cgwalters-forge/tracker#267); the active
+ * agents strip atop the queue shows the count against it.
+ */
+export const AGENT_TARGET = 4;
+/** Board changes the strip shows before pointing at the ops view for the rest. */
+export const AGENT_FEED_PREVIEW = 3;
 
 /** localStorage key for the chosen theme (auto, light, dark). */
 export const THEME_KEY = "review.theme";

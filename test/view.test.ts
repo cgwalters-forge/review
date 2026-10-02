@@ -193,11 +193,14 @@ describe("queueView", () => {
     assert.ok(queueView([entry("PVTI_a", true), botTurn], () => undefined).querySelector(`.${CAUGHT_UP_CLASS}`));
   });
 
-  it("names the board items it dropped as closed, whatever else it shows", () => {
+  it("puts the strip first and names the board items it dropped as closed, whatever else it shows", () => {
     const merged: Item = { ...fixture("PVTI_synthetic_upstream_pr"), status: "Draft", state: "merged", title: EVIL, url: "javascript:alert(8)" };
+    const strip = document.createElement("section");
+    strip.className = "strip-under-test";
     const listed = entriesOf(items());
     for (const entries of [[], listed]) {
-      const root = queueView(entries, labels(new Set(), new Set()), Date.now(), undefined, { stale: [merged] });
+      const root = queueView(entries, labels(new Set(), new Set()), Date.now(), undefined, { strip, stale: [merged] });
+      assert.equal(root.firstElementChild?.className, "strip-under-test");
       const note = root.querySelector(`.${STALE_NOTE_CLASS}`);
       assert.match(note?.querySelector("summary")?.textContent ?? "", /Not listed: 1 board item closed or merged/);
       assert.equal(note?.querySelector("a"), null, "an unsafe URL stays text");

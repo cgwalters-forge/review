@@ -42,7 +42,8 @@ export function chip(c: Change): HTMLElement {
   }
 }
 
-function row(c: ItemChanges, now: number): HTMLElement {
+/** One item's changes as a list row, here and in the queue's strip. */
+export function feedRow(c: ItemChanges, now: number): HTMLElement {
   const news = c.changes.find((x) => x.kind === "news");
   return h(
     "li",
@@ -92,7 +93,7 @@ export function feedSection(board: readonly Item[] | undefined, seen: Snapshot |
     return sec;
   }
   for (const g of groupByTime(shown, opts.now)) {
-    sec.append(h("h3", {}, g.group), h("ul", { class: "feed-list" }, ...g.items.map((c) => row(c, opts.now))));
+    sec.append(h("h3", {}, g.group), h("ul", { class: "feed-list" }, ...g.items.map((c) => feedRow(c, opts.now))));
   }
   return sec;
 }
