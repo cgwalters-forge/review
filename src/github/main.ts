@@ -201,6 +201,8 @@ interface State {
   tokenWarning?: string;
   /** Keeps the header's ages and poll note current between polls. */
   metaTicker?: ReturnType<typeof setInterval>;
+  /** When the ticker last ran: a gap means the page was frozen (see frozenSince). */
+  tickedAt: number;
 }
 
 function byId<T extends HTMLElement>(id: string): T {
@@ -211,6 +213,11 @@ function byId<T extends HTMLElement>(id: string): T {
 
 /** Re-render the header this often, so "cached · N min ago" and the poll note don't freeze. */
 const META_TICK_MS = 15_000;
+
+/** When the header's ticker last ran, if it has since missed two of its turns: the page was frozen from then. */
+function frozenSince(state: State): number | undefined {
+  return Date.now() - state.tickedAt > 2 * META_TICK_MS ? state.tickedAt : undefined;
+}
 
 /** Set once GitHub rejected the token: late loads mustn't draw over the sign-in page. */
 let viewClosed = false;
@@ -266,8 +273,11 @@ function renderMeta(state: State): void {
   const since = cachedSince(state);
   if (since !== undefined) parts.push(h("span", { class: "cached", title: "Shown from this browser's cache; checking GitHub for changes" }, cachedLabel(since, Date.now())));
   else if (state.lastPoll) parts.push(`checked ${clock(state.lastPoll.getTime())}`);
-  // Why it isn't being refreshed as usual, if it isn't.
-  const note = pollNote(state.poller.status(), Date.now(), POLL_SLOW_MS);
+  // Why it isn't being refreshed as usual, if it isn't. Only the queue's
+  // cached copy (also shown behind an item) is re-read by the poll itself;
+  // the panes and PRs have loaders of their own.
+  const r = route().route;
+  const note = pollNote(state.poller.status(), Date.now(), POLL_SLOW_MS, since !== undefined && !isPane(r) && r !== "pr");
   if (note) parts.push(h("span", { class: "cached", title: "Not refreshing from GitHub as usual" }, note));
   if (state.gh.rate) parts.push(`API ${state.gh.rate.remaining}/${state.gh.rate.limit}`);
   byId("meta").replaceChildren(...parts.flatMap((p, i) => (i ? [" · ", p] : [p])));
@@ -1276,6 +1286,7 @@ function newPoller(get: () => State): Poller {
     changed: () => {
       if (get().loaded) renderChrome(get());
     },
+    abort: (before) => get().gh.abandonGets(before),
     stallMs: POLL_STALL_MS,
   });
 }
@@ -1459,6 +1470,7 @@ async function start(source: TokenSource): Promise<void> {
   const session = await openCache(await source.get(), source.persistence === "local", () => IdbStore.open(), () => deleteCacheDatabase());
   const state: State = {
     poller: newPoller(() => state),
+    tickedAt: Date.now(),
     gh: new GitHub(() => source.get(), undefined, session.cache),
     source,
     session,
@@ -1551,8 +1563,13 @@ async function start(source: TokenSource): Promise<void> {
   });
   installKeys(state);
   installAdvance(state);
-  document.addEventListener("visibilitychange", () => state.poller.visibilityChanged());
+  // Mobile Safari suspends a page in the background, often without a
+  // visibilitychange on return; any of these may be the first sign of it.
+  document.addEventListener("visibilitychange", () => state.poller.visibilityChanged(frozenSince(state)));
+  window.addEventListener("pagehide", () => state.poller.suspend());
+  for (const ev of ["pageshow", "focus"]) window.addEventListener(ev, () => state.poller.wake(frozenSince(state)));
   state.metaTicker = setInterval(() => {
+    state.tickedAt = Date.now();
     if (state.loaded && !document.hidden) renderChrome(state);
   }, META_TICK_MS);
   await cached;

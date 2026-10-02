@@ -105,6 +105,38 @@ describe("GitHub request timeout", () => {
   });
 });
 
+describe("GitHub.abandonGets", () => {
+  it("abandons the GETs sent before a time, and no write", async () => {
+    const hang = (_url: string, init?: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(init.signal?.reason));
+      });
+    const gh = new GitHub(token, hang);
+    const before = gh.get("/old");
+    const write = gh.send("POST", "/write", {});
+    let writeSettled = false;
+    write.then(
+      () => (writeSettled = true),
+      () => (writeSettled = true),
+    );
+    // Let both reach fetch.
+    await new Promise((r) => setImmediate(r));
+    const later = Date.now() + 1;
+    gh.abandonGets(later);
+    await assert.rejects(before, /GET https:\/\/api\.github\.com\/old: abandoned, the page was suspended while it waited/);
+    await new Promise((r) => setImmediate(r));
+    assert.equal(writeSettled, false);
+    // A GET sent after that time is left alone.
+    const after = gh.get("/new");
+    let afterSettled = false;
+    after.catch(() => {}).finally(() => (afterSettled = true));
+    await new Promise((r) => setImmediate(r));
+    gh.abandonGets(later - 1_000);
+    await new Promise((r) => setImmediate(r));
+    assert.equal(afterSettled, false);
+  });
+});
+
 describe("GitHub.getAll", () => {
   it("follows pages and reports a change on any page", async () => {
     const page2 = "https://api.github.com/list?page=2";
