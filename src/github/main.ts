@@ -37,7 +37,7 @@ import {
   triageStops,
   writingElsewhere,
 } from "./advance.ts";
-import { loadSeen, loadUrgentOnly, saveSeen, saveUrgentOnly, snapshotOf } from "./boardfeed.ts";
+import { loadSeen, loadUrgentOnly, saveSeen, saveUrgentOnly, type Snapshot, snapshotOf } from "./boardfeed.ts";
 import { cachedLabel, type CacheSession, forgetCache, openCache } from "./cache.ts";
 import { fileCapture, loadLinkTitle } from "./capture.ts";
 import { type CaptureBar, captureBar, forgetDraft } from "./captureview.ts";
@@ -63,7 +63,9 @@ import { type Command, HELP, keyCommand, parseRoute, type Route, type RouteInfo 
 import { type HarnessCache, loadNews, type News } from "./news.ts";
 import { newsView } from "./newsview.ts";
 import { deleteCacheDatabase, IdbStore } from "./idbstore.ts";
-import { type JobCache, loadOps, type Ops } from "./ops.ts";
+import type { Active } from "./agents.ts";
+import { agentsStrip, STRIP_CLASS } from "./agentsview.ts";
+import { type JobCache, loadActive, loadOps, type Ops } from "./ops.ts";
 import { opsView, tickOps } from "./opsview.ts";
 import { Poller, pollDelay, pollNote } from "./poller.ts";
 import { saveMine } from "./mine.ts";
@@ -161,6 +163,10 @@ interface State {
   ops?: Ops;
   opsStarted: number;
   opsRunning: boolean;
+  /** The queue's active agents strip: its last read (or the ops view's), and when it started. */
+  active?: Active;
+  activeStarted: number;
+  activeRunning: boolean;
   jobs: JobCache;
   /** Moves the ops view's live times while it is shown. */
   ticker?: ReturnType<typeof setInterval>;
@@ -362,8 +368,66 @@ function renderQueue(state: State): void {
     state.filter = r.filter;
     saveFilter(r.filter);
   }
-  showMain(queueView(state.entries, labelOf(state), Date.now(), state.filter, { stale: staleItems(state.items, state.entries) }));
+  const strip = stripOf(state);
+  showMain(queueView(state.entries, labelOf(state), Date.now(), state.filter, { strip, stale: staleItems(state.items, state.entries) }));
   markSelected(state, false);
+  if (activeDue(state)) void refreshActive(state);
+}
+
+/**
+ * The changes feed's snapshot. The first time the board is read (not
+ * from the cache), by the ops view or the queue's strip, it becomes
+ * what the feed starts from.
+ */
+function feedSeen(board: readonly Item[] | undefined, at: number, fromCache: boolean | undefined): Snapshot | undefined {
+  let seen = loadSeen();
+  if (!seen && board && !fromCache) {
+    seen = snapshotOf(board, at);
+    saveSeen(seen);
+  }
+  return seen;
+}
+
+function stripOf(state: State): HTMLElement {
+  const a = state.active;
+  return agentsStrip(a, feedSeen(a?.board, a?.at ?? Date.now(), a?.fromCache), Date.now());
+}
+
+function activeDue(state: State): boolean {
+  return !state.activeRunning && Date.now() - state.activeStarted >= OPS_POLL_INTERVAL_MS;
+}
+
+/** Put a fresh strip in place of the queue's, without re-rendering the queue under it. */
+function showStrip(state: State): void {
+  if (state.closed || route().route !== "queue") return;
+  document.querySelector(`.${STRIP_CLASS}`)?.replaceWith(stripOf(state));
+}
+
+/**
+ * Re-read the strip's board and heartbeat (as often as the ops view, and
+ * only while the queue shows). The first time, what the cache has shows
+ * first, as the ops view does.
+ */
+async function refreshActive(state: State): Promise<void> {
+  if (state.activeRunning) return;
+  state.activeRunning = true;
+  state.activeStarted = Date.now();
+  try {
+    if (!state.active) {
+      const cached = state.gh.cacheOnly();
+      const active = await loadActive(cached);
+      if (!state.active && (active.board || active.local !== undefined)) {
+        active.at = cached.oldest ?? active.at;
+        active.fromCache = true;
+        state.active = active;
+        showStrip(state);
+      }
+    }
+    state.active = await loadActive(state.gh);
+    showStrip(state);
+  } finally {
+    state.activeRunning = false;
+  }
 }
 
 /** Rebuild the whole view for the current route. */
@@ -990,12 +1054,7 @@ async function refreshDecisions(state: State, force = false): Promise<void> {
 
 function showOps(state: State): void {
   const ops = state.ops;
-  let seen = loadSeen();
-  // The first time the board is read (not from the cache), it becomes what the feed starts from.
-  if (!seen && ops?.board && !ops.fromCache) {
-    seen = snapshotOf(ops.board, ops.at);
-    saveSeen(seen);
-  }
+  const seen = ops ? feedSeen(ops.board, ops.at, ops.fromCache) : loadSeen();
   const view = opsView(ops, Date.now(), {
     seen,
     urgentOnly: loadUrgentOnly(),
@@ -1043,6 +1102,12 @@ async function refreshOps(state: State): Promise<void> {
       }
     }
     state.ops = await loadOps(state.gh, state.jobs);
+    // The same reads serve the queue's strip, so it needn't repeat them.
+    const { board, local, at } = state.ops;
+    if (board || local !== undefined) {
+      state.active = { warnings: [], at, ...(board ? { board } : {}), ...(local !== undefined ? { local } : {}) };
+      state.activeStarted = Date.now();
+    }
     if (route().route === "ops") {
       showOps(state);
       renderChrome(state);
@@ -1241,6 +1306,7 @@ async function poll(state: State, current: () => boolean): Promise<void> {
   if (state.closed) return;
   if (route().route === "news") void refreshNews(state);
   if (route().route === "ops" && opsDue(state)) void refreshOps(state);
+  if (route().route === "queue" && activeDue(state)) void refreshActive(state);
   if (route().route === "triage") void refreshTriage(state);
   if (route().route === "decisions") void refreshDecisions(state);
   // The board and the forge load side by side; whichever answers first shows first.
@@ -1362,6 +1428,8 @@ function run(state: State, cmd: Command, where: Route): void {
         void refreshDecisions(state, true);
         return;
       }
+      // The queue's strip is re-read too, now rather than when due.
+      if (r.route === "queue") state.activeStarted = 0;
       refreshSoon(state);
       return;
     }
@@ -1516,6 +1584,8 @@ async function start(source: TokenSource): Promise<void> {
     harness: new Map(),
     opsStarted: 0,
     opsRunning: false,
+    activeStarted: 0,
+    activeRunning: false,
     jobs: new Map(),
     triageOpen: new Set(),
     decisionsAnswered: new Set(),

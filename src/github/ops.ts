@@ -8,6 +8,7 @@
 // derivation here, plus the reads: conditional (ETags), and a finished
 // run's job is read once.
 
+import type { Active } from "./agents.ts";
 import { CacheMiss, GitHubError, type GitHub } from "./api.ts";
 import { loadWholeBoard } from "./backend.ts";
 import { type Item, NO_PRIORITY, PRIORITY_ORDER } from "./board.ts";
@@ -538,10 +539,9 @@ function message(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
-/** Read every section side by side; one failing leaves the others. */
-export async function loadOps(gh: GitHub, cache: JobCache, now: number = Date.now()): Promise<Ops> {
-  const warnings: string[] = [];
-  const guard = async <T>(what: string, p: Promise<T>): Promise<T | undefined> => {
+/** A guard that turns a section's failed read into a warning (none for a cache miss) and undefined. */
+function guarded(warnings: string[]) {
+  return async <T>(what: string, p: Promise<T>): Promise<T | undefined> => {
     try {
       return await p;
     } catch (e) {
@@ -549,6 +549,28 @@ export async function loadOps(gh: GitHub, cache: JobCache, now: number = Date.no
       return undefined;
     }
   };
+}
+
+/**
+ * What the queue's active agents strip needs, and no more: the whole
+ * board and the heartbeat, both conditional reads that cost nothing
+ * while unchanged. The ops view reads the same two, so either view's
+ * read serves the other.
+ */
+export async function loadActive(gh: GitHub, now: number = Date.now()): Promise<Active> {
+  const warnings: string[] = [];
+  const guard = guarded(warnings);
+  const [board, local] = await Promise.all([guard("the board", loadWholeBoard(gh).then((q) => q.items)), guard("the coordinator's heartbeat", loadHeartbeat(gh))]);
+  const active: Active = { warnings, at: now };
+  if (board) active.board = board;
+  if (local !== undefined) active.local = local;
+  return active;
+}
+
+/** Read every section side by side; one failing leaves the others. */
+export async function loadOps(gh: GitHub, cache: JobCache, now: number = Date.now()): Promise<Ops> {
+  const warnings: string[] = [];
+  const guard = guarded(warnings);
   const [devspaces, agents, local, usage, board, events] = await Promise.all([
     guard(`the devspaces in ${DEVSPACE_REPO}`, loadDevspaces(gh, cache, now)),
     guard(`the agent runs in ${DEVSPACE_REPO}`, loadAgents(gh)),

@@ -190,6 +190,8 @@ export const STALE_NOTE_CLASS = "stale-items";
 
 /** What the queue shows around its entries. */
 export interface QueueExtras {
+  /** Shown first, above everything: the active agents strip. */
+  strip?: Node;
   /** Board items dropped because their issue or PR is closed (see staleItems), named at the end. */
   stale?: readonly Item[];
 }
@@ -214,6 +216,7 @@ export function queueView(
   extras: QueueExtras = {},
 ): HTMLElement {
   const root = h("main", { class: "queue" });
+  if (extras.strip) root.append(extras.strip);
   const stale = extras.stale?.length ? staleNote(extras.stale) : null;
   if (all.length === 0) {
     root.append(h("p", { class: `empty ${CAUGHT_UP_CLASS}` }, "All caught up: nothing needs you right now."));

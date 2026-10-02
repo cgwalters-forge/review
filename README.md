@@ -143,6 +143,22 @@ its items that are in the queue. On the decisions view, an answer
 moves on in place, to the next card still waiting on you. "Auto-next"
 in the header turns this off (remembered per browser).
 
+**Active agents**, a strip atop the queue, shows how many agents are
+working against the target of about four (`AGENT_TARGET`), split
+between the harness (cgwalters-bot and cgwalters-forge) and upstream,
+with a row per agent: its name, item, status and age (since it
+started, for a worker; since its board item last changed, for one only
+the board knows).
+It merges two sources: the board's In Progress items with a Lead (a
+topic session) or a Run (a devspace agent run), and the coordinator's
+heartbeat (see the ops pane below), a worker on a claimed item being
+one agent. Workers that only a stale heartbeat (or a stopped
+coordinator's) lists are counted apart as unconfirmed, and the heartbeat's age is always shown. Under it, one
+folded line holds the newest board changes since you last marked them
+seen on the ops pane, which has the rest. It reads the whole board and
+the heartbeat conditionally, once a minute while the queue shows (the
+ops pane's reads serve it too).
+
 **Filters** above the queue narrow it by the organization an entry
 targets and by priority, with each chip's count. The target is the
 board's Org field, else a tracker issue's `target:<org>` label, else the

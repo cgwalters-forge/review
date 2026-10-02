@@ -116,6 +116,8 @@ export interface Item {
   lead?: string;
   /** The News field: the latest notable event, one dated line. */
   news?: string;
+  /** The Run field: the devspace agent run working on it, a URL. */
+  run?: string;
   /** When the item was added to the board. */
   createdAt?: string;
   /** When the board item itself (a field) last changed. */
@@ -245,6 +247,7 @@ export function parseItem(raw: RawItem): Item {
   opt("verdictTarget", fields.get(TRIAGE_FIELD.verdictTarget)?.trim() || undefined);
   opt("lead", fields.get(FEED_FIELD.lead)?.trim() || undefined);
   opt("news", fields.get(FEED_FIELD.news)?.trim() || undefined);
+  opt("run", urls(fields.get(FEED_FIELD.run))[0]);
   opt("createdAt", raw.created_at);
   opt("movedAt", raw.updated_at);
   opt("updatedAt", c.updated_at ?? raw.updated_at);

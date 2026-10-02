@@ -257,7 +257,7 @@ function agentsSection(data: AgentData | undefined, now: number, fromCache = fal
 }
 
 /** A local worker's status as a dot: busy, starting or waiting. */
-function workerStatus(s: string): HTMLElement {
+export function workerStatus(s: string): HTMLElement {
   const cls = s === "starting" ? "s-starting" : s === "waiting" ? "s-queued" : /^(working|testing|reviewing|landing)$/.test(s) ? "s-ready" : "s-unknown";
   return status(cls, s, `the worker's last reported status: ${s}`);
 }
