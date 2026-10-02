@@ -175,6 +175,17 @@ describe("queueView", () => {
     assert.ok(render().querySelector(".filters")?.classList.contains(FILTERS_FOLDED_CLASS));
   });
 
+  it("keeps each filter label separate from its wrapping chips", () => {
+    const root = queueView(entriesOf(items()), labels(new Set(), new Set()));
+    const rows = [...root.querySelectorAll(".filters > .chips")];
+    assert.deepEqual(rows.map((row) => row.querySelector(".chips-h")?.textContent), ["Show", "Org", "Priority"]);
+    for (const row of rows) {
+      assert.equal(row.children.length, 2);
+      assert.ok(row.querySelector(":scope > .chips-list > .chip"));
+      assert.equal(row.querySelector(":scope > .chip"), null);
+    }
+  });
+
   it("says when nothing needs you", () => {
     assert.match(queueView([], () => undefined).textContent ?? "", /All caught up: nothing needs you/);
     assert.ok(queueView([], () => undefined).querySelector(`.${CAUGHT_UP_CLASS}`));

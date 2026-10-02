@@ -160,7 +160,7 @@ let filtersOpen = false;
 function filterBar(entries: readonly Entry[], filter: QueueFilter): HTMLElement {
   const { presets, orgs, priorities } = chips(entries, filter);
   const line = (label: string, list: Chip[], cls: string) =>
-    h("div", { class: "chips" }, h("span", { class: "chips-h" }, label), ...list.map((c) => chip(c, cls)));
+    h("div", { class: "chips" }, h("span", { class: "chips-h" }, label), h("div", { class: "chips-list" }, ...list.map((c) => chip(c, cls))));
   const toggle = h("button", { type: "button", class: "small filters-toggle" }, `Filters (active: ${filterText(filter)})`);
   const bar = h(
     "nav",

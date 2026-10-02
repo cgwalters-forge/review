@@ -129,13 +129,17 @@ function filterChips(counts: VerdictCounts, total: number, filter: TriageFilter)
       "div",
       { class: "chips" },
       h("span", { class: "chips-h" }, "Verdict"),
-      ...TRIAGE_FILTERS.map((f) => {
-        const on = f === filter;
-        const attrs: Record<string, string> = { class: `chip${on ? " on" : ""}`, href: triageHref(on && f !== "all" ? "all" : f) };
-        if (f !== "all") attrs.title = VERDICT_TITLE[f];
-        if (on) attrs["aria-current"] = "true";
-        return h("a", attrs, FILTER_LABEL[f], h("span", { class: "count" }, String(f === "all" ? total : counts[f])));
-      }),
+      h(
+        "div",
+        { class: "chips-list" },
+        ...TRIAGE_FILTERS.map((f) => {
+          const on = f === filter;
+          const attrs: Record<string, string> = { class: `chip${on ? " on" : ""}`, href: triageHref(on && f !== "all" ? "all" : f) };
+          if (f !== "all") attrs.title = VERDICT_TITLE[f];
+          if (on) attrs["aria-current"] = "true";
+          return h("a", attrs, FILTER_LABEL[f], h("span", { class: "count" }, String(f === "all" ? total : counts[f])));
+        }),
+      ),
     ),
   );
 }
