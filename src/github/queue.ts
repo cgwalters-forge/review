@@ -5,7 +5,7 @@
 // the bot come last, apart. Pure, so tests can check the ranking and
 // what gets merged or dropped.
 
-import { askKind, blockedBy, type Item, NO_PRIORITY, PRIORITY_ORDER } from "./board.ts";
+import { askKind, blockedBy, isAsk, type Item, NO_PRIORITY, PRIORITY_ORDER } from "./board.ts";
 import { DRAFT, FORGE_ORG, NEEDS_HUMAN } from "./config.ts";
 import { type ForgePr, parseBotMeta, refKey, type Verdict, waitsOnReviewer } from "./forge.ts";
 import { forgeWait, type PrWait } from "./waiting.ts";
@@ -130,10 +130,18 @@ export interface QueueInputs {
  *   what he is asked to do on it, or waiting on the bot. Its priority is
  *   its board item's, by Branch; In Review items (`linked`) count too.
  * - A Draft board item tracking a forge PR is that PR's entry, never a
- *   second one, and so is a Needs human item tracking another PR that
- *   waits on him: its asks nest under the PR. A Draft item whose Branch
- *   holds only forge PRs, none of them open and waiting, is stale
- *   (promoted or closed) and dropped.
+ *   second one, and so is a Draft or Needs human item tracking another
+ *   PR that waits on him: its asks nest under the PR (a Draft one is
+ *   never listed apart, even while the PR waits on the bot: a Draft is
+ *   ready for his review, and there is nothing to review then). A board item that
+ *   is the listed PR itself is never a second entry either (bot-land
+ *   puts the bot's own PRs on the board as themselves), unless it is
+ *   Needs human while the PR waits on the bot: that is the bot bug the
+ *   item flags. A Draft item whose Branch holds only forge PRs, none of
+ *   them open and waiting, is stale (promoted or closed) and dropped.
+ * - A board item whose own issue or PR is closed or merged is done,
+ *   whatever its Status still says (see staleItems), and dropped; asks
+ *   are the exception, listed as settled.
  * - Ask issues in the tracker (questions, reviews, chores) are listed by
  *   kind: settled (listed last) once he commented after the bot
  *   (`answered`, by node id) or the bot closed them. One whose blocked
@@ -155,8 +163,10 @@ export function buildEntries(
   inputs: QueueInputs = {},
 ): Entry[] {
   const byNode = new Map(items.map((i) => [i.nodeId, i]));
+  const byUrl = new Map<string, Item>();
+  for (const i of items) if (i.url && !byUrl.has(i.url.toLowerCase())) byUrl.set(i.url.toLowerCase(), i);
   const byBranch = new Map<string, Item>();
-  for (const i of [...items, ...(inputs.linked ?? [])]) for (const u of i.branch) if (!byBranch.has(u)) byBranch.set(u, i);
+  for (const i of [...items, ...(inputs.linked ?? [])]) for (const u of i.branch) if (!byBranch.has(u.toLowerCase())) byBranch.set(u.toLowerCase(), i);
   const tracked = new Set<string>();
   const out: Entry[] = [];
   const prEntry = (pr: ForgePr, item: Item | undefined, fold: boolean): Entry => {
@@ -172,11 +182,18 @@ export function buildEntries(
     return e;
   };
 
+  // The board item that is the PR itself: never a second entry while the
+  // PR is listed, unless it is Needs human with the PR on the bot's turn.
+  const trackSelf = (self: Item | undefined, wait: PrWait | undefined) => {
+    if (self && (self.status === DRAFT || !wait?.onBot)) tracked.add(self.nodeId);
+  };
+
   for (const pr of prs) {
     const metaItem = parseBotMeta(pr.body).item;
-    const item = (metaItem ? byNode.get(metaItem) : undefined) ?? byBranch.get(pr.url);
+    const self = byUrl.get(pr.url.toLowerCase());
+    const item = (metaItem ? byNode.get(metaItem) : undefined) ?? byBranch.get(pr.url.toLowerCase()) ?? self;
     // Tracked even when not listed: a Draft item isn't a second entry for its own PR.
-    if (item?.status === DRAFT) tracked.add(item.nodeId);
+    for (const i of [item, self]) if (i?.status === DRAFT) tracked.add(i.nodeId);
     const key = refKey(pr.ref);
     const verdict = verdicts.get(key);
     const wait = verdict ? forgeWait(verdict, inputs.replied?.has(key) === true) : undefined;
@@ -184,15 +201,19 @@ export function buildEntries(
     const e = prEntry(pr, item, item?.status === DRAFT);
     if (verdict) e.verdict = verdict;
     if (wait) e.wait = wait;
+    trackSelf(self, wait);
     out.push(e);
   }
 
   const listed = new Set(out.map((e) => e.key));
   for (const { pr, wait } of inputs.others ?? []) {
     if (listed.has(`pr:${refKey(pr.ref)}`)) continue;
-    const item = byBranch.get(pr.url);
-    const e = prEntry(pr, item, !wait.onBot && item?.status === NEEDS_HUMAN);
+    const self = byUrl.get(pr.url.toLowerCase());
+    const item = byBranch.get(pr.url.toLowerCase()) ?? self;
+    if (item?.status === DRAFT) tracked.add(item.nodeId);
+    const e = prEntry(pr, item, !wait.onBot && (item?.status === NEEDS_HUMAN || item?.status === DRAFT));
     e.wait = wait;
+    trackSelf(self, wait);
     out.push(e);
   }
 
@@ -200,6 +221,7 @@ export function buildEntries(
     if (tracked.has(item.nodeId)) continue;
     let kind: EntryKind;
     const ask = askKind(item);
+    if (!ask && isClosed(item)) continue;
     if (ask) {
       kind = ask;
     } else if (item.status === DRAFT) {
@@ -223,6 +245,24 @@ export function buildEntries(
     if (e.kind === "item" && e.item?.status === NEEDS_HUMAN && !(e.children ?? []).some((c) => c.item?.state !== "closed")) e.bug = true;
   }
   return rankEntries(top);
+}
+
+/** Whether an item's own issue or PR is closed or merged. */
+function isClosed(item: Item): boolean {
+  return item.state === "closed" || item.state === "merged";
+}
+
+/**
+ * The queue's board items (Needs human or Draft) that the queue drops
+ * because their own issue or PR is closed or merged: the board is
+ * behind (`bot-watch --apply` moves merged PRs to Done), so the bot
+ * should move them on. Asks are left out: a closed ask is settled. So
+ * is an item that `entries` (buildEntries' result) still carries,
+ * folded into a PR's row.
+ */
+export function staleItems(items: readonly Item[], entries: readonly Entry[] = []): Item[] {
+  const shown = new Set(entries.flatMap((e) => [e, ...(e.children ?? [])]).flatMap((e) => (e.item ? [e.item.nodeId] : [])));
+  return items.filter((i) => !isAsk(i) && isClosed(i) && !shown.has(i.nodeId));
 }
 
 /** Whether an entry is an ask. */
