@@ -68,6 +68,14 @@ describe("triageView", () => {
     assert.equal(on?.getAttribute("href"), "#triage");
   });
 
+  it("keeps the verdict label apart from its wrapping chips", () => {
+    const row = triageView({ items, missing: [] }, "all", hooks()).querySelector(".filters > .chips");
+    assert.equal(row?.children.length, 2);
+    assert.equal(row?.querySelector(":scope > .chips-h")?.textContent, "Verdict");
+    assert.ok(row?.querySelector(":scope > .chips-list > .chip"));
+    assert.equal(row?.querySelector(":scope > .chip"), null);
+  });
+
   it("says which triage fields the board lacks", () => {
     const view = triageView({ items: [], missing: ["Theme", "Verdict"] }, "all", hooks());
     assert.match(text(view.querySelector(".warn")), /no "Theme", "Verdict" field/);

@@ -104,8 +104,9 @@ details.help summary { cursor: pointer; color: var(--accent); }
 /* The ranked queue */
 .summary { font: 12px var(--mono); color: var(--muted); margin: 12px 0 0; }
 .filters { display: grid; gap: 6px; margin: 12px 0 0; }
-.chips { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
-.chips-h { font: 11px var(--mono); text-transform: uppercase; letter-spacing: .06em; color: var(--muted); min-width: 64px; }
+.chips { display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 6px; align-items: start; }
+.chips-h { font: 11px var(--mono); text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+.chips-list { display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; }
 .chip { display: inline-flex; gap: 6px; align-items: baseline; font-size: 13px; padding: 2px 10px; border: 1px solid var(--line); border-radius: 999px; background: var(--surface); color: var(--ink); text-decoration: none; }
 .chip:hover { border-color: var(--accent); }
 .chip.on { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); font-weight: 600; }
