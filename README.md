@@ -177,9 +177,20 @@ copies) and this app, newest first, with the first paragraph of each
 description. Harness changes stand out: PRs labeled `harness`, or
 touching `agent.yml`, `bot-harness` or a `harness/` tree.
 
-The **ops** pane (`d`, or Ops in the header) shows what the bot is
-running now, refreshed every minute while it is open and the tab is
-visible. Devspaces are the live runs of `devspace.yml` in
+The **ops** pane (`d`, or Ops in the header) shows what changed on the
+board and what the bot is running now, refreshed every minute while it
+is open and the tab is visible. It starts with **Board changes**: the
+items that changed since you last pressed "Mark all seen", newest first
+and grouped by day, with a chip per change (new, ↑/↓ priority, a
+Status transition, Done, gone from the board, a Lead claimed or
+released) and an optional P0/P1-only filter. GitHub keeps no history of
+project fields, so the app keeps its own: a snapshot of each item's
+Status, Priority, Lead and News in this browser's localStorage (the
+board is public; the snapshot holds nothing else), diffed against the
+whole board as read now (a Done item leaving the board is not news). The first visit only takes the snapshot.
+**News** is a board field the coordinator sets to one dated line when
+something notable happens to an item (`bot-board set --news` in
+homegit); a new line shows highlighted under the item. Devspaces are the live runs of `devspace.yml` in
 bootc-dev/cgwalters-devspace-sandbox, each with its tailnet host, cores,
 uptime and time left (exact when the run's title carries its duration,
 as in "Devspace NAME (16c, 120m)"; for older runs only bounded by the

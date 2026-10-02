@@ -37,6 +37,7 @@ import {
   triageStops,
   writingElsewhere,
 } from "./advance.ts";
+import { loadSeen, loadUrgentOnly, saveSeen, saveUrgentOnly, snapshotOf } from "./boardfeed.ts";
 import { cachedLabel, type CacheSession, forgetCache, openCache } from "./cache.ts";
 import { fileCapture, loadLinkTitle } from "./capture.ts";
 import { type CaptureBar, captureBar, forgetDraft } from "./captureview.ts";
@@ -969,7 +970,25 @@ async function refreshDecisions(state: State, force = false): Promise<void> {
 }
 
 function showOps(state: State): void {
-  const view = opsView(state.ops);
+  const ops = state.ops;
+  let seen = loadSeen();
+  // The first time the board is read (not from the cache), it becomes what the feed starts from.
+  if (!seen && ops?.board && !ops.fromCache) {
+    seen = snapshotOf(ops.board, ops.at);
+    saveSeen(seen);
+  }
+  const view = opsView(ops, Date.now(), {
+    seen,
+    urgentOnly: loadUrgentOnly(),
+    onUrgentOnly: (on) => {
+      saveUrgentOnly(on);
+      showOps(state);
+    },
+    onSeen: () => {
+      if (state.ops?.board) saveSeen(snapshotOf(state.ops.board, state.ops.at));
+      showOps(state);
+    },
+  });
   showMain(view);
   clearInterval(state.ticker);
   state.ticker = setInterval(() => {
