@@ -177,6 +177,12 @@ export function chips(entries: readonly Entry[], f: QueueFilter): Chips {
   return { presets, orgs, priorities };
 }
 
+/** The filter in words, for the folded filter bar: "All", "Composefs · P0", "bootc-dev". */
+export function filterText(f: QueueFilter): string {
+  const scope = typeof f.scope === "string" ? PRESET_LABEL[f.scope] : f.scope.org;
+  return f.priority === undefined ? scope : `${scope} · ${f.priority}`;
+}
+
 /** The hash token naming a filter, e.g. `composefs`, `org:bootc-dev+P0`, `all`. */
 export function filterToken(f: QueueFilter): string {
   const scope = typeof f.scope === "string" ? f.scope : `${ORG_TOKEN}${f.scope.org === NO_ORG ? NONE_TOKEN : f.scope.org}`;

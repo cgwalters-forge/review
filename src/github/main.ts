@@ -267,20 +267,29 @@ function cachedSince(state: State): number | undefined {
   return state.cachedAt;
 }
 
+/**
+ * The header's meta line. Who is signed in and the rate budget are
+ * also put in the controls menu, where a narrow screen shows them
+ * instead (see style.css), keeping only how fresh the data is in view.
+ */
 function renderMeta(state: State): void {
-  const parts: (string | Node)[] = [];
-  if (state.login) parts.push(`signed in as ${state.login}`);
+  const parts: Node[] = [];
+  const part = (cls: string, ...children: (string | Node)[]) => parts.push(h("span", { class: `mp ${cls}` }, ...children));
+  const who = state.login ? `signed in as ${state.login}` : undefined;
+  const api = state.gh.rate ? `API ${state.gh.rate.remaining}/${state.gh.rate.limit}` : undefined;
+  if (who) part("mp-who", who);
   const since = cachedSince(state);
-  if (since !== undefined) parts.push(h("span", { class: "cached", title: "Shown from this browser's cache; checking GitHub for changes" }, cachedLabel(since, Date.now())));
-  else if (state.lastPoll) parts.push(`checked ${clock(state.lastPoll.getTime())}`);
+  if (since !== undefined) part("mp-age", h("span", { class: "cached", title: "Shown from this browser's cache; checking GitHub for changes" }, cachedLabel(since, Date.now())));
+  else if (state.lastPoll) part("mp-age", `checked ${clock(state.lastPoll.getTime())}`);
   // Why it isn't being refreshed as usual, if it isn't. Only the queue's
   // cached copy (also shown behind an item) is re-read by the poll itself;
   // the panes and PRs have loaders of their own.
   const r = route().route;
   const note = pollNote(state.poller.status(), Date.now(), POLL_SLOW_MS, since !== undefined && !isPane(r) && r !== "pr");
-  if (note) parts.push(h("span", { class: "cached", title: "Not refreshing from GitHub as usual" }, note));
-  if (state.gh.rate) parts.push(`API ${state.gh.rate.remaining}/${state.gh.rate.limit}`);
-  byId("meta").replaceChildren(...parts.flatMap((p, i) => (i ? [" · ", p] : [p])));
+  if (note) part("mp-note", h("span", { class: "cached", title: "Not refreshing from GitHub as usual" }, note));
+  if (api) part("mp-api", api);
+  byId("meta").replaceChildren(...parts);
+  byId("menu-meta").textContent = [who, api].filter(Boolean).join(" · ");
 }
 
 function clock(ms: number): string {
@@ -1690,8 +1699,32 @@ function trackHeaderHeight(): void {
   set();
 }
 
+/** The controls menu a narrow screen folds the header's buttons into. */
+function installMenu(): void {
+  const toggle = byId("menu-toggle");
+  const menu = byId("menu");
+  const setOpen = (open: boolean) => {
+    menu.classList.toggle("open", open);
+    toggle.setAttribute("aria-expanded", String(open));
+  };
+  toggle.addEventListener("click", () => setOpen(!menu.classList.contains("open")));
+  document.addEventListener("click", (ev) => {
+    if (ev.target instanceof Node && !menu.contains(ev.target) && !toggle.contains(ev.target)) setOpen(false);
+  });
+  // Escape closes an open menu, and only that (not also going back, as the keys do).
+  for (const el of [menu, toggle]) {
+    el.addEventListener("keydown", (ev) => {
+      if (ev.key !== "Escape" || !menu.classList.contains("open")) return;
+      ev.stopPropagation();
+      setOpen(false);
+      toggle.focus();
+    });
+  }
+}
+
 async function main(): Promise<void> {
   installTheme();
+  installMenu();
   trackHeaderHeight();
   // A CSP meta tag can't forbid framing, so refuse to run in a frame:
   // otherwise another site could overlay the approve and send buttons.

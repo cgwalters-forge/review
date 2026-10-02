@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import type { Item } from "../src/github/board.ts";
-import { ALL, applyFilter, chips, entryOrg, filterToken, NO_ORG, parseFilterToken, type QueueFilter } from "../src/github/filter.ts";
+import { type Item, NO_PRIORITY } from "../src/github/board.ts";
+import { ALL, applyFilter, chips, entryOrg, filterText, filterToken, NO_ORG, parseFilterToken, type QueueFilter } from "../src/github/filter.ts";
 import type { ForgePr } from "../src/github/forge.ts";
 import { buildEntries, type Entry } from "../src/github/queue.ts";
 
@@ -147,4 +147,15 @@ describe("filter tokens", () => {
   const bad = ["", "news", "item/PVTI_x", "org:", "org:a/b", "org:<x>", "all+P", "all+high", "all+P0+P1", "Composefs"];
   for (const token of bad) it(`rejects ${JSON.stringify(token)}`, () => assert.equal(parseFilterToken(token), undefined));
   it("lowercases an org", () => assert.deepEqual(parseFilterToken("org:Bootc-Dev"), { scope: { org: "bootc-dev" } }));
+});
+
+describe("filterText", () => {
+  const cases: [QueueFilter, string][] = [
+    [ALL, "All"],
+    [{ scope: "infra" }, "Our infra"],
+    [{ scope: "composefs", priority: "P0" }, "Composefs · P0"],
+    [{ scope: { org: "bootc-dev" }, priority: NO_PRIORITY }, "bootc-dev · No priority"],
+    [{ scope: { org: NO_ORG } }, "no org"],
+  ];
+  for (const [f, want] of cases) it(want, () => assert.equal(filterText(f), want));
 });

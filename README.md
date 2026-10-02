@@ -242,6 +242,12 @@ to the review text), `a` approves (after a confirmation); `?` lists
 them. Your text never goes out with a line the bot would read as a
 command (`/promote`, `/draft`, `/ready`).
 
+On a narrow screen (a phone) the header's buttons fold into a ⋯ menu
+(with who is signed in and the API budget), the capture bar into a
+"+ File" button and the filter chips into one "Filters (active: …)"
+button, and the summary line is hidden, so the first entry shows near
+the top; the key hints are hidden on touch screens.
+
 The board is polled every 30 seconds with ETags while the tab is
 visible, the forge's PR search every minute, and a PR's reviews only
 when it changed. With "remember" ticked at sign-in, responses are also

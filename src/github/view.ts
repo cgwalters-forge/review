@@ -8,7 +8,7 @@ import { commentNote, type ItemAction, parseAskBody } from "./asks.ts";
 import { ASK_LABELS, askKind, type IssueRef, isAsk, isQuestion, type Item, questionOf, type SubIssueSummary } from "./board.ts";
 import type { Context, RunStatus, SubIssue } from "./backend.ts";
 import { BOARD_URL, OPERATOR } from "./config.ts";
-import { ALL, applyFilter, type Chip, chips, filterToken, type QueueFilter } from "./filter.ts";
+import { ALL, applyFilter, type Chip, chips, filterText, filterToken, type QueueFilter } from "./filter.ts";
 import { type Entry, type EntryKind, groupRanked, onBot } from "./queue.ts";
 
 /** Characters of Why shown on a queue row. */
@@ -147,18 +147,39 @@ function chip(c: Chip, cls: string): HTMLElement {
   return h("a", attrs, c.label, h("span", { class: "count" }, String(c.count)));
 }
 
-/** The presets, then one chip per target organization and per priority. */
+/** Set on the filter bar while folded; only a narrow screen's stylesheet acts on it. */
+export const FILTERS_FOLDED_CLASS = "folded";
+
+/** Whether he unfolded the filter bar: kept across the queue's re-renders, not across reloads. */
+let filtersOpen = false;
+
+/**
+ * The presets, then one chip per target organization and per priority.
+ * A narrow screen folds them behind one "Filters (active: …)" button.
+ */
 function filterBar(entries: readonly Entry[], filter: QueueFilter): HTMLElement {
   const { presets, orgs, priorities } = chips(entries, filter);
   const line = (label: string, list: Chip[], cls: string) =>
     h("div", { class: "chips" }, h("span", { class: "chips-h" }, label), ...list.map((c) => chip(c, cls)));
-  return h(
+  const toggle = h("button", { type: "button", class: "small filters-toggle" }, `Filters (active: ${filterText(filter)})`);
+  const bar = h(
     "nav",
     { class: "filters", "aria-label": "Filter the queue" },
+    toggle,
     line("Show", presets, "preset"),
     line("Org", orgs, "org"),
     line("Priority", priorities, "prio"),
   );
+  const show = () => {
+    bar.classList.toggle(FILTERS_FOLDED_CLASS, !filtersOpen);
+    toggle.setAttribute("aria-expanded", String(filtersOpen));
+  };
+  toggle.addEventListener("click", () => {
+    filtersOpen = !filtersOpen;
+    show();
+  });
+  show();
+  return bar;
 }
 
 /** The class of the queue's "all caught up" line. */
@@ -196,7 +217,8 @@ export function queueView(
   const parts = [`${counts.pr} PRs`, `${counts.question} questions`, `${counts.review} reviews`, `${counts.chore} chores`];
   if (bugs) parts.push(`${bugs} without an ask`);
   if (botTurn) parts.push(`${botTurn} PRs waiting on the bot`);
-  root.append(h("p", { class: "summary" }, `${parts.join(" · ")} · j/k to move, o to open, ? for keys`));
+  // The counts and the keys are hidden on a narrow screen, the keys on a touch one too (see style.css).
+  root.append(h("p", { class: "summary queue-summary" }, h("span", { class: "summary-counts" }, parts.join(" · ")), h("span", { class: "summary-keys" }, " · j/k to move, o to open, ? for keys")));
   for (const group of groupRanked(entries)) {
     const count = group.entries.reduce((n, e) => n + 1 + (e.children?.length ?? 0), 0);
     const section = h("section", { class: "group" }, h("h2", { class: "group-h" }, `${group.priority} · ${count}`));

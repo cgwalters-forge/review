@@ -2,7 +2,8 @@
 // and an optional note, filed with Enter. What it files is decided in
 // capture.ts; this is the form, its unsent draft (kept in
 // sessionStorage, so a reload keeps it and closing the tab doesn't), and
-// the "Filed #N" line.
+// the "Filed #N" line. On a narrow screen it folds into a "+ File"
+// button (see style.css), open while there is a draft.
 
 import { h, link } from "../dom.ts";
 import type { IssueRef } from "./board.ts";
@@ -24,6 +25,10 @@ export interface CaptureBar {
 }
 
 export const CAPTURE_CLASS = "capture";
+/** Set on the form while folded; only a narrow screen's stylesheet acts on it. */
+export const CAPTURE_FOLDED_CLASS = "folded";
+const OPEN_LABEL = "+ File";
+const CLOSE_LABEL = "Close";
 
 /** A kept draft, and the title the bar suggested for its link (his own if different). */
 export interface SavedDraft extends CaptureDraft {
@@ -75,7 +80,19 @@ export function captureBar(hooks: CaptureHooks): CaptureBar {
   title.value = saved.title;
   url.value = saved.url;
   body.value = saved.body;
-  const form = h("form", { class: CAPTURE_CLASS, "aria-label": "File an issue for the bot to triage" }, h("div", { class: "capture-row" }, title, url, more, submit), body, status);
+  const fold = h("button", { type: "button", class: "small capture-open", "aria-expanded": "false" }, OPEN_LABEL);
+  const form = h("form", { class: CAPTURE_CLASS, "aria-label": "File an issue for the bot to triage" }, fold, h("div", { class: "capture-row" }, title, url, more, submit), body, status);
+  const setFolded = (folded: boolean) => {
+    form.classList.toggle(CAPTURE_FOLDED_CLASS, folded);
+    fold.setAttribute("aria-expanded", String(!folded));
+    fold.textContent = folded ? OPEN_LABEL : CLOSE_LABEL;
+  };
+  setFolded(!saved.title && !saved.url && !saved.body);
+  fold.addEventListener("click", () => {
+    const open = form.classList.contains(CAPTURE_FOLDED_CLASS);
+    setFolded(!open);
+    if (open) title.focus();
+  });
 
   const expand = (open: boolean) => {
     body.hidden = !open;
@@ -124,6 +141,7 @@ export function captureBar(hooks: CaptureHooks): CaptureBar {
       const filed = await hooks.file(draft());
       title.value = url.value = body.value = suggested = "";
       expand(false);
+      setFolded(true);
       keep();
       status.replaceChildren("Filed ", link(filed.url, `#${filed.number}`), filed.boardError ? ` but it isn't on the board: ${filed.boardError}` : ".");
       status.classList.toggle("warn", filed.boardError !== undefined);
@@ -149,6 +167,9 @@ export function captureBar(hooks: CaptureHooks): CaptureBar {
 
   return {
     el: form,
-    focus: () => title.focus(),
+    focus: () => {
+      setFolded(false);
+      title.focus();
+    },
   };
 }
