@@ -41,6 +41,7 @@ import { cachedLabel, type CacheSession, forgetCache, openCache } from "./cache.
 import { fileCapture, loadLinkTitle } from "./capture.ts";
 import { type CaptureBar, captureBar, forgetDraft } from "./captureview.ts";
 import { chatPanel } from "./chat.ts";
+import { DecisionsRefresh } from "./decisionsrefresh.ts";
 import {
   CLASSIC_SCOPES,
   DONE_NOTICE_MS,
@@ -212,6 +213,7 @@ interface State {
   /** The open decisions, in order, and when a cached copy was fetched. */
   decisions?: Decision[];
   decisionsCachedAt?: number;
+  decisionsRefresh?: DecisionsRefresh<DecisionsRead, DecisionsRead & { at: number }>;
   /** Decisions he answered (on GitHub, or from this tab until the next read) and the bot hasn't acted on, by issue node id. */
   decisionsAnswered: Set<string>;
   error?: string;
@@ -1137,6 +1139,11 @@ function themesOrigin(state: State, hash: string): Origin {
   return { hash, stops: stops(), live: stops };
 }
 
+interface DecisionsRead {
+  decisions: Decision[];
+  answered: Set<string>;
+}
+
 /**
  * Re-read the open decisions and which he answered, and show them among
  * the rows of "Needs you" if they changed; with an answer half written,
@@ -1148,26 +1155,33 @@ async function refreshDecisions(state: State, force = false): Promise<void> {
     const answered = await loadAnswered(gh, q.items);
     return { changed: q.changed, decisions: sortDecisions(q.items.map(parseDecision)), answered };
   };
-  if (!state.decisions) {
-    const cached = state.gh.cacheOnly();
-    const r = await read(cached).catch(() => undefined);
-    if (r && !state.decisions) {
+  state.decisionsRefresh ??= new DecisionsRefresh({
+    closed: () => state.closed,
+    hasValue: () => state.decisions !== undefined,
+    cached: async () => {
+      const cached = state.gh.cacheOnly();
+      const r = await read(cached);
+      return { ...r, at: cached.oldest ?? Date.now() };
+    },
+    read: () => read(state.gh),
+    applyCached: (r) => {
       state.decisions = r.decisions;
       state.decisionsAnswered = r.answered;
-      state.decisionsCachedAt = cached.oldest ?? Date.now();
+      state.decisionsCachedAt = r.at;
       paintNeeds(state);
-    }
-  }
-  try {
-    const r = await read(state.gh);
-    delete state.decisionsCachedAt;
-    state.decisions = r.decisions;
-    state.decisionsAnswered = r.answered;
-    paintNeeds(state, force);
-  } catch (e) {
-    state.error = `Couldn't read the decisions: ${message(e)}`;
-    renderChrome(state);
-  }
+    },
+    applyLive: (r, force) => {
+      delete state.decisionsCachedAt;
+      state.decisions = r.decisions;
+      state.decisionsAnswered = r.answered;
+      paintNeeds(state, force);
+    },
+    error: (e) => {
+      state.error = `Couldn't read the decisions: ${message(e)}`;
+      renderChrome(state);
+    },
+  });
+  await state.decisionsRefresh.refresh(force);
 }
 
 function opsDue(state: State): boolean {
