@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
 import type { Active } from "../src/github/agents.ts";
 import type { Item } from "../src/github/board.ts";
-import { applyLimit, COUNT_CLASS, fillAgents, fillNeeds, fillPriority, fillUsage, type Home, type HomeHooks, homeSkeleton, resetExpanded, reveal, setSectionOpen, VIEW_ALL_CLASS } from "../src/github/homeview.ts";
+import { applyLimit, COUNT_CLASS, fillAgents, fillNeeds, fillPriority, fillUsage, type Home, type HomeHooks, homeSkeleton, resetExpanded, reveal, setSectionOpen, stepRow, VIEW_ALL_CLASS, walkRows } from "../src/github/homeview.ts";
 import { buildNeeds } from "../src/github/needs.ts";
 import { buildEntries } from "../src/github/queue.ts";
 import { PREVIEW_ROWS, SECTION_TITLE, SECTIONS, type SectionId } from "../src/github/sections.ts";
@@ -143,6 +143,58 @@ describe("applyLimit", () => {
     assert.ok(last.hidden);
     reveal(last, slot, "g", ".r");
     assert.ok(!last.hidden);
+  });
+});
+
+describe("row walking", () => {
+  function mounted(): Home {
+    const home = homeSkeleton(hooks(["needs", "priority"]));
+    for (const id of ["needs", "priority", "agents"] as const) {
+      const slot = home.slots[id];
+      slot.replaceChildren(...Array.from({ length: PREVIEW_ROWS + 2 }, (_, i) =>
+        Object.assign(document.createElement("div"), { className: "row", textContent: `${id}:${i}` }),
+      ));
+      applyLimit(slot, id, ".row");
+    }
+    document.body.replaceChildren(home.el);
+    return home;
+  }
+
+  it("j/k skip hidden rows and closed sections, and stop at the last visible row", () => {
+    const home = mounted();
+    const rows = walkRows(home.el);
+    const needs = [...home.slots.needs.querySelectorAll<HTMLElement>(".row")];
+    const priority = [...home.slots.priority.querySelectorAll<HTMLElement>(".row")];
+    assert.deepEqual(rows, [...needs.slice(0, PREVIEW_ROWS), ...priority.slice(0, PREVIEW_ROWS)]);
+    assert.equal(stepRow(rows, needs[PREVIEW_ROWS - 1], 1), priority[0]);
+    assert.equal(stepRow(rows, priority[0], -1), needs[PREVIEW_ROWS - 1]);
+    assert.equal(rows.at(-1), priority[PREVIEW_ROWS - 1]);
+    assert.equal(stepRow(rows, rows.at(-1), 1), rows.at(-1));
+    assert.equal(stepRow(rows, rows[0], -1), rows[0]);
+
+    home.slots.needs.querySelector<HTMLButtonElement>(`.${VIEW_ALL_CLASS}`)?.click();
+    const expanded = walkRows(home.el);
+    assert.deepEqual(expanded, [...needs, ...priority.slice(0, PREVIEW_ROWS)]);
+    assert.equal(stepRow(expanded, needs[PREVIEW_ROWS - 1], 1), needs[PREVIEW_ROWS]);
+    assert.equal(stepRow(expanded, priority[0], -1), needs.at(-1));
+  });
+
+  it("reveal makes a hidden row walkable and keeps its list expanded after a redraw", () => {
+    const home = mounted();
+    const slot = home.slots.needs;
+    const last = slot.querySelectorAll<HTMLElement>(".row")[PREVIEW_ROWS + 1]!;
+    assert.ok(last.hidden);
+    assert.ok(!walkRows(home.el).includes(last));
+    reveal(last, slot, "needs", ".row");
+    assert.ok(!last.hidden);
+    assert.ok(walkRows(home.el).includes(last));
+    assert.equal(slot.querySelector(`.${VIEW_ALL_CLASS}`)?.textContent, "Show fewer");
+
+    const redrawn = mounted();
+    const rows = [...redrawn.slots.needs.querySelectorAll<HTMLElement>(".row")];
+    assert.ok(rows.every((r) => !r.hidden));
+    assert.deepEqual(walkRows(redrawn.el).slice(0, rows.length), rows);
+    assert.equal(redrawn.slots.needs.querySelector(`.${VIEW_ALL_CLASS}`)?.textContent, "Show fewer");
   });
 });
 

@@ -64,7 +64,7 @@ import { type Command, HELP, keyCommand, parseRoute, type Route, type RouteInfo 
 import { type HarnessCache, loadNews, type News } from "./news.ts";
 import { deleteCacheDatabase, IdbStore } from "./idbstore.ts";
 import type { Active } from "./agents.ts";
-import { fillAgents, fillChanges, fillNeeds, fillOps, fillPriority, fillThemes, fillUsage, type Home, type HomeHooks, homeSkeleton, LIMIT_ID, NEED_ROW_SELECTOR, reveal, setSectionOpen } from "./homeview.ts";
+import { fillAgents, fillChanges, fillNeeds, fillOps, fillPriority, fillThemes, fillUsage, type Home, type HomeHooks, homeSkeleton, LIMIT_ID, NEED_ROW_SELECTOR, reveal, setSectionOpen, stepRow, walkRows } from "./homeview.ts";
 import { buildNeeds, type Need, needStops, waitingCount } from "./needs.ts";
 import { needId, type NeedsForm, type NeedsHooks, needsRedraw, needsSignature } from "./needsview.ts";
 import { type JobCache, loadActive, loadOps, type Ops } from "./ops.ts";
@@ -348,7 +348,7 @@ const rowId = (el: Element): string => `${el.getAttribute(ROW_SECTION_ATTR) ?? "
 
 /** The rows the keyboard walks: those in an open section, not hidden by "View all". */
 function rows(): HTMLElement[] {
-  return [...byId("view").querySelectorAll<HTMLElement>(`.${ROW_CLASS}`)].filter((r) => !r.closest("[hidden], details:not([open])"));
+  return walkRows(byId("view"));
 }
 
 /** Mark the selected row, defaulting to the first. */
@@ -1484,8 +1484,7 @@ function run(state: State, cmd: Command, where: Route): void {
     case "prev": {
       const step = cmd === "next" ? 1 : -1;
       const all = rows();
-      const i = all.findIndex((r) => rowId(r) === state.selected);
-      const next = all[Math.max(0, Math.min(all.length - 1, i + step))];
+      const next = stepRow(all, all.find((r) => rowId(r) === state.selected), step);
       state.selected = next ? rowId(next) : undefined;
       markSelected(state, true);
       return;
