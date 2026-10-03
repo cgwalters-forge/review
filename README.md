@@ -138,29 +138,52 @@ link back; with nothing left, the queue says you're all caught up. It
 stays put when the action failed, when the entry still waits on you
 (a comment-only review), when you left for another view meanwhile, or
 when you have unsent text elsewhere on the page. An item opened from
-the triage view moves on in the triage view's order instead, among
-its items that are in the queue. On the decisions view, an answer
-moves on in place, to the next card still waiting on you. "Auto-next"
+the themes under By priority moves on in their order instead, among
+its items that are in the queue, and one from By priority in that
+list's. An answer given in a Needs you row moves on in place, to the
+next row still waiting on you. "Auto-next"
 in the header turns this off (remembered per browser).
 
-**Active agents**, a strip atop the queue, shows how many agents are
-working against the target of about four (`AGENT_TARGET`), split
-between the harness (cgwalters-bot and cgwalters-forge) and upstream,
-with a row per agent: its name, item, status and age (since it
-started, for a worker; since its board item last changed, for one only
-the board knows).
-It merges two sources: the board's In Progress items with a Lead (a
-topic session) or a Run (a devspace agent run), and the coordinator's
-heartbeat (see the ops pane below), a worker on a claimed item being
-one agent. Workers that only a stale heartbeat (or a stopped
-coordinator's) lists are counted apart as unconfirmed, and the heartbeat's age is always shown. Under it, one
-folded line holds the newest board changes since you last marked them
-seen on the ops pane, which has the rest. It reads the whole board and
-the heartbeat conditionally, once a minute while the queue shows (the
-ops pane's reads serve it too).
+**One page of sections.** There are no tabs: under the "Ask anything"
+box (see below) the page is five collapsible sections in this order,
+each with a count in its header and a few rows before "View all". Each
+remembers whether you opened it (localStorage); until you chose, only
+**Needs you** is open, and only while something waits on you. `q`, `d`,
+`n`, `t` and `s` jump to Needs you, Agents, Changes, By priority and
+Usage, and `j`/`k`/`o` walk the rows of the open sections.
 
-**Filters** above the queue narrow it by the organization an entry
-targets and by priority, with each chip's count. The target is the
+- **Needs you**: what truly waits on you, once each, one action per
+  row: *Review* (a PR, or a review ask), *Review & promote* (the bot's
+  draft PR in the forge), *Approve to re-sign*, *Rerun checks*,
+  *Answer* (a question, with its options and a note field right in the
+  row, as a comment by you whose first line is the letter you picked;
+  only the `cgwalters` login gets the forms), and *Write text* (a chore
+  or an ask the app can't act on). Open decisions (questions the bot
+  labels `decision`, titled "D<n>: …", with an expandable `Unblocks:`
+  list) are rows too, folded into the question's row when the queue has
+  it. An item with asks under it is only their context. A question you
+  answered from here stays, dimmed, until the page reloads. A redraw
+  never takes away a half-typed answer: it only says to press `r`.
+- **Agents**: how many agents are working against the target of about
+  four (`AGENT_TARGET`), split between the harness (cgwalters-bot and
+  cgwalters-forge) and upstream, with a row per agent: its name, item,
+  status and age (since it started, for a worker; since its board item
+  last changed, for one only the board knows) and, for a remote run, a
+  link to it. It merges the board's In Progress items with a Lead (a
+  topic session) or a Run (a devspace agent run) and the coordinator's
+  heartbeat, a worker on a claimed item being one agent; workers that
+  only a stale heartbeat (or a stopped coordinator's) lists are counted
+  apart as unconfirmed. A fold below holds the ops detail: devspaces,
+  the coordinator, agent runs, active work and the bot's activity.
+- **Changes**: the board changes feed, then the recently merged PRs
+  (below).
+- **By priority**: the whole queue ranked by priority, with the
+  filters, collapsed until you open it. A fold under it holds the
+  themes (below).
+- **Usage**: the plan's windows and who used the most (below).
+
+**Filters** in By priority narrow the queue by the organization an
+entry targets and by priority, with each chip's count. The target is the
 board's Org field, else a tracker issue's `target:<org>` label, else the
 owner of the issue or PR (a tracker issue with neither has no org); a
 forge PR counts as its upstream's. Two
@@ -170,8 +193,8 @@ infra** is the bot's own harness. The filter is in the URL (`#composefs`,
 `#infra+P0`, `#org:bootc-dev`) and remembered per browser, so `#` and
 `u` come back to it.
 
-The **triage** view (`t`, or Triage in the header) is the whole board,
-not only what waits on you: every item that isn't Done, read live
+**Themes and verdicts**, under By priority, are the whole board, not
+only what waits on you: every item that isn't Done, read live
 with the board's Theme, Verdict and Verdict target fields (looked up
 by name; a board without them still loads, and the view says which
 are missing). First the P0 lane, every open P0 item; then one
@@ -180,26 +203,15 @@ verdicts (keep, merge into another item, park, close), and last the
 items with no Theme, the untriaged bucket. Each item shows its
 priority, status and verdict chip, and for merge and close the
 target it points at; an item that is in the queue opens there. The
-verdict chips above filter every group (`#triage/merge`, and
-`#triage/none` for items without a verdict).
+verdict chips above filter every group.
 
-The **decisions** view (`q`) lists the open questions in the tracker
-that the bot also labels `decision`, titled "D<n>: …", in D order.
-Each shows its options with the recommended one marked, a note field,
-and an expandable list of the items it unblocks (the `Unblocks:` list
-in its body), and is answered in place exactly like a question in the
-queue: a comment by you whose first line is the letter you picked,
-followed by your note. Only the `cgwalters` login gets the forms.
-
-The **news** pane (`n`) lists recently merged PRs in the bot
+**Merged PRs**, in Changes, are recently merged PRs in the bot
 (cgwalters-bot/homegit), its runner (cgwalters-devspace-sandbox, both
 copies) and this app, newest first, with the first paragraph of each
 description. Harness changes stand out: PRs labeled `harness`, or
 touching `agent.yml`, `bot-harness` or a `harness/` tree.
 
-The **ops** pane (`d`, or Ops in the header) shows what changed on the
-board and what the bot is running now, refreshed every minute while it
-is open and the tab is visible. It starts with **Board changes**: the
+**Board changes**, in Changes, are the
 items that changed since you last pressed "Mark all seen", newest first
 and grouped by day, with a chip per change (new, ↑/↓ priority, a
 Status transition, Done, gone from the board, a Lead claimed or
@@ -210,7 +222,12 @@ board is public; the snapshot holds nothing else), diffed against the
 whole board as read now (a Done item leaving the board is not news). The first visit only takes the snapshot.
 **News** is a board field the coordinator sets to one dated line when
 something notable happens to an item (`bot-board set --news` in
-homegit); a new line shows highlighted under the item. Devspaces are the live runs of `devspace.yml` in
+homegit); a new line shows highlighted under the item.
+
+**The "Ask anything" box** atop the page files a note onto the board
+(below). Its `#chat` slot is the hook for a future chat (`chat.ts`).
+
+Devspaces are the live runs of `devspace.yml` in
 bootc-dev/cgwalters-devspace-sandbox, each with its tailnet host, cores,
 uptime and time left (exact when the run's title carries its duration,
 as in "Devspace NAME (16c, 120m)"; for older runs only bounded by the

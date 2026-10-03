@@ -542,7 +542,7 @@ class Pane implements PrPane {
     this.el = h(
       "main",
       { class: "item pr" },
-      h("a", { href: "#", class: "back" }, "← Queue (u)"),
+      h("a", { href: "#", class: "back" }, "← Back (u)"),
       h(
         "div",
         { class: "hdr" },

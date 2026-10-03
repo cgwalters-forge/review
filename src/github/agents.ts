@@ -11,6 +11,7 @@ import { type Item, parseIssueUrl, PRIORITY_ORDER, repoOf } from "./board.ts";
 import { AGENT_TARGET, IN_PROGRESS, TRACKER_REPO } from "./config.ts";
 import { isOwnOrg, itemOrg } from "./filter.ts";
 import { type Heartbeat, isStale } from "./heartbeat.ts";
+import type { UsageData } from "./usage.ts";
 
 /** What the strip shows: the whole board and the heartbeat, as last read. */
 export interface Active {
@@ -18,6 +19,8 @@ export interface Active {
   board?: Item[];
   /** The heartbeat: undefined when its read failed or isn't cached, null when none is published. */
   local?: Heartbeat | null;
+  /** The plan's usage, for the usage section; undefined when its read failed or isn't cached. */
+  usage?: UsageData;
   warnings: string[];
   at: number;
   /** Read from the cache only, before GitHub answered. */

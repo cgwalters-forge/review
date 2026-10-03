@@ -22,6 +22,8 @@ export interface Stop {
   title: string;
   /** Whether it still waits on him; settled rows are listed but skipped. */
   waiting: boolean;
+  /** It is done on the page it is listed on (an inline answer): moving to it focuses it rather than opening it. */
+  inPlace?: boolean;
 }
 
 /**

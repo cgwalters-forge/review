@@ -1,5 +1,5 @@
-// The two views, queue and item, built with plain DOM calls. Rendered
-// markdown comes from the sanitizing renderer as a DocumentFragment.
+// The item view and the "By priority" list, built with plain DOM calls.
+// Rendered markdown comes from the sanitizing renderer as a DocumentFragment.
 
 import { type Answer, parseAnswer, parseBlocks, type Question, unfencedLines } from "../answer.ts";
 import { h, link } from "../dom.ts";
@@ -83,8 +83,8 @@ export interface RowLabel {
   cls: string;
 }
 
-const KIND_LABEL: Record<EntryKind, string> = { pr: "PR", question: "Q", review: "rev", chore: "do", item: "item" };
-const KIND_TITLE: Record<EntryKind, string> = {
+export const KIND_LABEL: Record<EntryKind, string> = { pr: "PR", question: "Q", review: "rev", chore: "do", item: "item" };
+export const KIND_TITLE: Record<EntryKind, string> = {
   pr: "PR waiting on you (or, last, on the bot)",
   question: "question for you",
   review: "PR the bot asks you to review",
@@ -95,9 +95,12 @@ const KIND_TITLE: Record<EntryKind, string> = {
 /** The label on a Needs human item the bot left without an ask. */
 export const BUG_LABEL = "no ask from the bot (bot bug)";
 
-/** The class queue rows carry, and the attribute holding their key. */
+/** The class list rows carry, and the attribute holding their key. */
 export const ROW_CLASS = "row";
 export const ROW_KEY_ATTR = "data-key";
+/** The attribute naming the section a row is in, and the one holding the route it opens (articles; links have an href). */
+export const ROW_SECTION_ATTR = "data-section";
+export const ROW_HREF_ATTR = "data-href";
 
 /** What an ask asks, in one line: a question's `Q:`, a review's or chore's `Ask:`. */
 export function askText(item: Item): string | undefined {
@@ -107,7 +110,7 @@ export function askText(item: Item): string | undefined {
 }
 
 /** The row's one-line summary: what an ask asks, else Why. */
-function rowText(e: Entry): string {
+export function rowText(e: Entry): string {
   const text = (e.item ? askText(e.item) : undefined) ?? e.item?.why ?? "";
   return text ? excerpt(text, WHY_EXCERPT) : "";
 }
@@ -119,7 +122,7 @@ function row(e: Entry, labelOf: (e: Entry) => RowLabel | undefined, now: number,
   const where = [e.item?.org, e.where, e.blocks ? `blocks ${e.blocks}` : undefined, progress].filter(Boolean).join(" · ");
   return h(
     "a",
-    { class: `${ROW_CLASS} k-${e.kind}${child ? " child" : ""}${label ? ` ${label.cls}` : ""}`, href: e.href, [ROW_KEY_ATTR]: e.key },
+    { class: `${ROW_CLASS} k-${e.kind}${child ? " child" : ""}${label ? ` ${label.cls}` : ""}`, href: e.href, [ROW_KEY_ATTR]: e.key, [ROW_SECTION_ATTR]: "priority" },
     h("span", { class: `kind k-${e.kind}`, title: KIND_TITLE[e.kind] }, KIND_LABEL[e.kind]),
     h(
       "span",
@@ -182,17 +185,15 @@ function filterBar(entries: readonly Entry[], filter: QueueFilter): HTMLElement 
   return bar;
 }
 
-/** The class of the queue's "all caught up" line. */
+/** The class of the "all caught up" line. */
 export const CAUGHT_UP_CLASS = "caught-up";
 
 /** The class of the note listing board items the queue dropped as closed. */
 export const STALE_NOTE_CLASS = "stale-items";
 
-/** What the queue shows around its entries. */
-export interface QueueExtras {
-  /** Shown first, above everything: the active agents strip. */
-  strip?: Node;
-  /** Board items dropped because their issue or PR is closed (see staleItems), named at the end. */
+/** What the list shows around its entries. */
+export interface ListExtras {
+  /** Board items dropped because their issue or PR is closed or merged (see staleItems), named at the end. */
   stale?: readonly Item[];
 }
 
@@ -208,18 +209,21 @@ function staleNote(stale: readonly Item[]): HTMLElement {
   );
 }
 
-export function queueView(
+/**
+ * Every entry of the queue, ranked and grouped by priority, with the
+ * org and priority filters: the body of the "By priority" section.
+ */
+export function priorityList(
   all: readonly Entry[],
   labelOf: (e: Entry) => RowLabel | undefined,
   now: number = Date.now(),
   filter: QueueFilter = ALL,
-  extras: QueueExtras = {},
+  extras: ListExtras = {},
 ): HTMLElement {
-  const root = h("main", { class: "queue" });
-  if (extras.strip) root.append(extras.strip);
+  const root = h("div", { class: "queue" });
   const stale = extras.stale?.length ? staleNote(extras.stale) : null;
   if (all.length === 0) {
-    root.append(h("p", { class: `empty ${CAUGHT_UP_CLASS}` }, "All caught up: nothing needs you right now."));
+    root.append(h("p", { class: "empty" }, "Nothing is listed: no PR, question or board item waits on you or the bot."));
     if (stale) root.append(stale);
     return root;
   }
@@ -229,10 +233,6 @@ export function queueView(
     root.append(h("p", { class: "empty" }, "Nothing here matches this filter. ", h("a", { href: `#${filterToken(ALL)}` }, "Show all")));
     if (stale) root.append(stale);
     return root;
-  }
-  // Only settled asks and the bot's turns left: nothing to do here.
-  if (entries.every((e) => [e, ...(e.children ?? [])].every((x) => x.settled || onBot(x)))) {
-    root.append(h("p", { class: `empty ${CAUGHT_UP_CLASS}` }, "All caught up: nothing here waits on you."));
   }
   const counts = { pr: 0, question: 0, review: 0, chore: 0, item: 0 };
   let bugs = 0;
@@ -245,8 +245,7 @@ export function queueView(
   const parts = [`${counts.pr} PRs`, `${counts.question} questions`, `${counts.review} reviews`, `${counts.chore} chores`];
   if (bugs) parts.push(`${bugs} without an ask`);
   if (botTurn) parts.push(`${botTurn} PRs waiting on the bot`);
-  // The counts and the keys are hidden on a narrow screen, the keys on a touch one too (see style.css).
-  root.append(h("p", { class: "summary queue-summary" }, h("span", { class: "summary-counts" }, parts.join(" · ")), h("span", { class: "summary-keys" }, " · j/k to move, o to open, ? for keys")));
+  root.append(h("p", { class: "summary queue-summary" }, parts.join(" · ")));
   for (const group of groupRanked(entries)) {
     const count = group.entries.reduce((n, e) => n + 1 + (e.children?.length ?? 0), 0);
     const section = h("section", { class: "group" }, h("h2", { class: "group-h" }, `${group.priority} · ${count}`));
@@ -658,7 +657,7 @@ export function itemView(item: Item, data: ItemViewData, render: Renderer, handl
   return h(
     "main",
     { class: "item" },
-    h("a", { href: "#", class: "back" }, "← Queue (u)"),
+    h("a", { href: "#", class: "back" }, "← Back (u)"),
     h(
       "div",
       { class: "hdr" },

@@ -11,7 +11,7 @@ import { type Item, queueItems } from "../src/github/board.ts";
 import type { Context, RunStatus } from "../src/github/backend.ts";
 import { createRenderer } from "../src/markdown.ts";
 import { buildEntries, type Entry } from "../src/github/queue.ts";
-import { age, answerState, type AnswerState, CAUGHT_UP_CLASS, contextView, FILTERS_FOLDED_CLASS, type ItemViewHandlers, itemView, queueView, STALE_NOTE_CLASS, STATE_LABEL } from "../src/github/view.ts";
+import { age, answerState, type AnswerState, contextView, FILTERS_FOLDED_CLASS, type ItemViewHandlers, itemView, priorityList, STALE_NOTE_CLASS, STATE_LABEL } from "../src/github/view.ts";
 import { installDom, rawItems } from "./helpers.ts";
 
 const win = installDom();
@@ -72,7 +72,7 @@ describe("answerState", () => {
   }
 });
 
-describe("queueView", () => {
+describe("priorityList", () => {
   const entriesOf = (items: Item[], answered = new Set<string>()) => buildEntries(items, [], new Map(), true, answered);
   const labels = (sent: Set<string>, answered: Set<string>) => (e: Entry) => {
     const st = e.item ? answerState(e.item, sent, answered) : undefined;
@@ -81,7 +81,7 @@ describe("queueView", () => {
   const items = () => [evilItem(), ...queueItems(rawItems()).slice(1)];
 
   it("ranks by priority, nests asks and shows untrusted text as text", () => {
-    const root = queueView(entriesOf(items()), labels(new Set(), new Set()), Date.parse("2026-02-01T00:00:00Z"));
+    const root = priorityList(entriesOf(items()), labels(new Set(), new Set()), Date.parse("2026-02-01T00:00:00Z"));
     assertNoActiveContent(root);
     assert.deepEqual(
       [...root.querySelectorAll(".group-h")].map((e) => e.textContent),
@@ -117,13 +117,12 @@ describe("queueView", () => {
     assert.equal(row("PVTI_synthetic_epic")?.querySelector(".tag")?.textContent, "cgwalters-forge/tracker#20 · 1/3 sub-issues done");
     assert.equal(row("PVTI_synthetic_review_ask")?.querySelector(".why")?.textContent, "Re-approve widget#50 at its new head, then the bot signs off");
     assert.equal(row("PVTI_synthetic_chore_ask")?.querySelector(".kind")?.textContent, "do");
-    // Marked as the queue's: only it folds away on a phone, not the panes' summaries (their refresh notes).
     assert.match(root.querySelector(".summary.queue-summary")?.textContent ?? "", /0 PRs · 2 questions · 1 reviews · 1 chores · 3 without an ask/);
   });
 
   it("labels answered and closed questions", () => {
     const answered = new Set(["PVTI_synthetic_question"]);
-    const root = queueView(entriesOf(items(), answered), labels(new Set(["PVTI_synthetic_home_issue"]), answered));
+    const root = priorityList(entriesOf(items(), answered), labels(new Set(["PVTI_synthetic_home_issue"]), answered));
     const states = [...root.querySelectorAll(".row")].flatMap((r) => {
       const s = r.querySelector(".state:not(.bug)")?.textContent;
       return s ? [[r.getAttribute("href"), s]] : [];
@@ -137,7 +136,7 @@ describe("queueView", () => {
 
   it("filters by org, with chips linking to filter tokens", () => {
     const entries = entriesOf(items());
-    const root = queueView(entries, labels(new Set(), new Set()), Date.now(), { scope: "infra" });
+    const root = priorityList(entries, labels(new Set(), new Set()), Date.now(), { scope: "infra" });
     assertNoActiveContent(root);
     const chipText = (sel: string) => [...root.querySelectorAll(sel)].map((c) => `${c.getAttribute("href")} ${c.textContent}`);
     assert.deepEqual(chipText(".chip.on"), ["#infra Our infra1"]);
@@ -149,7 +148,7 @@ describe("queueView", () => {
     // Tracker issues with no Org field or target label have no org, so only the bot's own repo is infra.
     assert.deepEqual(hrefs, ["#item/PVTI_synthetic_home_issue"]);
 
-    const none = queueView(entries, () => undefined, Date.now(), { scope: { org: "nobody" } });
+    const none = priorityList(entries, () => undefined, Date.now(), { scope: { org: "nobody" } });
     assert.match(none.textContent ?? "", /Nothing here matches this filter/);
     assert.equal(none.querySelectorAll(".chip.preset").length, 3);
     // The chosen org stays, so it can be cleared, and the message links to everything.
@@ -159,7 +158,7 @@ describe("queueView", () => {
 
   it("folds the filter bar behind a button naming the active filter, and keeps it open across re-renders", () => {
     const entries = entriesOf(items());
-    const render = () => queueView(entries, labels(new Set(), new Set()), Date.now(), { scope: "composefs", priority: "P0" });
+    const render = () => priorityList(entries, labels(new Set(), new Set()), Date.now(), { scope: "composefs", priority: "P0" });
     const root = render();
     const bar = root.querySelector(".filters");
     const toggle = root.querySelector<HTMLButtonElement>(".filters-toggle");
@@ -176,7 +175,7 @@ describe("queueView", () => {
   });
 
   it("keeps each filter label separate from its wrapping chips", () => {
-    const root = queueView(entriesOf(items()), labels(new Set(), new Set()));
+    const root = priorityList(entriesOf(items()), labels(new Set(), new Set()));
     const rows = [...root.querySelectorAll(".filters > .chips")];
     assert.deepEqual(rows.map((row) => row.querySelector(".chips-h")?.textContent), ["Show", "Org", "Priority"]);
     for (const row of rows) {
@@ -186,38 +185,26 @@ describe("queueView", () => {
     }
   });
 
-  it("says when nothing needs you", () => {
-    assert.match(queueView([], () => undefined).textContent ?? "", /All caught up: nothing needs you/);
-    assert.ok(queueView([], () => undefined).querySelector(`.${CAUGHT_UP_CLASS}`));
-  });
-
-  it("says all caught up when only answered or closed asks are left, and lists them", () => {
+  it("lists the settled and the bot's turns too: it is the whole queue", () => {
+    assert.match(priorityList([], () => undefined).textContent ?? "", /Nothing is listed/);
     const entry = (key: string, settled: boolean): Entry => ({ key, kind: "question", title: key, where: "t#1", href: `#item/${key}`, settled });
-    const settled = queueView([entry("PVTI_a", true), entry("PVTI_b", true)], () => undefined);
-    assert.match(settled.querySelector(`.${CAUGHT_UP_CLASS}`)?.textContent ?? "", /All caught up/);
-    assert.equal(settled.querySelectorAll(".row").length, 2);
-    const open = queueView([entry("PVTI_a", true), entry("PVTI_b", false)], () => undefined);
-    assert.equal(open.querySelector(`.${CAUGHT_UP_CLASS}`), null);
-    assert.equal(queueView(entriesOf(items()), labels(new Set(), new Set())).querySelector(`.${CAUGHT_UP_CLASS}`), null);
-    // The bot's turns don't wait on him either.
     const botTurn: Entry = { key: "pr:o/r#1", kind: "pr", title: "t", where: "o/r#1", href: "#pr/o/r/1", wait: { reasons: [], onBot: true } };
-    assert.ok(queueView([entry("PVTI_a", true), botTurn], () => undefined).querySelector(`.${CAUGHT_UP_CLASS}`));
+    const root = priorityList([entry("PVTI_a", true), entry("PVTI_b", false), botTurn], () => undefined);
+    assert.equal(root.querySelectorAll(".row").length, 3);
+    assert.deepEqual([...root.querySelectorAll(".row")].map((r) => r.getAttribute("data-section")), ["priority", "priority", "priority"]);
   });
 
-  it("puts the strip first and names the board items it dropped as closed, whatever else it shows", () => {
+  it("names the board items it dropped as closed, whatever else it shows", () => {
     const merged: Item = { ...fixture("PVTI_synthetic_upstream_pr"), status: "Draft", state: "merged", title: EVIL, url: "javascript:alert(8)" };
-    const strip = document.createElement("section");
-    strip.className = "strip-under-test";
     const listed = entriesOf(items());
     for (const entries of [[], listed]) {
-      const root = queueView(entries, labels(new Set(), new Set()), Date.now(), undefined, { strip, stale: [merged] });
-      assert.equal(root.firstElementChild?.className, "strip-under-test");
+      const root = priorityList(entries, labels(new Set(), new Set()), Date.now(), undefined, { stale: [merged] });
       const note = root.querySelector(`.${STALE_NOTE_CLASS}`);
       assert.match(note?.querySelector("summary")?.textContent ?? "", /Not listed: 1 board item closed or merged/);
       assert.equal(note?.querySelector("a"), null, "an unsafe URL stays text");
       assert.equal(note?.querySelector("img, script"), null);
     }
-    assert.equal(queueView(listed, () => undefined).querySelector(`.${STALE_NOTE_CLASS}`), null);
+    assert.equal(priorityList(listed, () => undefined).querySelector(`.${STALE_NOTE_CLASS}`), null);
   });
 });
 
