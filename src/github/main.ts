@@ -66,7 +66,7 @@ import { deleteCacheDatabase, IdbStore } from "./idbstore.ts";
 import type { Active } from "./agents.ts";
 import { fillAgents, fillChanges, fillNeeds, fillOps, fillPriority, fillThemes, fillUsage, type Home, type HomeHooks, homeSkeleton, LIMIT_ID, NEED_ROW_SELECTOR, reveal, setSectionOpen } from "./homeview.ts";
 import { buildNeeds, type Need, needStops, waitingCount } from "./needs.ts";
-import { needId, type NeedsHooks } from "./needsview.ts";
+import { needId, type NeedsForm, type NeedsHooks, needsRedraw, needsSignature } from "./needsview.ts";
 import { type JobCache, loadActive, loadOps, type Ops } from "./ops.ts";
 import { tickOps } from "./opsview.ts";
 import { Poller, pollDelay, pollNote } from "./poller.ts";
@@ -416,32 +416,13 @@ function renderHome(state: State): void {
 }
 
 /** What the "Needs you" rows act through. */
-function needsHooks(state: State): NeedsHooks {
-  return { login: state.login, now: Date.now(), render, labelOf: labelOf(state), send: (need, answer) => sendNeed(state, need, answer) };
+function needsHooks(state: State, now: number): NeedsHooks {
+  return { login: state.login, now, render, labelOf: labelOf(state), send: (need, answer) => sendNeed(state, need, answer) };
 }
 
 function currentNeeds(state: State): Need[] {
   return buildNeeds({ entries: state.entries, decisions: state.decisions, decisionsAnswered: state.decisionsAnswered, answeredHere: state.answeredHere });
 }
-
-/** What the rows show, so an unchanged list is not redrawn under his hands. */
-function needsSignature(state: State, needs: readonly Need[]): string {
-  const label = labelOf(state);
-  return JSON.stringify([
-    state.login,
-    needs.map((n) => [n.key, n.action, n.title, n.priority, n.done === true, n.parent?.key, n.decision?.item.nodeId, n.decision?.item.body, n.entry?.item?.body, n.entry ? label(n.entry)?.text : undefined]),
-  ]);
-}
-
-/** Whether he has started answering in the "Needs you" rows: a pick or a note not sent yet. */
-function needsDraft(state: State): boolean {
-  const slot = state.home?.slots.needs;
-  if (!slot) return false;
-  const typed = [...slot.querySelectorAll<HTMLTextAreaElement>("form.answer:not([data-sent]) textarea")].some((t) => t.value.trim() !== "");
-  return typed || slot.querySelector("form.answer:not([data-sent]) input[type=radio]:checked") !== null;
-}
-
-const NEEDS_CHANGED_NOTE = "What waits on you changed; press r to reload it (unsent picks and notes are lost).";
 
 /**
  * Redraw "Needs you" if what it lists changed. With an answer half
@@ -452,19 +433,26 @@ function paintNeeds(state: State, force = false): void {
   const home = state.home;
   if (!home || state.closed) return;
   const needs = currentNeeds(state);
-  const sig = needsSignature(state, needs);
-  if (!force && sig === state.needsSig) return;
-  if (!force && needsDraft(state)) {
-    state.itemNote = NEEDS_CHANGED_NOTE;
+  const hooks = needsHooks(state, Date.now());
+  const sig = needsSignature(needs, hooks);
+  const forms: NeedsForm[] = [...home.slots.needs.querySelectorAll("form.answer")].map((form) => ({
+    sent: form.hasAttribute("data-sent"),
+    text: form.querySelector<HTMLTextAreaElement>("textarea")?.value ?? "",
+    picked: form.querySelector("input[type=radio]:checked") !== null,
+  }));
+  const policy = needsRedraw({ signature: sig, previousSignature: state.needsSig, forms, note: state.itemNote, force });
+  if (policy.action === "skip") return;
+  if (policy.note === undefined) delete state.itemNote;
+  else state.itemNote = policy.note;
+  if (policy.action === "defer") {
     renderChrome(state);
     return;
   }
-  if (state.itemNote === NEEDS_CHANGED_NOTE) delete state.itemNote;
   state.needs = needs;
   state.needsSig = sig;
   // A redraw keeps him on the row he is on (e.g. the one he moved on to).
   const on = document.activeElement?.closest(".need")?.id;
-  const waiting = fillNeeds(home, needs, needsHooks(state));
+  const waiting = fillNeeds(home, needs, hooks);
   // Unless he chose, "Needs you" is open exactly while something waits on him.
   if (state.prefs.needs === undefined) setSectionOpen(home, "needs", waiting > 0, false, homeHooks(state));
   if (on) document.getElementById(on)?.focus({ preventScroll: true });

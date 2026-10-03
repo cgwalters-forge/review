@@ -31,6 +31,37 @@ export interface NeedsHooks {
   send(need: Need, answer: Answer): Promise<string>;
 }
 
+/** What the rows show, so an unchanged list is not redrawn under his hands. */
+export function needsSignature(needs: readonly Need[], hooks: Pick<NeedsHooks, "login" | "now" | "labelOf">): string {
+  return JSON.stringify([
+    hooks.login,
+    needs.map((n) => [n.key, n.action, n.title, n.priority, n.done === true, n.parent?.key, n.decision?.item.nodeId, n.decision?.item.body, n.entry?.item?.body, n.entry ? hooks.labelOf(n.entry)?.text : undefined, age(n.entry?.since ?? n.since, hooks.now)]),
+  ]);
+}
+
+/** An answer form's snapshot, without its DOM nodes. */
+export interface NeedsForm {
+  sent: boolean;
+  text: string;
+  picked: boolean;
+}
+
+export const NEEDS_CHANGED_NOTE = "What waits on you changed; press r to reload it (unsent picks and notes are lost).";
+
+/** Decide whether to redraw, keeping half-written answers and unrelated notices. */
+export function needsRedraw(input: {
+  signature: string;
+  previousSignature: string | undefined;
+  forms: readonly NeedsForm[];
+  note: string | undefined;
+  force: boolean;
+}): { action: "skip" | "defer" | "redraw"; note: string | undefined } {
+  if (!input.force && input.signature === input.previousSignature) return { action: "skip", note: input.note };
+  const draft = input.forms.some((f) => !f.sent && (f.text.trim() !== "" || f.picked));
+  if (!input.force && draft) return { action: "defer", note: NEEDS_CHANGED_NOTE };
+  return { action: "redraw", note: input.note === NEEDS_CHANGED_NOTE ? undefined : input.note };
+}
+
 /** The element id of a need's row. */
 export const needId = (n: Need): string => `need-${n.key.replace(/[^A-Za-z0-9-]/g, (c) => `_${c.charCodeAt(0).toString(16)}_`)}`;
 
