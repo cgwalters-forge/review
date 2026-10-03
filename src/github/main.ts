@@ -38,7 +38,7 @@ import {
 } from "./advance.ts";
 import { loadSeen, loadUrgentOnly, saveSeen, saveUrgentOnly, type Snapshot, snapshotOf } from "./boardfeed.ts";
 import { cachedLabel, type CacheSession, forgetCache, openCache } from "./cache.ts";
-import { fileCapture, loadLinkTitle } from "./capture.ts";
+import { fileCapture, loadCaptureEpics, loadCaptureLabels, loadLinkTitle } from "./capture.ts";
 import { type CaptureBar, captureBar, forgetDraft } from "./captureview.ts";
 import { chatPanel } from "./chat.ts";
 import { DecisionsRefresh } from "./decisionsrefresh.ts";
@@ -1745,7 +1745,7 @@ async function start(source: TokenSource): Promise<void> {
     state.closed = true;
     state.poller.close();
     clearInterval(state.metaTicker);
-    forgetDraft(sessionStore());
+    forgetDraft(captureStore());
     void Promise.allSettled([forgetCache(session, () => deleteCacheDatabase()), source.signOut()]).then(() => window.location.reload());
   };
   window.addEventListener("hashchange", () => {
@@ -1795,9 +1795,9 @@ async function start(source: TokenSource): Promise<void> {
  * Mount the capture bar. Only for OPERATOR: the bot triages only his
  * issues, so anyone else's would sit there with the label.
  */
-function sessionStore(): Storage | undefined {
+function captureStore(): Storage | undefined {
   try {
-    return window.sessionStorage;
+    return window.localStorage;
   } catch {
     // Blocked: the draft won't survive a reload.
     return undefined;
@@ -1805,15 +1805,35 @@ function sessionStore(): Storage | undefined {
 }
 
 function showCapture(state: State): void {
-  const storage = sessionStore();
+  const storage = captureStore();
+  const reposKey = "review.capture.repos";
+  let recentRepos: string[] = [];
+  try {
+    const saved: unknown = JSON.parse(storage?.getItem(reposKey) ?? "[]");
+    if (Array.isArray(saved)) recentRepos = saved.filter((r): r is string => typeof r === "string" && /^[A-Za-z0-9-]+\/[A-Za-z0-9._-]+$/.test(r)).slice(0, 10);
+  } catch { /* Suggestions are optional. */ }
   state.capture = captureBar({
     file: (draft) => fileCapture(state.gh, draft),
     linkTitle: (ref) => loadLinkTitle(state.gh, ref),
+    labels: () => loadCaptureLabels(state.gh),
+    epics: () => loadCaptureEpics(state.gh),
+    recentRepos,
+    filed: (draft) => {
+      const repo = draft.repo?.trim();
+      if (repo) {
+        recentRepos = [repo, ...recentRepos.filter((r) => r !== repo)].slice(0, 10);
+        try { storage?.setItem(reposKey, JSON.stringify(recentRepos)); } catch { /* Suggestions are optional. */ }
+        const list = state.capture?.el.querySelector("datalist");
+        list?.replaceChildren(...recentRepos.map((r) => h("option", { value: r })));
+      }
+      if (!state.closed) state.poller.now();
+    },
     storage,
   });
   const slot = byId("capture");
   slot.replaceChildren(state.capture.el);
   slot.hidden = false;
+  state.capture.mounted();
   const chat = chatPanel();
   if (chat) {
     const chatSlot = byId("chat");
@@ -1893,7 +1913,6 @@ function signInView(reason: SignInReason): HTMLElement {
 function showSignIn(reason: SignInReason): void {
   byId("meta").textContent = "";
   byId("signout").hidden = true;
-  byId("nav").hidden = true;
   byId("capture").hidden = true;
   byId("capture").replaceChildren();
   setNotice(undefined);

@@ -53,6 +53,9 @@ describe("keyCommand", () => {
     ["r", "home", { metaKey: true }, undefined],
     ...(["home", "item", "pr"] as const).map((r): [string, Route, object, string] => ["b", r, {}, "capture"]),
     ["b", "home", { editing: true }, undefined],
+    ["b", "pr", { ctrlKey: true }, undefined],
+    ["b", "item", { metaKey: true }, undefined],
+    ["b", "home", { altKey: true }, undefined],
   ];
   for (const [key, route, over, want] of cases) {
     it(`${key} on ${route}${Object.keys(over).length ? ` ${JSON.stringify(over)}` : ""}`, () => assert.equal(keyCommand(press(key, over), route), want));

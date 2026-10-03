@@ -214,7 +214,7 @@ export const AGENT_TARGET = 4;
 /** localStorage key for the chosen theme (auto, light, dark). */
 export const THEME_KEY = "review.theme";
 
-/** sessionStorage key for the capture bar's unsent draft: it survives a reload, not the tab. */
+/** localStorage key for the capture composer's unsent draft: it survives a reload and a closed tab, and is dropped on sign-out. */
 export const CAPTURE_DRAFT_KEY = "review.capture.draft";
 
 /** Storage key for the pasted token (sessionStorage, or localStorage if remembered). */
