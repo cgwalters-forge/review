@@ -26,7 +26,7 @@ import type { OpenBoard } from "./backend.ts";
 import type { TriageFilter } from "./triage.ts";
 import type { UsageData } from "./usage.ts";
 import { triageView, type TriageHooks } from "./triageview.ts";
-import { CAUGHT_UP_CLASS, type ListExtras, priorityList, type RowLabel } from "./view.ts";
+import { CAUGHT_UP_CLASS, type ListExtras, priorityList, ROW_CLASS, type RowLabel } from "./view.ts";
 
 /** The class of the page, of a section, and of its count. */
 export const HOME_CLASS = "home";
@@ -182,6 +182,17 @@ export function reveal(row: HTMLElement, slot: HTMLElement, id: string, rowSelec
   if (!row.hidden && !row.closest("[hidden]")) return;
   expanded.add(id);
   applyLimit(slot, id, rowSelector);
+}
+
+/** The rows the keyboard walks: those in an open section, not hidden by "View all". */
+export function walkRows(root: HTMLElement): HTMLElement[] {
+  return [...root.querySelectorAll<HTMLElement>(`.${ROW_CLASS}`)].filter((r) => !r.closest("[hidden], details:not([open])"));
+}
+
+/** Move within the walkable rows, stopping at either end; without a selection, start at the first. */
+export function stepRow(rows: readonly HTMLElement[], selected: HTMLElement | undefined, step: 1 | -1): HTMLElement | undefined {
+  const i = selected ? rows.indexOf(selected) : -1;
+  return rows[Math.max(0, Math.min(rows.length - 1, i + step))];
 }
 
 /** The ids the lists use for "View all". */
