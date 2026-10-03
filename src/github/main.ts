@@ -1886,7 +1886,6 @@ function signInView(reason: SignInReason): HTMLElement {
 function showSignIn(reason: SignInReason): void {
   byId("meta").textContent = "";
   byId("signout").hidden = true;
-  byId("nav").hidden = true;
   byId("capture").hidden = true;
   byId("capture").replaceChildren();
   setNotice(undefined);
