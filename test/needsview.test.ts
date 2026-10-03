@@ -73,8 +73,8 @@ describe("needsSignature", () => {
   it("tracks the exact rendered age label and defers an age-only change under a draft", () => {
     const since = "2026-02-01T00:00:00Z";
     const entry = first([tracked("PVTI_q", 21, { labels: ["question"], body: BODY })]);
-    // The entry's age takes precedence over the need's fallback age.
-    const n: Need = { ...entry, since: "2026-01-01T00:00:00Z", entry: { ...entry.entry!, since } };
+    // The concrete ask's age takes precedence over the PR/item creation age.
+    const n: Need = { ...entry, since, entry: { ...entry.entry!, since: "2026-01-01T00:00:00Z" } };
     const before = { ...hooks(), now: Date.parse(since) + 59_999 };
     const after = { ...before, now: before.now + 1 };
     const previousSignature = needsSignature([n], before);
@@ -122,12 +122,12 @@ describe("needRow", () => {
     const other = needRow(q, hooks([], "someone"));
     assert.equal(other.querySelector("form"), null);
     assert.match(text(other), /Only cgwalters answers; you are signed in as someone/);
-    const review = first([tracked("PVTI_r", 22, { labels: ["review"], body: "Blocks: https://github.com/cgwalters-forge/tracker/issues/9\nAsk: Look at it\n" })]);
+    const review = first([tracked("PVTI_r", 22, { labels: ["escalate"], body: "Ask: Look at it\n" })]);
     const row = needRow(review, hooks());
     assert.equal(row.querySelector("form"), null);
     const action = row.querySelector<HTMLAnchorElement>("a.action");
-    assert.equal(action?.getAttribute("href"), "#item/PVTI_r");
-    assert.equal(action?.textContent, "Review");
+    assert.equal(action?.getAttribute("href"), `${TRACKER}/22`);
+    assert.equal(action?.textContent, "Write text");
   });
 
   it("labels a decision with its D-number, unblocks and whole question, and dims one answered here", () => {
@@ -158,11 +158,8 @@ describe("needRow", () => {
     assert.ok(row.textContent?.includes("<script>alert(2)</script>"));
   });
 
-  it("flags a Needs human item the bot left without an ask", () => {
-    const n = first([tracked("PVTI_lonely", 30)]);
-    const row = needRow(n, hooks());
-    assert.equal(text(row.querySelector(".action")), "No ask (bot bug)");
-    assert.ok(row.querySelector(".state.bug"));
+  it("does not invent a decision for an item with no ask", () => {
+    assert.equal(first([tracked("PVTI_lonely", 30)]), undefined);
   });
 });
 

@@ -9,6 +9,7 @@ import {
   loadAnswered,
   loadContext,
   loadDecisions,
+  loadProjectStatus,
   loadOpenBoard,
   loadQueue,
   loadRuns,
@@ -25,6 +26,21 @@ import { fields, rawBoardItem, rawItems, scriptedFetch } from "./helpers.ts";
 const token = async () => "t";
 const API = "https://api.github.com";
 const PROJECT = `${API}/orgs/cgwalters-forge/projectsV2/1`;
+
+describe("loadProjectStatus", () => {
+  for (const status of [null, { body: "**Newest update**", createdAt: "2026-10-03T00:00:00Z" }]) {
+    it(`reads the newest update (${status ? "present" : "empty"})`, async () => {
+      const { fetchImpl, calls } = scriptedFetch((method, url) => method === "POST" && url === `${API}/graphql` ? { body: { data: { organization: { projectV2: { statusUpdates: { nodes: status ? [status] : [] } } } } } } : undefined);
+      assert.deepEqual(await loadProjectStatus(new GitHub(token, fetchImpl)), status);
+      assert.match(JSON.stringify(calls[0]?.body), /statusUpdates\(first: 1, orderBy: \{field: CREATED_AT, direction: DESC\}\)/);
+    });
+  }
+
+  it("reports GraphQL errors rather than claiming there is no update", async () => {
+    const { fetchImpl } = scriptedFetch(() => ({ body: { errors: [{ message: "No access" }] } }));
+    await assert.rejects(loadProjectStatus(new GitHub(token, fetchImpl)), /No access/);
+  });
+});
 
 async function queue(): Promise<Map<string, Item>> {
   const { fetchImpl } = scriptedFetch((_m, url) => {
@@ -111,7 +127,7 @@ describe("loadDecisions", () => {
     const q = await loadDecisions(new GitHub(token, fetchImpl));
     const url = new URL(calls[0]?.url ?? "");
     assert.equal(url.pathname, "/repos/cgwalters-forge/tracker/issues");
-    assert.equal(url.searchParams.get("labels"), "decision");
+    assert.equal(url.searchParams.get("labels"), "question");
     assert.equal(url.searchParams.get("state"), "open");
     assert.equal(q.items.length, 1);
     const d = q.items[0] as Item;

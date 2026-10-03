@@ -41,6 +41,8 @@ export const ON_BOT_LABEL = "changes requested; waiting on the bot";
 
 /** Where a listed PR stands. */
 export interface PrWait {
+  reviewedCurrentHead?: boolean;
+  askedAt?: string;
   /** What he is asked to do; empty when it is the bot's turn. */
   reasons: PrReason[];
   /** He requested changes and the bot hasn't pushed or replied since. */

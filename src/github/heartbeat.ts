@@ -23,6 +23,7 @@ const TIME_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z$/;
 const WORD_RE = /^[a-z][a-z-]{0,23}$/;
 
 export interface LocalWorker {
+  engine?: string;
   name: string;
   itemUrl: string;
   /** OWNER/REPO#N */
@@ -70,6 +71,8 @@ function parseWorker(raw: unknown): LocalWorker | undefined {
   const w: LocalWorker = { name, itemUrl, itemRef: `${m?.[1]}/${m?.[2]}#${m?.[4]}`, startedAt, status };
   const devspace = str(raw.devspace, DEVSPACE_RE);
   if (devspace) w.devspace = devspace;
+  const engine = str(raw.engine, WORD_RE);
+  if (engine) w.engine = engine;
   return w;
 }
 

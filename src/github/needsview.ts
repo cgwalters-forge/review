@@ -11,7 +11,7 @@ import { OPERATOR } from "./config.ts";
 import type { Entry } from "./queue.ts";
 import { ACTION_LABEL, ACTION_TITLE, type Need } from "./needs.ts";
 import { decisionLabel, shortRef } from "./triage.ts";
-import { age, answerForm, askText, BUG_LABEL, excerpt, KIND_LABEL, KIND_TITLE, pill, ROW_CLASS, ROW_HREF_ATTR, ROW_KEY_ATTR, ROW_SECTION_ATTR, type RowLabel, rowText, STATE_LABEL, time } from "./view.ts";
+import { age, answerForm, askText, excerpt, KIND_LABEL, KIND_TITLE, pill, ROW_CLASS, ROW_HREF_ATTR, ROW_KEY_ATTR, ROW_SECTION_ATTR, type RowLabel, rowText, STATE_LABEL, time } from "./view.ts";
 
 /** Characters of the ask shown on a row before "The whole question". */
 const ASK_EXCERPT = 240;
@@ -32,10 +32,11 @@ export interface NeedsHooks {
 }
 
 /** What the rows show, so an unchanged list is not redrawn under his hands. */
-export function needsSignature(needs: readonly Need[], hooks: Pick<NeedsHooks, "login" | "now" | "labelOf">): string {
+export function needsSignature(needs: readonly Need[], hooks: Pick<NeedsHooks, "login" | "now" | "labelOf">, entries: readonly Entry[] = []): string {
   return JSON.stringify([
     hooks.login,
-    needs.map((n) => [n.key, n.action, n.title, n.priority, n.done === true, n.parent?.key, n.decision?.item.nodeId, n.decision?.item.body, n.entry?.item?.body, n.entry ? hooks.labelOf(n.entry)?.text : undefined, age(n.entry?.since ?? n.since, hooks.now)]),
+    needs.map((n) => [n.key, n.action, n.title, n.priority, n.why, n.href, n.where, n.done === true, n.parent?.key, n.decision?.item.nodeId, n.decision?.item.body, n.entry?.item?.body, n.entry ? hooks.labelOf(n.entry)?.text : undefined, age(n.since, hooks.now)]),
+    entries.flatMap((e) => [e, ...(e.children ?? [])]).map((e) => [e.key, e.title, e.where, e.href, e.verdict?.state, e.wait?.onBot, e.wait?.reasons, rowText(e), hooks.labelOf(e)]),
   ]);
 }
 
@@ -84,7 +85,7 @@ export function needRow(n: Need, hooks: NeedsHooks): HTMLElement {
   const label = e ? hooks.labelOf(e) : undefined;
   const question = n.action === "answer" ? (n.decision?.question ?? (item ? questionOf(item) : undefined)) : undefined;
   // What it asks, when the title doesn't say: a question's ask, else the entry's one-liner.
-  const ask = question ? question.ask : e ? rowText(e) : item ? askText(item) : undefined;
+  const ask = n.why || (question ? question.ask : e ? rowText(e) : item ? askText(item) : undefined);
   const sub = h(
     "span",
     { class: "sub" },
@@ -93,7 +94,6 @@ export function needRow(n: Need, hooks: NeedsHooks): HTMLElement {
     n.decision ? h("span", { class: "dec-id", title: "a decision" }, decisionLabel(n.decision)) : null,
     h("span", { class: "tag" }, [item?.org, n.where, n.parent ? `for ${excerpt(n.parent.title, 48)}` : undefined].filter(Boolean).join(" · ")),
     n.done ? h("span", { class: "state answered" }, STATE_LABEL.answered) : label ? h("span", { class: `state ${label.cls}` }, label.text) : null,
-    n.action === "fix" ? h("span", { class: "state bug" }, BUG_LABEL) : null,
   );
   const main = h("div", { class: "main" }, h("span", { class: "title" }, h("a", { href: n.href }, n.title)), sub);
   if (ask && ask !== n.title) main.append(h("span", { class: "why", title: ask }, excerpt(ask, ASK_EXCERPT)));
@@ -105,7 +105,7 @@ export function needRow(n: Need, hooks: NeedsHooks): HTMLElement {
   if (n.decision?.unblocks.length) main.append(unblocks(n.decision.unblocks));
   if (question && item?.body.trim()) main.append(h("details", { class: "dec-body" }, h("summary", {}, "The whole question"), h("div", { class: "md" }, hooks.render(item.body))));
   const kind = e?.kind ?? "question";
-  const since = e?.since ?? n.since;
+  const since = n.since;
   const row = h(
     "article",
     {
@@ -119,7 +119,7 @@ export function needRow(n: Need, hooks: NeedsHooks): HTMLElement {
     },
     h("span", { class: `kind k-${kind}`, title: KIND_TITLE[kind] }, KIND_LABEL[kind]),
     main,
-    h("span", { class: "age", title: since ? `waiting since ${time(since)}` : "", ...(since ? { "data-since": since } : {}) }, age(since, hooks.now)),
+    h("span", { class: "age", title: since ? `asked ${time(since)}` : "ask date not available", ...(since ? { "data-since": since } : {}) }, age(since, hooks.now) || "age unknown"),
   );
   return row;
 }

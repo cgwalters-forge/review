@@ -358,7 +358,8 @@ describe("prView", () => {
         ["the bot responded", up(), { reasons: ["updated"], onBot: false }, true],
         ["a rerun only", up(), { reasons: ["rerun"], onBot: false }, false],
         ["waiting on the bot", up(), { reasons: [], onBot: true }, false],
-        ["someone else's PR, requested", up({ author: "someone" }), { reasons: ["review-requested"], onBot: false }, false],
+        ["someone else's PR, requested", up({ author: "someone" }), { reasons: ["review-requested"], onBot: false }, true],
+        ["someone else's PR, no request", up({ author: "someone" }), undefined, false],
         ["closed", up({ state: "closed" }), { reasons: ["review-requested"], onBot: false }, false],
       ];
       for (const [name, d, wait, want] of cases) {

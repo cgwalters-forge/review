@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { GitHub } from "../src/github/api.ts";
-import { composeReview, composeReviews, type ForgePr } from "../src/github/forge.ts";
+import { composeReview, composeReviews, refKey, type ForgePr } from "../src/github/forge.ts";
 import {
   FORGE_QUERY,
   loadFileLines,
@@ -18,6 +18,8 @@ import {
   type VerdictEntry,
 } from "../src/github/prs.ts";
 import { fixture, scriptedFetch } from "./helpers.ts";
+import { buildNeeds } from "../src/github/needs.ts";
+import { buildEntries } from "../src/github/queue.ts";
 
 const token = async () => "t";
 const API = "https://api.github.com";
@@ -78,7 +80,7 @@ describe("the bot's PRs other than the forge's drafts", () => {
 
   it("searches them and those requesting his review, with GitHub's own qualifiers", async () => {
     assert.equal(OTHER_QUERY, "is:pr is:open author:cgwalters-bot");
-    assert.equal(REQUESTED_QUERY, "is:pr is:open author:cgwalters-bot user-review-requested:cgwalters");
+    assert.equal(REQUESTED_QUERY, "is:pr is:open draft:false author:cgwalters-bot user-review-requested:cgwalters");
     const { fetchImpl } = github();
     const others = await loadOtherPrs(new GitHub(token, fetchImpl));
     assert.deepEqual(
@@ -177,6 +179,59 @@ describe("mapLimit", () => {
     });
     assert.deepEqual(out, [50, 10, 40, 20, 30]);
     assert.equal(peak, 2);
+  });
+});
+
+describe("current concrete PR asks", () => {
+  const pr: ForgePr = { ref, url: "https://github.com/cgwalters-forge/widget/pull/7", title: "Fix widget", body: "", author: "someone", createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-10-01T00:00:00Z", draft: false };
+  it("rejects direct requests from human-authored PRs outside the bot search", async () => {
+    const { fetchImpl } = scriptedFetch((_m, url) => ({ body: { items: new URL(url).searchParams.get("q") === REQUESTED_QUERY ? [{ html_url: pr.url, pull_request: {}, user: { login: "someone" }, draft: false }] : [] } }));
+    const others = await loadOtherPrs(new GitHub(token, fetchImpl));
+    assert.deepEqual(others, []);
+  });
+  for (const c of [
+    { name: "unreviewed requested head", review: undefined, draft: false, requested: true, wanted: true },
+    { name: "comment-reviewed head", review: { state: "COMMENTED", commit_id: HEAD }, draft: false, requested: true, wanted: false },
+    { name: "approved head", review: { state: "APPROVED", commit_id: HEAD }, draft: false, requested: true, wanted: false },
+    { name: "reviewed older head", review: { state: "APPROVED", commit_id: MOVED }, draft: false, requested: true, wanted: true },
+    { name: "draft moved since search", review: undefined, draft: true, requested: true, wanted: false },
+    { name: "withdrawn request", review: undefined, draft: false, requested: false, wanted: false },
+    { name: "closed requested PR", review: undefined, draft: false, requested: true, state: "closed", wanted: false },
+    { name: "merged requested PR", review: undefined, draft: false, requested: true, merged_at: "2026-10-02T00:00:00Z", wanted: false },
+    { name: "new request since search", review: undefined, draft: false, requested: true, searchRequested: false, wanted: true },
+  ]) it(c.name, async () => {
+    const askedAt = "2026-10-02T00:00:00Z";
+    const { fetchImpl } = scriptedFetch((_m, url) => {
+      if (url === PULL) return { body: pull({ draft: c.draft, state: c.state ?? "open", merged_at: c.merged_at, requested_reviewers: c.requested ? [{ login: "cgwalters" }] : [] }) };
+      if (url.includes("/reviews?")) return { body: c.review ? [{ ...c.review, user: { login: "cgwalters" }, submitted_at: "2026-10-01T00:00:00Z" }] : [] };
+      if (url.includes("/timeline?")) return { body: [{ event: "review_requested", requested_reviewer: { login: "cgwalters" }, created_at: askedAt }] };
+      if (url.includes("/comments?")) return { body: [] };
+      return undefined;
+    });
+    const read = await loadWaiting(new GitHub(token, fetchImpl), [{ pr, requested: c.searchRequested ?? true }]);
+    assert.deepEqual(read.errors, []);
+    const needs = buildNeeds({ entries: buildEntries([], [], new Map(), true, new Set(), { others: read.prs }) });
+    assert.equal(needs.length, c.wanted ? 1 : 0);
+    if (c.wanted) assert.equal(needs[0]?.since, askedAt, "rank and age use request time, not PR creation");
+  });
+
+  for (const policy of ["human-text", "ai-ok"]) it(`retains an approved ${policy} fork without reading promotion attribution`, async () => {
+    const body = `<!-- bot-meta -->\n- Upstream: \`upstream/widget\`\n- Contribution policy: \`${policy}\`\n<!-- /bot-meta -->`;
+    const { fetchImpl, calls } = scriptedFetch((_method, url) => {
+      if (url === PULL) return { body: pull({ body }) };
+      if (url.includes("/reviews?")) return { body: [{ state: "APPROVED", commit_id: HEAD, user: { login: "cgwalters" }, submitted_at: "2026-10-01T00:00:00Z" }] };
+      if (url.includes("/comments?")) return { body: [] };
+      return undefined;
+    });
+    const read = await loadWaiting(new GitHub(token, fetchImpl), [{ pr: { ...pr, body, author: "cgwalters-bot", draft: true }, requested: false }]);
+    assert.deepEqual(read.errors, []);
+    const entries = buildEntries([], [], new Map(), true, new Set(), { others: read.prs });
+    assert.equal(read.prs.length, 1);
+    assert.ok(calls.every((c) => c.method === "GET" && !c.url.includes("/commits?")), "no promotion attribution reads");
+    const action = policy === "human-text" ? "write" : "promote";
+    assert.deepEqual(buildNeeds({ entries }).map((n) => n.action), [action]);
+    const forgeEntries = buildEntries([], [{ ...pr, body, author: "cgwalters-bot", draft: true }], new Map([[refKey(ref), { state: "approved" }]]));
+    assert.deepEqual(buildNeeds({ entries: forgeEntries }).map((n) => n.action), [action]);
   });
 });
 

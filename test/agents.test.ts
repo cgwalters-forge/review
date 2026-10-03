@@ -162,6 +162,7 @@ describe("activeAgents", () => {
       status: "working",
       since: ago(30 * MIN),
       source: "both",
+      location: "remote",
       lane: "unknown",
       stale: false,
       title: "safe outputs",
@@ -181,6 +182,18 @@ describe("activeAgents", () => {
       [heartbeat([], 3 * 60 * MIN, { loopState: "stopped" }), { updatedAt: ago(3 * 60 * MIN), loopState: "stopped", stale: false, stopped: true }],
     ];
     for (const [hb, want] of cases) assert.deepEqual(activeAgents([], hb, NOW).heartbeat, want);
+  });
+
+  it("counts remote/local agents and OpenCode share, without counting stale workers", () => {
+    const board = [item("remote", `${TRACKER}/1`, { run: "https://github.com/o/r/actions/runs/1", engine: "opencode" })];
+    const hb = heartbeat([worker("local", `${TRACKER}/2`, { engine: "claude" }), worker("unknown", `${TRACKER}/3`)]);
+    const s = activeAgents(board, hb, NOW);
+    assert.deepEqual(s.locations, { remote: 1, local: 2 });
+    assert.equal(s.opencode, 1);
+    assert.equal(s.unknownEngine, 1);
+    const stale = activeAgents(board, { ...hb, updatedAt: ago(60 * MIN) }, NOW);
+    assert.deepEqual(stale.locations, { remote: 1, local: 0 });
+    assert.equal(stale.running, 1);
   });
 
   it("reads Run from the board", () => {

@@ -116,11 +116,12 @@ const REVIEW_REASONS: readonly PrReason[] = ["review-requested", "resign", "upda
  * his review (`wait`, read from GitHub: his review requested, a re-sign,
  * or the bot's response to his change request). Nothing else, so a
  * crafted link can't turn this page into a one-click approval of
- * someone else's PR.
+ * someone else's PR. A direct operator request also admits a non-bot PR.
  */
 export function canReview(d: PrDetail, ask?: ReviewAskInfo, wait?: PrWait): boolean {
   if (d.state !== "open") return false;
   if (ask && samePr(ask.pr, d.ref)) return true;
+  if (!d.draft && wait?.reasons.includes("review-requested")) return true;
   if (d.author !== BOT_LOGIN) return false;
   return REVIEWABLE_OWNERS.includes(d.ref.owner) || (wait?.reasons.some((r) => REVIEW_REASONS.includes(r)) ?? false);
 }

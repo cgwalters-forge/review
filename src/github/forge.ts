@@ -15,6 +15,7 @@
 
 import { AnswerError, isCommandLine } from "../answer.ts";
 import { type IssueRef, parseIssueUrl } from "./board.ts";
+import { BOT_LOGIN, FORGE_ORG } from "./config.ts";
 
 /** A line in an approving review asking promote for a draft upstream PR. */
 export const DRAFT_LINE = "/draft";
@@ -77,6 +78,7 @@ export interface BotMeta {
   base?: string;
   /** The Workstream board item, `PVTI_...`. */
   item?: string;
+  policy?: string;
 }
 
 function metaSection(body: string): string | undefined {
@@ -96,7 +98,17 @@ export function parseBotMeta(body: string): BotMeta {
   if (up?.[2]) meta.base = up[2];
   const item = /^- Board item: `(PVTI_[A-Za-z0-9_-]+)`/m.exec(section);
   if (item?.[1]) meta.item = item[1];
+  const policy = /^- Contribution policy: `([^`]+)`/m.exec(section);
+  if (policy?.[1]) meta.policy = policy[1];
   return meta;
+}
+
+/** The next operator action for an approved fork, until /promote is sent. */
+export function promotionAction(pr: ForgePr, verdict: Verdict | undefined): "promote" | "write" | undefined {
+  if (verdict?.state !== "approved" || pr.author !== BOT_LOGIN || pr.ref.owner.toLowerCase() !== FORGE_ORG.toLowerCase()) return undefined;
+  const meta = parseBotMeta(pr.body);
+  if (!meta.upstream) return undefined;
+  return meta.policy === "human-text" ? "write" : "promote";
 }
 
 /** The body as it will read upstream: without the bot-meta section. */

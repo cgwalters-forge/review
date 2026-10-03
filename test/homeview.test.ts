@@ -5,9 +5,10 @@ import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
 import type { Active } from "../src/github/agents.ts";
 import type { Item } from "../src/github/board.ts";
-import { applyLimit, COUNT_CLASS, fillAgents, fillNeeds, fillPriority, fillUsage, type Home, type HomeHooks, homeSkeleton, resetExpanded, reveal, setSectionOpen, stepRow, VIEW_ALL_CLASS, walkRows } from "../src/github/homeview.ts";
+import { applyLimit, COUNT_CLASS, DECISION_LIMIT, fillAgents, fillFocus, fillStatus, fillNeeds, fillPriority, fillUsage, type Home, type HomeHooks, homeSkeleton, resetExpanded, reveal, setSectionOpen, stepRow, VIEW_ALL_CLASS, walkRows } from "../src/github/homeview.ts";
 import { buildNeeds } from "../src/github/needs.ts";
-import { buildEntries } from "../src/github/queue.ts";
+import { buildEntries, type Entry } from "../src/github/queue.ts";
+import { needsSignature } from "../src/github/needsview.ts";
 import { PREVIEW_ROWS, SECTION_TITLE, SECTIONS, type SectionId } from "../src/github/sections.ts";
 import type { UsageData } from "../src/github/usage.ts";
 import { createRenderer } from "../src/markdown.ts";
@@ -50,6 +51,78 @@ const needsHooks = (sent: unknown[] = []) => ({
 });
 
 afterEach(() => resetExpanded());
+
+describe("operator dashboard", () => {
+  it("shows promotion actions once and keeps approved reruns, re-signs and context in Watching with states and reasons", () => {
+    const home = homeSkeleton(hooks());
+    const entries: Entry[] = ["rerun", "resign", "read", "promote", "write", "sent"].map((name, i) => {
+      const pr = { ref: { owner: "cgwalters-forge", repo: "widget", number: i + 1 }, url: `https://github.com/cgwalters-forge/widget/pull/${i + 1}`, title: name, body: ["promote", "write", "sent"].includes(name) ? `<!-- bot-meta -->\n- Upstream: \`upstream/widget\`\n- Contribution policy: \`${name === "write" ? "human-text" : "ai-ok"}\`\n<!-- /bot-meta -->` : "", author: "cgwalters-bot", createdAt: "", updatedAt: "", draft: true };
+      return { key: `pr:${i}`, kind: "pr", title: name, where: `widget#${i + 1}`, href: `#pr/cgwalters-forge/widget/${i + 1}`, pr, verdict: { state: name === "sent" ? "promoted" : "approved" }, wait: { reasons: name === "rerun" ? ["rerun"] : name === "resign" ? ["resign"] : [], onBot: false } };
+    });
+    const needs = buildNeeds({ entries });
+    assert.equal(needs.find((n) => n.action === "promote")?.href, entries[3]?.pr?.url);
+    assert.equal(needs.find((n) => n.action === "write")?.href, entries[4]?.href);
+    fillNeeds(home, needs, needsHooks(), entries);
+    assert.deepEqual([...home.slots.needs.querySelectorAll(".need .action")].map(text), ["Promote", "Write text"]);
+    assert.equal(text(home.slots.needs.querySelector(".watching summary")), "Watching (4)");
+    const watching = home.slots.needs.querySelectorAll(".watching-item");
+    assert.deepEqual([...watching].map((r) => text(r.querySelector(".state"))), ["approved", "approved", "approved", "/promote sent; bot-pr decides"]);
+    assert.match(text(watching[0]), /required checks failed: rerun/);
+    assert.match(text(watching[1]), /approve to re-sign/);
+    assert.match(text(watching[2]), /No concrete ask; read for context/);
+    const sig = needsSignature(needs, needsHooks(), entries);
+    for (const change of [{ verdict: { state: "approved-older" as const } }, { wait: { reasons: ["resign" as const], onBot: false } }, { item: tracked("why", 1, { why: "A new context reason" }) }]) {
+      assert.notEqual(needsSignature(needs, needsHooks(), [{ ...entries[0]!, ...change }, ...entries.slice(1)]), sig);
+    }
+  });
+
+  it("renders sanitized project markdown and expands without losing state on an unchanged update", () => {
+    const home = homeSkeleton(hooks());
+    const status = { body: "**Working**\n\n[x](javascript:alert(1))\n\n<script>alert(2)</script>\n\nMore", createdAt: "2026-10-01T00:00:00Z" };
+    fillStatus(home, status, render);
+    assert.equal(text(home.slots.status.querySelector("strong")), "Working");
+    assert.equal(home.slots.status.querySelector("script, [href^='javascript:']"), null);
+    assert.ok(home.slots.status.querySelector(".status-preview"));
+    const button = home.slots.status.querySelector<HTMLButtonElement>("button")!;
+    button.click();
+    assert.equal(button.getAttribute("aria-expanded"), "true");
+    assert.equal(home.slots.status.querySelector(".status-preview"), null);
+    fillStatus(home, status, render);
+    assert.equal(home.slots.status.querySelector("button"), button);
+  });
+
+  it("shows active epics by priority with progress, running children and gray paused work", () => {
+    const home = homeSkeleton(hooks());
+    const epic = tracked("epic", 1, { labels: ["epic"], status: "In Progress", priority: "P0", subIssues: { total: 4, completed: 2, percent_completed: 50 } });
+    const paused = tracked("paused", 2, { labels: ["epic"], status: "Paused", priority: "P1" });
+    fillFocus(home, [paused, epic, tracked("child", 3, { parent: epic.ref!, status: "In Progress", lead: "worker" }), tracked("done", 4, { labels: ["epic"], state: "closed" })]);
+    assert.deepEqual([...home.slots.focus.querySelectorAll("article h3")].map(text), ["P0 · epic", "P1 · paused"]);
+    assert.equal(home.slots.focus.querySelector("progress")?.getAttribute("value"), "2");
+    assert.match(text(home.slots.focus), /child · worker · running/);
+    assert.ok(home.slots.focus.querySelector(".paused"));
+  });
+
+  it("keeps overflow in collapsed Watching and reveals it for action continuation", () => {
+    const home = homeSkeleton(hooks(["needs"]));
+    const entries = buildEntries(questions(DECISION_LIMIT + 3), [], new Map());
+    fillNeeds(home, buildNeeds({ entries }), needsHooks(), entries);
+    document.body.replaceChildren(home.el);
+    assert.equal(walkRows(home.el).length, DECISION_LIMIT);
+    const overflow = home.slots.needs.querySelector<HTMLElement>(".watching .need")!;
+    reveal(overflow, home.slots.needs, "needs", ".need");
+    assert.ok(walkRows(home.el).includes(overflow));
+  });
+
+  it("counts each Watching identity once and excludes decision context", () => {
+    const home = homeSkeleton(hooks(["needs"]));
+    const question = tracked("question", 100, { labels: ["question"] });
+    const entries = buildEntries([question, tracked("watch", 101)], [], new Map());
+    const needs = buildNeeds({ entries });
+    const duplicate = { ...entries.find((e) => e.item?.nodeId === "watch")!, key: "another-watch" };
+    fillNeeds(home, [{ ...needs[0]!, key: "decision:I_100" }], needsHooks(), [...entries, duplicate]);
+    assert.equal(text(home.slots.needs.querySelector(".watching summary")), "Watching (1)");
+  });
+});
 
 describe("homeSkeleton", () => {
   it("has the five sections in order, each with a count, closed unless its hook says otherwise", () => {
@@ -209,14 +282,14 @@ describe("the sections' fills", () => {
   it("lists what waits on him with a hot count, a few rows, and a form only on questions", () => {
     const home = mounted();
     const entries = buildEntries([...questions(7), tracked("PVTI_rev", 200, { labels: ["review"], body: `Blocks: ${TRACKER}/9\nAsk: look\n` })], [], new Map(), true);
-    const waiting = fillNeeds(home, buildNeeds({ entries }), needsHooks());
-    assert.equal(waiting, 8);
-    assert.equal(text(count(home, "needs")), "8");
+    const waiting = fillNeeds(home, buildNeeds({ entries }), needsHooks(), entries);
+    assert.equal(waiting, 7);
+    assert.equal(text(count(home, "needs")), "7");
     assert.ok(count(home, "needs").classList.contains("hot"));
     const rows = [...home.slots.needs.querySelectorAll<HTMLElement>(".row")];
-    assert.equal(rows.length, 8);
-    assert.equal(rows.filter((r) => !r.hidden).length, PREVIEW_ROWS);
-    assert.equal(text(home.slots.needs.querySelector(`.${VIEW_ALL_CLASS}`)), "View all 8");
+    assert.equal(rows.length, 7);
+    assert.equal(rows.filter((r) => !r.hidden).length, 7);
+    assert.equal(home.slots.needs.querySelector<HTMLDetailsElement>(".watching")?.open, false);
     assert.equal(rows.filter((r) => r.querySelector("form.answer")).length, 7, "the review row has no form");
   });
 
