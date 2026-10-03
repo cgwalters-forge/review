@@ -249,8 +249,8 @@ is outside cgwalters-forge, so a fine-grained token scoped to it can't
 read the devspaces; a classic token can.
 
 The **capture bar** under the header, shown to cgwalters only, puts a
-note on the board for the bot: `b` focuses it from any view, and Enter
-files the title (Ctrl+Enter from the note) as an issue in
+note on the board for the bot: clicking or focusing it, or `b` from any
+view, expands an in-place composer. Ctrl/Cmd+Enter (or **File**) files it as an issue in
 cgwalters-forge/tracker labelled `needs-triage`, added to the Workstream
 board. A pasted GitHub link goes into the body and, with no title typed,
 suggests one (`owner/repo#N: its title`). The label is what the bot acts
@@ -260,8 +260,24 @@ work or a question on the issue, and removes the label. So a board add
 the token isn't allowed to make (it needs the `project` scope, or the
 organization's Projects permission on a fine-grained token) leaves the
 issue filed, with a note saying so (the bot adds it when it triages).
-An unsent draft is kept in the tab's sessionStorage, so a reload keeps
-it, and signing out drops it.
+The title wraps and grows on narrow screens but remains a single-line
+issue title; the multiline body accepts Markdown. **Note** retains its
+existing disclosure semantics: it toggles the extra fields, not a filing
+mode. Optional Priority (P0/P1/P2) sets the board item's actual Priority
+field after it is added, resolving the field and option IDs by name.
+Priority and Repo (`owner/repo`) also remain as `Priority:` and `Repo:`
+body lines for the bot to triage. If setting Priority fails, the issue
+stays filed on the board and the app explains how to check or set it there.
+The label choices include `dispatch`, `escalate`, and cached tracker labels;
+`dispatch` requires Repo. Repo suggestions remember the ten most recently
+filed repos in this browser. An Epic is an open tracker issue labelled
+`epic`; filing attaches the new issue as its sub-issue. A failed attachment
+or board add keeps the filed issue link and explains the follow-up, rather
+than inviting a duplicate filing. Filing also requests a queue refresh.
+If creation's response is lost, the draft stays but retry is disabled:
+check the tracker before reloading to retry, since the issue may exist.
+Esc collapses the composer without losing text. An unsent draft is kept in
+localStorage across tabs/reloads; signing out drops it.
 
 Keys: `j`/`k` move, `o` opens, `u` goes back, `r` reloads, `t` triage, `q` decisions, `n` news, `d` ops, `b` capture; in a PR,
 `n`/`p` step through files and `j`/`k` through hunks, `v` marks a file

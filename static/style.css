@@ -187,10 +187,19 @@ pre.msg { white-space: pre-wrap; overflow-wrap: anywhere; margin: 6px 0; }
 form.capture { display: grid; gap: 8px; background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 6px 8px 6px 16px; box-shadow: 0 1px 2px rgb(0 0 0 / .06); }
 form.capture:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 .capture-row { display: flex; gap: 8px; align-items: center; }
-.capture-title { flex: 1 1 auto; min-width: 0; font: 16px var(--sans); color: var(--ink); background: transparent; border: 0; padding: 8px 0; outline: none; }
+.capture-title { flex: 1 1 auto; min-width: 0; width: 0; font: 16px var(--sans); color: var(--ink); background: transparent; border: 0; padding: 8px 0; outline: none; resize: none; overflow: hidden; overflow-wrap: anywhere; }
 .capture-title::placeholder { color: var(--muted); }
 .capture-extra { display: grid; gap: 6px; border-top: 1px solid var(--line); padding: 8px 8px 4px 0; }
-.capture-extra input, .capture-extra textarea { font: 14px var(--sans); color: var(--ink); background: var(--ground); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; min-width: 0; width: 100%; }
+.capture-extra > input, .capture-extra textarea, .capture-fields select { box-sizing: border-box; font: 14px var(--sans); color: var(--ink); background: var(--ground); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; min-width: 0; width: 100%; }
+.capture-body { resize: vertical; overflow-y: hidden; }
+.capture-fields { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); gap: 8px; }
+.capture-labels { display: flex; flex-wrap: wrap; gap: 8px 14px; min-width: 0; border: 1px solid var(--line); border-radius: 6px; }
+.capture-labels label { overflow-wrap: anywhere; }
+.capture-labels input { width: auto; }
+.capture-options:empty { display: none; }
+@media (max-width: 420px) {
+  .capture-fields { grid-template-columns: minmax(0, 1fr); }
+}
 .capture-status:empty { display: none; }
 .capture-status { margin: 0 8px 4px 0; }
 .capture-status.warn { padding: 6px 10px; }
