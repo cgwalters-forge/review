@@ -6,7 +6,7 @@ import { describe, it } from "node:test";
 import type { Answer } from "../src/answer.ts";
 import { type Item } from "../src/github/board.ts";
 import { buildNeeds, type Need } from "../src/github/needs.ts";
-import { needId, type NeedsHooks, needRow } from "../src/github/needsview.ts";
+import { NEEDS_CHANGED_NOTE, needId, type NeedsForm, type NeedsHooks, needRow, needsRedraw, needsSignature } from "../src/github/needsview.ts";
 import { buildEntries } from "../src/github/queue.ts";
 import { parseDecision } from "../src/github/triage.ts";
 import { createRenderer } from "../src/markdown.ts";
@@ -35,6 +35,67 @@ const hooks = (sent: [string, Answer][] = [], login: string | undefined = "cgwal
 
 const BODY = "Blocks: https://github.com/cgwalters-forge/tracker/issues/9\nQ: Which prefix?\nOptions:\nA) this\nB) that\nRecommended: A, because it is safer\n";
 const first = (items: Item[]): Need => buildNeeds({ entries: buildEntries(items, [], new Map(), true) })[0] as Need;
+
+describe("needsRedraw", () => {
+  const typed: NeedsForm = { sent: false, text: "my answer", picked: false };
+  const picked: NeedsForm = { sent: false, text: "", picked: true };
+  const policy = (forms: readonly NeedsForm[], over: Partial<Parameters<typeof needsRedraw>[0]> = {}) => needsRedraw({
+    signature: "new", previousSignature: "old", forms, note: undefined, force: false, ...over,
+  });
+
+  it("skips an unchanged signature before checking drafts, keeping the notice", () => {
+    for (const note of [undefined, NEEDS_CHANGED_NOTE, "Another notice"]) {
+      assert.deepEqual(policy([typed, picked], { signature: "old", note }), { action: "skip", note });
+    }
+  });
+
+  it("defers changed rows for either typed text or a selected radio, with the guard note", () => {
+    for (const form of [typed, picked]) {
+      assert.deepEqual(policy([form]), { action: "defer", note: NEEDS_CHANGED_NOTE });
+    }
+  });
+
+  it("redraws changed rows without a draft and clears only the guard note", () => {
+    const forms: NeedsForm[] = [{ sent: false, text: " \n\t", picked: false }, { sent: true, text: "sent answer", picked: true }];
+    assert.deepEqual(policy(forms, { note: NEEDS_CHANGED_NOTE }), { action: "redraw", note: undefined });
+    assert.deepEqual(policy([], { note: "Another notice" }), { action: "redraw", note: "Another notice" });
+  });
+
+  it("force bypasses both the draft guard and signature equality", () => {
+    for (const signature of ["old", "new"]) {
+      assert.deepEqual(policy([typed, picked], { force: true, signature, note: NEEDS_CHANGED_NOTE }), { action: "redraw", note: undefined });
+    }
+    assert.deepEqual(policy([typed], { force: true, note: "Another notice" }), { action: "redraw", note: "Another notice" });
+  });
+});
+
+describe("needsSignature", () => {
+  it("tracks the exact rendered age label and defers an age-only change under a draft", () => {
+    const since = "2026-02-01T00:00:00Z";
+    const entry = first([tracked("PVTI_q", 21, { labels: ["question"], body: BODY })]);
+    // The entry's age takes precedence over the need's fallback age.
+    const n: Need = { ...entry, since: "2026-01-01T00:00:00Z", entry: { ...entry.entry!, since } };
+    const before = { ...hooks(), now: Date.parse(since) + 59_999 };
+    const after = { ...before, now: before.now + 1 };
+    const previousSignature = needsSignature([n], before);
+    const signature = needsSignature([n], after);
+    assert.equal(needRow(n, before).querySelector(".age")?.textContent, "now");
+    assert.equal(needRow(n, after).querySelector(".age")?.textContent, "1m");
+    assert.equal(JSON.parse(previousSignature)[1][0].at(-1), "now");
+    assert.equal(JSON.parse(signature)[1][0].at(-1), "1m");
+    assert.notEqual(signature, previousSignature);
+    assert.equal(needsSignature([n], { ...after, now: after.now + 1 }), signature);
+    assert.deepEqual(needsRedraw({ signature, previousSignature, forms: [{ sent: false, text: "draft", picked: false }], note: undefined, force: false }), { action: "defer", note: NEEDS_CHANGED_NOTE });
+  });
+
+  it("uses the need's age for a decision without an entry", () => {
+    const d = parseDecision(tracked("I_7", 7, { title: "D3: Promote?", body: BODY, labels: ["question", "decision"], createdAt: "2026-01-31T00:00:00Z" }));
+    const needs = buildNeeds({ entries: [], decisions: [d] });
+    const view = hooks();
+    assert.equal(needRow(needs[0]!, view).querySelector(".age")?.textContent, "1d");
+    assert.equal(JSON.parse(needsSignature(needs, view))[1][0].at(-1), "1d");
+  });
+});
 
 describe("needRow", () => {
   it("answers a question in its row, with its options, and sends the answer as the need", async () => {
