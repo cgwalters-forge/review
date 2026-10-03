@@ -3,7 +3,7 @@ import { describe, it } from "node:test";
 import { GitHub } from "../src/github/api.ts";
 import { NEWS_REPOS } from "../src/github/config.ts";
 import { firstParagraph, type HarnessCache, isHarnessPath, loadNews, parseNewsPull, sortNews } from "../src/github/news.ts";
-import { newsView } from "../src/github/newsview.ts";
+import { newsList } from "../src/github/newsview.ts";
 import { createRenderer } from "../src/markdown.ts";
 import { installDom, scriptedFetch } from "./helpers.ts";
 
@@ -89,10 +89,10 @@ describe("loadNews", () => {
   });
 });
 
-describe("newsView", () => {
+describe("newsList", () => {
   it("shows untrusted titles as text and sanitizes summaries", () => {
     const EVIL = "<img src=x onerror=alert(1)>";
-    const root = newsView(
+    const root = newsList(
       {
         items: [{ repo: "o/r", number: 1, url: "javascript:alert(2)", title: EVIL, author: "a", mergedAt: "2026-01-01T00:00:00Z", summary: `${EVIL} [x](javascript:alert(3))`, labels: [], harness: true }],
         warnings: [],

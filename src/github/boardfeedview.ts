@@ -1,4 +1,4 @@
-// The board changes feed, at the top of the ops view: chips for what
+// The board changes feed, in the "Changes" section: chips for what
 // changed on each item since the viewer last marked the feed seen, the
 // newest first, grouped by day; News lines stand out.
 
@@ -42,12 +42,15 @@ export function chip(c: Change): HTMLElement {
   }
 }
 
-/** One item's changes as a list row, here and in the queue's strip. */
+/** The class of an item's row, which the section shows a few of before "View all". */
+export const FEED_ROW_CLASS = "feed-row";
+
+/** One item's changes as a list row. */
 export function feedRow(c: ItemChanges, now: number): HTMLElement {
   const news = c.changes.find((x) => x.kind === "news");
   return h(
     "li",
-    { class: "feed-row" },
+    { class: FEED_ROW_CLASS },
     h(
       "div",
       { class: "feed-head" },
@@ -62,7 +65,7 @@ export function feedRow(c: ItemChanges, now: number): HTMLElement {
 
 /** The feed section, or what to say before there is one. */
 export function feedSection(board: readonly Item[] | undefined, seen: Snapshot | undefined, opts: FeedOptions): HTMLElement {
-  const sec = h("section", { class: "ops-sec feed" }, h("h2", {}, "Board changes"));
+  const sec = h("div", { class: "feed" });
   if (!board) {
     sec.append(h("p", { class: "note" }, opts.fromCache ? "Not cached; reading the board…" : "The board couldn't be read."));
     return sec;

@@ -1,12 +1,10 @@
-// The ops view: the board changes feed (boardfeedview.ts), devspaces,
-// local agents and the plan's usage, agent runs, active work and the
-// bot's recent activity. Times that move (uptime, time left) are marked so tickOps
-// can update them in place every second without a re-render.
+// The ops detail under the Agents section (devspaces, local agents,
+// agent runs, active work and the bot's recent activity) and the Usage
+// section's body. Times that move (uptime, time left) are marked so
+// tickOps can update them in place every second without a re-render.
 
 import { h, link, svg } from "../dom.ts";
 import { type IssueRef, type Item, parseIssueUrl } from "./board.ts";
-import type { Snapshot } from "./boardfeed.ts";
-import { type FeedOptions, feedSection } from "./boardfeedview.ts";
 import { AGENT_WORKFLOW, BOT_LOGIN, DEVSPACE_REPO, DEVSPACE_WORKFLOW, HEARTBEAT_ISSUE, HEARTBEAT_STALE_MS, OPS_EVENTS_SHOWN, OPS_WINDOW_HOURS, TRACKER_REPO, USAGE_REPO } from "./config.ts";
 import { PRESET_LABEL, PRESET_TITLE } from "./filter.ts";
 import { type Heartbeat, isStale, type LocalWorker } from "./heartbeat.ts";
@@ -322,8 +320,6 @@ function localSection(hb: Heartbeat | null | undefined, devspaces: DevspaceData 
 }
 
 const WINDOW_LABEL: Record<string, string> = { five_hour: "5-hour", seven_day: "7-day" };
-/** How many consumers the usage section lists. */
-const TOP_CONSUMERS = 5;
 /** Percent used from which a window's bar turns amber, then red. */
 const PCT_WARN = 75;
 const PCT_CRIT = 90;
@@ -400,9 +396,9 @@ function consumerRow(c: Consumer, max: number): HTMLElement {
  * items linked from the heartbeat's workers. Null when there is nothing
  * to say (not read yet, or its read failed: see the warnings).
  */
-function usageSection(data: UsageData | undefined, hb: Heartbeat | null | undefined, now: number): HTMLElement | null {
+export function usageSection(data: UsageData | undefined, hb: Heartbeat | null | undefined, now: number): HTMLElement | null {
   if (!data) return null;
-  const sec = section("Usage");
+  const sec = h("div", { class: "usage-body" });
   if (data.state === "unreadable") {
     sec.append(h("p", { class: "note" }, `Private: it's in ${USAGE_REPO}, which this token can't read.`));
     return sec;
@@ -426,9 +422,8 @@ function usageSection(data: UsageData | undefined, hb: Heartbeat | null | undefi
   if (usage.coordinatorTokens) consumers.push({ label: h("span", { title: "the coordinator's own session, in the 5-hour window" }, h("strong", {}, "coordinator"), " (5-hour window)"), tokens: usage.coordinatorTokens });
   consumers.sort((a, b) => tokenTotal(b.tokens) - tokenTotal(a.tokens));
   if (consumers.length) {
-    const top = consumers.slice(0, TOP_CONSUMERS);
-    const max = top[0] ? tokenTotal(top[0].tokens) : 0;
-    sec.append(h("h3", { class: "group-h" }, "Top consumers"), h("ul", { class: `uc-list${stale ? " stale" : ""}` }, ...top.map((c) => consumerRow(c, max))));
+    const max = consumers[0] ? tokenTotal(consumers[0].tokens) : 0;
+    sec.append(h("h3", { class: "group-h" }, "Consumers"), h("ul", { class: `uc-list${stale ? " stale" : ""}` }, ...consumers.map((c) => consumerRow(c, max))));
   }
   sec.append(
     h(
@@ -520,30 +515,34 @@ function eventsSection(events: BotEvent[] | undefined, now: number, fromCache = 
   return sec;
 }
 
-/** The changes feed's inputs, when the ops view shows it. */
-export interface Feed extends Omit<FeedOptions, "now" | "fromCache"> {
-  seen: Snapshot | undefined;
+/** The usage section's header: the most used window, e.g. "5-hour 42%", or why there is none. */
+export function usageSummary(data: UsageData | undefined): string {
+  if (!data) return "…";
+  if (data.state !== "ok") return data.state === "none" ? "none yet" : "private";
+  const known = data.usage.windows.filter((w) => w.usedPercent !== undefined);
+  const top = known.reduce<UsageWindow | undefined>((a, w) => (a && (a.usedPercent ?? 0) >= (w.usedPercent ?? 0) ? a : w), undefined);
+  if (!top || top.usedPercent === undefined) return `${tokensText(data.usage.windows.reduce((n, w) => Math.max(n, tokenTotal(w.tokens)), 0))} tokens`;
+  const pct = top.usedPercent;
+  return `${WINDOW_LABEL[top.kind] ?? top.kind.replace(/_/g, " ")} ${pct % 1 ? pct.toFixed(1) : String(pct)}%`;
 }
 
-export function opsView(ops: Ops | undefined, now: number = Date.now(), feed?: Feed): HTMLElement {
-  const root = h(
-    "main",
-    { class: "ops" },
-    h("p", { class: "summary" }, `What changed on the board, and what the bot is running now · refreshed every minute${ops ? `, last at ${clock(new Date(ops.at).toISOString())}` : ""} · r refresh · u back`),
-  );
+/**
+ * The ops detail: devspaces, the coordinator's local agents, agent runs,
+ * active work and the bot's activity. The changes feed and the usage
+ * have sections of their own.
+ */
+export function opsDetail(ops: Ops | undefined, now: number = Date.now()): HTMLElement {
+  const root = h("div", { class: "ops" });
   if (!ops) {
     root.append(h("p", { class: "empty" }, "Loading…"));
     return root;
   }
   for (const w of ops.warnings) root.append(h("p", { class: "warn" }, w));
-  if (feed) root.append(feedSection(ops.board, feed.seen, { ...feed, now, ...(ops.fromCache ? { fromCache: true } : {}) }));
   const t = tiles(ops.devspaces, now);
   if (t) root.append(t);
-  const usage = usageSection(ops.usage, ops.local, now);
   root.append(
     devspacesSection(ops.devspaces, now, ops.fromCache),
     localSection(ops.local, ops.devspaces, now, ops.fromCache),
-    ...(usage ? [usage] : []),
     agentsSection(ops.agents, now, ops.fromCache),
     workSection(ops.work, now, ops.fromCache),
     eventsSection(ops.events, now, ops.fromCache),

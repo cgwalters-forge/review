@@ -52,7 +52,7 @@ header.top { position: sticky; top: 0; z-index: 5; background: var(--ground); pa
 header.top h1 { font-size: 20px; margin: 0; }
 header.top h1 a { color: inherit; text-decoration: none; }
 .meta { font: 12px var(--mono); color: var(--muted); flex: 1; }
-.notice, .warn { padding: 10px 12px; border: 1px solid var(--p1); background: var(--p1-soft); border-radius: 6px; }
+.notice, .warn { overflow-wrap: anywhere; padding: 10px 12px; border: 1px solid var(--p1); background: var(--p1-soft); border-radius: 6px; }
 .note { color: var(--muted); font-size: 14px; }
 .done { margin: 6px 0 0; font-size: 13px; color: var(--muted); }
 .empty { color: var(--muted); text-align: center; padding: 24px 0; }
@@ -181,19 +181,20 @@ pre.msg { white-space: pre-wrap; overflow-wrap: anywhere; margin: 6px 0; }
 }
 
 /* News */
-.nav { display: flex; flex-wrap: wrap; gap: 4px 10px; font-size: 14px; }
-.nav a { color: var(--muted); text-decoration: none; }
-.nav a.on { color: var(--ink); font-weight: 600; }
-
-/* The capture bar under the header: one row, the note below when open */
-form.capture { display: grid; gap: 6px; margin: 8px 0 0; }
-.capture-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
-.capture-row input { font: 14px var(--sans); color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; min-width: 0; }
-.capture-title { flex: 3 1 240px; }
-.capture-url { flex: 2 1 160px; }
-.capture-body { font-size: 14px; }
+/* The "Ask anything" box atop the page: one line to file a note onto the board,
+   link and note behind a button. #chat is the slot for a future chat. */
+.ask-box { margin: 12px 0 0; display: grid; gap: 8px; }
+form.capture { display: grid; gap: 8px; background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 6px 8px 6px 16px; box-shadow: 0 1px 2px rgb(0 0 0 / .06); }
+form.capture:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.capture-row { display: flex; gap: 8px; align-items: center; }
+.capture-title { flex: 1 1 auto; min-width: 0; font: 16px var(--sans); color: var(--ink); background: transparent; border: 0; padding: 8px 0; outline: none; }
+.capture-title::placeholder { color: var(--muted); }
+.capture-extra { display: grid; gap: 6px; border-top: 1px solid var(--line); padding: 8px 8px 4px 0; }
+.capture-extra input, .capture-extra textarea { font: 14px var(--sans); color: var(--ink); background: var(--ground); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; min-width: 0; width: 100%; }
 .capture-status:empty { display: none; }
+.capture-status { margin: 0 8px 4px 0; }
 .capture-status.warn { padding: 6px 10px; }
+#chat:empty { display: none; }
 .news-item { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 8px 14px; margin-bottom: 8px; overflow-wrap: anywhere; }
 .news-item.harness { border-left: 4px solid var(--p1); }
 .news-item h3 { margin: 4px 0; font-size: 15px; }
@@ -462,21 +463,29 @@ details.theme.untriaged { border-style: dashed; }
 .legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font: 12px var(--mono); color: var(--muted); margin-bottom: 8px; }
 .legend i { display: inline-block; width: 10px; height: 6px; border-radius: 2px; margin-right: 5px; vertical-align: middle; }
 
-/* Decisions: each open decision with its options, answered in place. */
-.decision { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 10px 14px; margin-top: 12px; display: grid; gap: 8px; }
-.decision.answered { opacity: .75; }
-.decision header { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; }
-.decision h3 { margin: 0; font-size: 16px; line-height: 1.35; overflow-wrap: anywhere; }
+/* Rows of "Needs you": the one action each asks for, questions answered in place. */
 .dec-id { font: 13px var(--mono); font-weight: 600; color: var(--accent); }
-.decision .note, .decision .ask { margin: 0; }
 details.unblocks summary, details.dec-body summary { cursor: pointer; font: 12px var(--mono); color: var(--muted); }
 details.unblocks ul { margin: 6px 0 0; padding-left: 18px; columns: 2 16em; font: 12px var(--mono); }
+.row.need { cursor: default; }
+.row.need:focus { outline: none; border-color: var(--accent); }
+.row.need-done { opacity: .7; }
+.row.need .title a { color: inherit; text-decoration: none; }
+.row.need .title a:hover { text-decoration: underline; }
+.row.need .why { white-space: normal; overflow: visible; }
+.row.need form.answer { margin: 6px 0 2px; }
+.row.need .note, .row.need .warn { margin: 2px 0; }
+.action { font: 600 12px var(--mono); padding: 2px 9px; border-radius: 999px; color: var(--accent); background: var(--accent-soft); border: 1px solid transparent; text-decoration: none; white-space: nowrap; }
+.action:hover { border-color: var(--accent); }
+.action.a-answer { color: var(--p1); background: var(--p1-soft); }
+.action.a-fix { color: var(--p0); background: var(--p0-soft); }
+.action.a-write, .action.a-read { color: var(--p2); background: var(--p2-soft); }
 @media (max-width: 640px) {
   .tri-item { grid-template-columns: minmax(0, 1fr); }
   .tri-meta { grid-column: 1; }
 }
 
-/* The board changes feed, atop the ops view. */
+/* The board changes feed, in the Changes section. */
 .feed-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; margin: 0 0 4px; }
 .feed-bar .note { flex: 1 1 auto; margin: 0; }
 .feed-bar label { font-size: 13px; color: var(--muted); }
@@ -498,18 +507,16 @@ details.unblocks ul { margin: 6px 0 0; padding-left: 18px; columns: 2 16em; font
 .chip.ch-news { color: var(--sev-note); background: var(--sev-note-soft); border-color: transparent; }
 .chip.ch-lead { color: var(--sev-look); background: var(--sev-look-soft); border-color: transparent; }
 
-/* Narrow screens: fold what isn't the queue itself (the header's
-   controls, the capture bar, the filter chips, the summary) so the
-   first entry shows near the top. The folds are no-ops on wide screens:
-   their toggles are hidden and what they hold shows as before. */
+/* Narrow screens: fold what isn't the lists themselves (the header's
+   controls, the filter chips) so the first entry shows near the top. The
+   folds are no-ops on wide screens: their toggles are hidden and what
+   they hold shows as before. */
 .meta .mp + .mp::before { content: " · "; }
 .menu { display: contents; }
-.menu-toggle, .menu-meta, .capture-open, .filters-toggle { display: none; }
+.menu-toggle, .menu-meta, .filters-toggle { display: none; }
 @media (max-width: 600px) {
   header.top { align-items: center; gap: 4px 10px; }
   header.top h1 { font-size: 18px; }
-  header.top .nav { flex: 1 1 0; min-width: 0; flex-wrap: nowrap; overflow-x: auto; white-space: nowrap; scrollbar-width: none; }
-  header.top .nav::-webkit-scrollbar { display: none; }
   header.top .menu-toggle { display: inline-block; font-size: 16px; line-height: 1; padding: 4px 10px; }
   /* Who and the rate budget move into the menu; how fresh the data is stays. */
   .meta .mp-who, .meta .mp-api { display: none; }
@@ -517,31 +524,20 @@ details.unblocks ul { margin: 6px 0 0; padding-left: 18px; columns: 2 16em; font
   .menu { display: none; position: absolute; top: 100%; right: 0; z-index: 6; flex-direction: column; align-items: stretch; gap: 8px; min-width: 14em; padding: 10px; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 6px 18px rgb(0 0 0 / .25); }
   .menu.open { display: flex; }
   header.top .menu .menu-meta { display: block; order: 0; flex: none; overflow-wrap: anywhere; }
-  .capture-open, .filters-toggle { display: inline-block; justify-self: start; }
-  form.capture.folded > :not(.capture-open, .capture-status) { display: none; }
+  .filters-toggle { display: inline-block; justify-self: start; }
   .filters.folded > .chips { display: none; }
-  .queue-summary { display: none; }
   .group-h { margin-top: 12px; }
-}
-/* No keys to press on a touch screen. */
-@media (hover: none) and (pointer: coarse) {
-  .summary-keys { display: none; }
 }
 /* The board items the queue left out as closed, folded at its end. */
 details.stale-items { margin: 12px 0; font-size: 13px; color: var(--muted); }
 details.stale-items summary { cursor: pointer; }
 details.stale-items ul { margin: 4px 0; padding-left: 18px; }
 
-/* The active agents strip atop the queue: one heading line, a compact
-   row per agent, and the board changes folded into one line. */
-.agents-strip { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 6px 12px 8px; margin: 8px 0 10px; overflow-wrap: anywhere; }
+/* The agents list in its section: a heading line, then a compact row per agent. */
+.agents-body { overflow-wrap: anywhere; }
 .as-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px; }
-.as-head h2 { font: 13px var(--mono); color: var(--muted); text-transform: uppercase; letter-spacing: .05em; margin: 0; }
-.as-count { font: 600 15px var(--mono); font-variant-numeric: tabular-nums; color: var(--ok); }
-.as-count.under { color: var(--p2); }
 .as-lanes, .as-hb { font: 12px var(--mono); color: var(--muted); }
 .as-head .warn { font: 12px var(--mono); color: var(--p1); background: none; border: 0; padding: 0; }
-.as-ops { margin-left: auto; font-size: 13px; }
 .as-list { list-style: none; margin: 4px 0 0; padding: 0; }
 .as-agent { display: grid; grid-template-columns: 7.5em minmax(0, 1fr) auto 3.5em; gap: 0 10px; align-items: baseline; padding: 3px 0; font-size: 14px; border-top: 1px solid var(--line); }
 .as-agent:first-child { border-top: 0; }
@@ -549,13 +545,41 @@ details.stale-items ul { margin: 4px 0; padding-left: 18px; }
 .as-agent .as-who { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .as-agent .age { grid-column: -2; grid-row: 1; font: 12px var(--mono); color: var(--muted); text-align: right; font-variant-numeric: tabular-nums; }
 .as-agent.stale { opacity: .6; }
-.as-feed { margin: 6px 0 0; font-size: 14px; }
-.as-feed summary { cursor: pointer; color: var(--accent); }
-.as-feed .fine { font-size: 12px; color: var(--muted); margin: 4px 0 0; }
 @media (max-width: 640px) {
-  .agents-strip { padding: 6px 10px; }
   .as-agent { grid-template-columns: 6.5em minmax(0, 1fr) auto; }
   .as-agent .as-who { white-space: normal; }
   .as-agent .as-title { display: none; }
   .as-agent > a { grid-column: 2; grid-row: 2; }
 }
+
+/* The one page: collapsible sections, each with a count and a few rows before "View all". */
+[hidden] { display: none !important; }
+.home { display: grid; gap: 12px; padding-top: 12px; }
+details.sec { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; }
+details.sec > summary { cursor: pointer; list-style: none; display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px; padding: 11px 14px; min-height: 44px; }
+details.sec > summary::-webkit-details-marker { display: none; }
+details.sec > summary::before { content: "▸"; color: var(--muted); width: 1em; flex: none; }
+details.sec[open] > summary::before { content: "▾"; }
+details.sec[open] > summary { border-bottom: 1px solid var(--line); }
+.sec-title { font-weight: 600; font-size: 16px; }
+.sec-count { font: 600 12px var(--mono); font-variant-numeric: tabular-nums; padding: 1px 9px; border-radius: 999px; color: var(--muted); background: var(--p3-soft); }
+.sec-count.hot { color: var(--surface); background: var(--accent); }
+.sec-count.under { color: var(--p2); background: var(--p2-soft); }
+.sec-hint { margin-left: auto; font-size: 13px; color: var(--muted); }
+.sec-body { display: grid; gap: 10px; padding: 12px 14px 14px; min-width: 0; }
+.sec-body > div { min-width: 0; }
+.sec-body .empty { padding: 12px 0; }
+.sec-body .filters { margin-top: 0; }
+.view-all { justify-self: start; margin-top: 4px; }
+details.sub-fold { border-top: 1px solid var(--line); padding-top: 8px; font-size: 14px; }
+details.sub-fold > summary { cursor: pointer; color: var(--accent); min-height: 32px; }
+details.sub-fold > div { padding-top: 8px; }
+.ops, .sec-body .triage { padding-top: 0; }
+.news .group-h, .feed .group-h { margin: 8px 0 6px; }
+.news-slot, .feed-slot { margin-top: 4px; }
+@media (max-width: 600px) {
+  .sec-hint { display: none; }
+  details.sec > summary { padding: 10px 12px; }
+  .sec-body { padding: 10px 10px 12px; }
+}
+.capture-row button { white-space: nowrap; }

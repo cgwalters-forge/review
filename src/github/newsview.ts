@@ -1,16 +1,15 @@
-// The news pane: merged PRs, newest first, harness changes marked.
+// The merged PRs in the "Changes" section: newest first, harness changes marked.
 
 import { h, link } from "../dom.ts";
 import type { Renderer } from "../markdown.ts";
 import type { News } from "./news.ts";
 import { age, time } from "./view.ts";
 
-export function newsView(news: News | undefined, render: Renderer, now: number = Date.now()): HTMLElement {
-  const root = h(
-    "main",
-    { class: "news" },
-    h("p", { class: "summary" }, "Merged PRs among the latest closed in the bot, its runner and this app · harness changes marked · u or n back"),
-  );
+/** The class of a merged PR's article, which the section shows a few of before "View all". */
+export const NEWS_ITEM_CLASS = "news-item";
+
+export function newsList(news: News | undefined, render: Renderer, now: number = Date.now()): HTMLElement {
+  const root = h("div", { class: "news" }, h("h3", { class: "group-h" }, "Merged PRs (the bot, its runner and this app; harness changes marked)"));
   if (!news) {
     root.append(h("p", { class: "empty" }, "Loading…"));
     return root;
@@ -21,7 +20,7 @@ export function newsView(news: News | undefined, render: Renderer, now: number =
     root.append(
       h(
         "article",
-        { class: `news-item${n.harness ? " harness" : ""}` },
+        { class: `${NEWS_ITEM_CLASS}${n.harness ? " harness" : ""}` },
         h(
           "div",
           { class: "sub" },

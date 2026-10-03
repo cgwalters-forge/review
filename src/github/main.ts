@@ -1,6 +1,8 @@
-// Entry point: sign-in, routing between the queue, board items and forge
-// PRs, keyboard commands, and polling while the tab is visible.
+// Entry point: sign-in, routing between the one page of sections, board
+// items and forge PRs, keyboard commands, and polling while the tab is
+// visible.
 
+import type { Answer } from "../answer.ts";
 import { h } from "../dom.ts";
 import { createRenderer } from "../markdown.ts";
 import { GitHub, GitHubError } from "./api.ts";
@@ -25,9 +27,6 @@ import {
 } from "./backend.ts";
 import {
   decideAdvance,
-  decisionKey,
-  decisionStops,
-  decisionTitle,
   EDITED_ATTR,
   type Origin,
   overlayVerdicts,
@@ -41,6 +40,7 @@ import { loadSeen, loadUrgentOnly, saveSeen, saveUrgentOnly, type Snapshot, snap
 import { cachedLabel, type CacheSession, forgetCache, openCache } from "./cache.ts";
 import { fileCapture, loadLinkTitle } from "./capture.ts";
 import { type CaptureBar, captureBar, forgetDraft } from "./captureview.ts";
+import { chatPanel } from "./chat.ts";
 import {
   CLASSIC_SCOPES,
   DONE_NOTICE_MS,
@@ -61,12 +61,13 @@ import { composeReviews, type ForgePr, refKey, type ReviewAction, VERDICT_LABEL 
 import type { QueueFilter } from "./filter.ts";
 import { type Command, HELP, keyCommand, parseRoute, type Route, type RouteInfo } from "./keys.ts";
 import { type HarnessCache, loadNews, type News } from "./news.ts";
-import { newsView } from "./newsview.ts";
 import { deleteCacheDatabase, IdbStore } from "./idbstore.ts";
 import type { Active } from "./agents.ts";
-import { agentsStrip, STRIP_CLASS } from "./agentsview.ts";
+import { fillAgents, fillChanges, fillNeeds, fillOps, fillPriority, fillThemes, fillUsage, type Home, type HomeHooks, homeSkeleton, LIMIT_ID, NEED_ROW_SELECTOR, reveal, setSectionOpen } from "./homeview.ts";
+import { buildNeeds, type Need, needStops, waitingCount } from "./needs.ts";
+import { needId, type NeedsHooks } from "./needsview.ts";
 import { type JobCache, loadActive, loadOps, type Ops } from "./ops.ts";
-import { opsView, tickOps } from "./opsview.ts";
+import { tickOps } from "./opsview.ts";
 import { Poller, pollDelay, pollNote } from "./poller.ts";
 import { saveMine } from "./mine.ts";
 import { MINE_CLASS } from "./mineview.ts";
@@ -87,10 +88,10 @@ import {
 } from "./prs.ts";
 import { APPROVE_ACTION, canReview, type PrPane, prView, REVIEW_FORM_CLASS, type ReviewAskInfo } from "./prview.ts";
 import { buildEntries, type Entry, itemHref, onBot, staleItems } from "./queue.ts";
+import { isSection, loadSectionPrefs, type SectionId, type SectionPrefs, saveSectionPref, sectionOpen } from "./sections.ts";
 import { loadAdvance, loadFilter, saveAdvance, saveFilter } from "./store.ts";
-import { buildTriage, type Decision, parseDecision, sortDecisions, triageOrder } from "./triage.ts";
-import { decisionCardId, decisionsView, triageView } from "./triageview.ts";
-import { answerState, type BoardHref, type ContextHooks, CONTEXT_CLASS, contextView, itemView, queueView, ROW_CLASS, ROW_KEY_ATTR, type RowLabel, STATE_LABEL } from "./view.ts";
+import { buildTriage, type Decision, decisionLabel, parseDecision, sortDecisions, triageOrder, type TriageFilter } from "./triage.ts";
+import { age, answerState, type BoardHref, type ContextHooks, CONTEXT_CLASS, contextView, itemView, ROW_CLASS, ROW_HREF_ATTR, ROW_KEY_ATTR, ROW_SECTION_ATTR, type RowLabel, STATE_LABEL } from "./view.ts";
 import { afterReview, ON_BOT_LABEL, REASON_LABEL } from "./waiting.ts";
 
 const render = createRenderer(window);
@@ -128,7 +129,7 @@ interface State {
   poller: Poller;
   /** The ranked queue. */
   entries: Entry[];
-  /** The queue row the keyboard is on. */
+  /** The row the keyboard is on: its section and key (see rowId). */
   selected: string | undefined;
   /** Items answered from this tab, until the bot moves them on. */
   sent: Set<string>;
@@ -156,27 +157,39 @@ interface State {
   shownPr?: { key: string; updatedAt: string; wait: string | undefined };
   /** A note about the open item or PR, e.g. that it changed. */
   itemNote?: string;
-  /** The news pane's last read, and which merged PRs touched the harness. */
+  /** The changes section's merged PRs, as last read, and which of them touched the harness. */
   news?: News;
   harness: HarnessCache;
-  /** The ops view's last read, when it started, and the finished runs' jobs. */
+  /** The ops detail's last read, when it started, and the finished runs' jobs. */
   ops?: Ops;
   opsStarted: number;
   opsRunning: boolean;
-  /** The queue's active agents strip: its last read (or the ops view's), and when it started. */
+  /** What the agents, changes and usage sections show: the board, the heartbeat and the usage as last read (or the ops detail's), and when that started. */
   active?: Active;
   activeStarted: number;
   activeRunning: boolean;
   jobs: JobCache;
-  /** Moves the ops view's live times while it is shown. */
+  /** Moves the ops detail's live times while it is shown. */
   ticker?: ReturnType<typeof setInterval>;
+  /** The page's sections, while it is shown, and which of them he opened or closed. */
+  home?: Home;
+  prefs: SectionPrefs;
+  /** The rows of "Needs you" as last drawn, and a signature of them. */
+  needs: Need[];
+  needsSig?: string;
+  /** Keys of questions answered from the page: kept in the list, dimmed, until a reload. */
+  answeredHere: Set<string>;
+  /** The verdict filter of the themes under "By priority". */
+  triageFilter: TriageFilter;
   /** The open PR's pane, which handles its own keys. */
   pane?: PrPane;
   /** The capture bar, shown to OPERATOR only. */
   capture?: CaptureBar;
   help: boolean;
-  /** The location hash last routed to, to tell which list an entry was opened from. */
+  /** The location hash last routed to. */
   hash: string;
+  /** The section the open entry was opened from: "needs", "priority" or "themes". */
+  openedFrom: "needs" | "priority" | "themes";
   /** The list the open entry was opened from, which an action there moves on in. */
   origin?: Origin;
   /** Whether an action opens the next entry (a setting, on by default). */
@@ -189,12 +202,12 @@ interface State {
   cachedAt?: number;
   /** PR details shown from the cache, by refKey: when they were fetched. */
   prCachedAt: Map<string, number>;
-  /** The news pane shows cached data fetched at this time. */
+  /** The changes section shows cached merged PRs fetched at this time. */
   newsCachedAt?: number;
-  /** The triage view's last read of the open board, and when a cached copy was fetched. */
+  /** The themes' last read of the open board, and when a cached copy was fetched. */
   openBoard?: OpenBoard;
   openBoardCachedAt?: number;
-  /** Themes whose group is open in the triage view. */
+  /** Themes whose group is open under "By priority". */
   triageOpen: Set<string>;
   /** The open decisions, in order, and when a cached copy was fetched. */
   decisions?: Decision[];
@@ -241,13 +254,6 @@ function setNotice(text: string | undefined): void {
 
 const route = (): RouteInfo => parseRoute(window.location.hash);
 
-/** The views besides the queue and what opens from it, each with its header link. */
-const PANES = ["triage", "decisions", "news", "ops"] as const;
-
-function isPane(r: Route): r is (typeof PANES)[number] {
-  return (PANES as readonly string[]).includes(r);
-}
-
 function routeItemId(): string | undefined {
   const r = route();
   return r.route === "item" ? r.id : undefined;
@@ -266,10 +272,6 @@ function message(e: unknown): string {
 function cachedSince(state: State): number | undefined {
   const r = route();
   if (r.route === "pr") return state.prCachedAt.get(refKey(r.ref));
-  if (r.route === "news") return state.newsCachedAt;
-  if (r.route === "ops") return state.ops?.fromCache ? state.ops.at : undefined;
-  if (r.route === "triage") return state.openBoardCachedAt;
-  if (r.route === "decisions") return state.decisionsCachedAt;
   return state.cachedAt;
 }
 
@@ -289,9 +291,9 @@ function renderMeta(state: State): void {
   else if (state.lastPoll) part("mp-age", `checked ${clock(state.lastPoll.getTime())}`);
   // Why it isn't being refreshed as usual, if it isn't. Only the queue's
   // cached copy (also shown behind an item) is re-read by the poll itself;
-  // the panes and PRs have loaders of their own.
+  // PRs have loaders of their own.
   const r = route().route;
-  const note = pollNote(state.poller.status(), Date.now(), POLL_SLOW_MS, since !== undefined && !isPane(r) && r !== "pr");
+  const note = pollNote(state.poller.status(), Date.now(), POLL_SLOW_MS, since !== undefined && r !== "pr");
   if (note) part("mp-note", h("span", { class: "cached", title: "Not refreshing from GitHub as usual" }, note));
   if (api) part("mp-api", api);
   byId("meta").replaceChildren(...parts);
@@ -307,9 +309,7 @@ function renderChrome(state: State): void {
   if (state.closed) return;
   renderMeta(state);
   const r = route().route;
-  for (const pane of PANES) byId(`nav-${pane}`).classList.toggle("on", r === pane);
-  byId("nav-queue").classList.toggle("on", !isPane(r));
-  const warnings = [state.error, state.forgeError, state.tokenWarning, r !== "queue" ? state.itemNote : undefined];
+  const warnings = [state.error, state.forgeError, state.tokenWarning, state.itemNote];
   if (state.login && state.login !== OPERATOR) {
     warnings.push(`You are signed in as ${state.login}; the bot acts only on answers and reviews from ${OPERATOR}.`);
   }
@@ -341,43 +341,165 @@ function boardHref(state: State): BoardHref {
   };
 }
 
+/** A row's identity across sections: the same entry can be listed in "Needs you" and under "By priority". */
+const rowId = (el: Element): string => `${el.getAttribute(ROW_SECTION_ATTR) ?? ""}|${el.getAttribute(ROW_KEY_ATTR) ?? ""}`;
+
+/** The rows the keyboard walks: those in an open section, not hidden by "View all". */
 function rows(): HTMLElement[] {
-  return [...byId("view").querySelectorAll<HTMLElement>(`.${ROW_CLASS}`)];
+  return [...byId("view").querySelectorAll<HTMLElement>(`.${ROW_CLASS}`)].filter((r) => !r.closest("[hidden], details:not([open])"));
 }
 
-/** Mark the selected queue row, defaulting to the first. */
+/** Mark the selected row, defaulting to the first. */
 function markSelected(state: State, scroll: boolean): void {
   const all = rows();
-  const sel = all.find((r) => r.getAttribute(ROW_KEY_ATTR) === state.selected) ?? all[0];
+  const sel = all.find((r) => rowId(r) === state.selected) ?? all[0];
   for (const r of all) {
     r.classList.toggle("sel", r === sel);
     if (r === sel) r.setAttribute("aria-current", "true");
     else r.removeAttribute("aria-current");
   }
-  state.selected = sel?.getAttribute(ROW_KEY_ATTR) ?? undefined;
+  state.selected = sel ? rowId(sel) : undefined;
   if (scroll && sel) {
-    sel.scrollIntoView({ block: "nearest" });
+    sel.scrollIntoView?.({ block: "nearest" });
     sel.focus({ preventScroll: true });
   }
 }
 
-function renderQueue(state: State): void {
+/** The page's section hooks: its default open state, what opening one starts, and what is remembered. */
+function homeHooks(state: State): HomeHooks {
+  return {
+    open: (id) => sectionOpen(id, state.prefs, id === "needs" && waitingCount(state.needs) > 0),
+    toggled: (id, open) => {
+      state.prefs[id] = open;
+      saveSectionPref(id, open);
+      if (open) loadSections(state);
+    },
+    opsToggled: (open) => {
+      if (open) void refreshOps(state);
+      else clearInterval(state.ticker);
+    },
+    themesToggled: (open) => {
+      if (open) void refreshTriage(state);
+    },
+  };
+}
+
+/** The page, built once and kept while it is shown: its sections are filled in place. */
+function mountHome(state: State): Home {
+  if (state.home?.el.isConnected) return state.home;
+  state.home = homeSkeleton(homeHooks(state));
+  showMain(state.home.el);
+  return state.home;
+}
+
+function renderHome(state: State): void {
   // A filter in the hash is chosen, and remembered; a bare # shows the last one.
   const r = route();
-  if (r.route === "queue" && r.filter) {
+  if (r.route === "home" && r.filter) {
     state.filter = r.filter;
     saveFilter(r.filter);
   }
-  const strip = stripOf(state);
-  showMain(queueView(state.entries, labelOf(state), Date.now(), state.filter, { strip, stale: staleItems(state.items, state.entries) }));
+  // Drawn once while the page stays: a redraw of it must not take half-typed answers away.
+  const fresh = !state.home?.el.isConnected;
+  const home = mountHome(state);
+  if (r.route === "home" && r.filter) setSectionOpen(home, "priority", true, true, homeHooks(state));
+  paintNeeds(state, fresh);
+  paintPriority(state);
+  paintActive(state);
+  paintChanges(state);
+  paintOps(state);
+  paintThemes(state);
   markSelected(state, false);
-  if (activeDue(state)) void refreshActive(state);
+  loadSections(state);
+}
+
+/** What the "Needs you" rows act through. */
+function needsHooks(state: State): NeedsHooks {
+  return { login: state.login, now: Date.now(), render, labelOf: labelOf(state), send: (need, answer) => sendNeed(state, need, answer) };
+}
+
+function currentNeeds(state: State): Need[] {
+  return buildNeeds({ entries: state.entries, decisions: state.decisions, decisionsAnswered: state.decisionsAnswered, answeredHere: state.answeredHere });
+}
+
+/** What the rows show, so an unchanged list is not redrawn under his hands. */
+function needsSignature(state: State, needs: readonly Need[]): string {
+  const label = labelOf(state);
+  return JSON.stringify([
+    state.login,
+    needs.map((n) => [n.key, n.action, n.title, n.priority, n.done === true, n.parent?.key, n.decision?.item.nodeId, n.decision?.item.body, n.entry?.item?.body, n.entry ? label(n.entry)?.text : undefined]),
+  ]);
+}
+
+/** Whether he has started answering in the "Needs you" rows: a pick or a note not sent yet. */
+function needsDraft(state: State): boolean {
+  const slot = state.home?.slots.needs;
+  if (!slot) return false;
+  const typed = [...slot.querySelectorAll<HTMLTextAreaElement>("form.answer:not([data-sent]) textarea")].some((t) => t.value.trim() !== "");
+  return typed || slot.querySelector("form.answer:not([data-sent]) input[type=radio]:checked") !== null;
+}
+
+const NEEDS_CHANGED_NOTE = "What waits on you changed; press r to reload it (unsent picks and notes are lost).";
+
+/**
+ * Redraw "Needs you" if what it lists changed. With an answer half
+ * written, only say so, unless `force` (he asked to reload, or the page
+ * is being drawn).
+ */
+function paintNeeds(state: State, force = false): void {
+  const home = state.home;
+  if (!home || state.closed) return;
+  const needs = currentNeeds(state);
+  const sig = needsSignature(state, needs);
+  if (!force && sig === state.needsSig) return;
+  if (!force && needsDraft(state)) {
+    state.itemNote = NEEDS_CHANGED_NOTE;
+    renderChrome(state);
+    return;
+  }
+  if (state.itemNote === NEEDS_CHANGED_NOTE) delete state.itemNote;
+  state.needs = needs;
+  state.needsSig = sig;
+  // A redraw keeps him on the row he is on (e.g. the one he moved on to).
+  const on = document.activeElement?.closest(".need")?.id;
+  const waiting = fillNeeds(home, needs, needsHooks(state));
+  // Unless he chose, "Needs you" is open exactly while something waits on him.
+  if (state.prefs.needs === undefined) setSectionOpen(home, "needs", waiting > 0, false, homeHooks(state));
+  if (on) document.getElementById(on)?.focus({ preventScroll: true });
+  markSelected(state, false);
+  renderChrome(state);
+}
+
+function paintPriority(state: State): void {
+  if (!state.home) return;
+  fillPriority(state.home, state.entries, labelOf(state), Date.now(), state.filter, { stale: staleItems(state.items, state.entries) });
+  markSelected(state, false);
+}
+
+/** Where the themes under "By priority" open an item in the app: only one in the queue; others open on GitHub. */
+function triageItemHref(state: State, item: Item): string | undefined {
+  return state.items.some((i) => i.nodeId === item.nodeId) ? itemHref(item) : undefined;
+}
+
+function paintThemes(state: State): void {
+  if (!state.home) return;
+  fillThemes(state.home, state.openBoard, state.triageFilter, {
+    itemHref: (item) => triageItemHref(state, item),
+    open: state.triageOpen,
+    toggled: (theme, open) => {
+      if (open) state.triageOpen.add(theme);
+      else state.triageOpen.delete(theme);
+    },
+    setFilter: (f) => {
+      state.triageFilter = f;
+      paintThemes(state);
+    },
+  });
 }
 
 /**
  * The changes feed's snapshot. The first time the board is read (not
- * from the cache), by the ops view or the queue's strip, it becomes
- * what the feed starts from.
+ * from the cache), it becomes what the feed starts from.
  */
 function feedSeen(board: readonly Item[] | undefined, at: number, fromCache: boolean | undefined): Snapshot | undefined {
   let seen = loadSeen();
@@ -388,25 +510,77 @@ function feedSeen(board: readonly Item[] | undefined, at: number, fromCache: boo
   return seen;
 }
 
-function stripOf(state: State): HTMLElement {
+function paintActive(state: State): void {
+  if (!state.home) return;
+  fillAgents(state.home, state.active, Date.now());
+  fillUsage(state.home, state.active?.usage, state.active?.local, Date.now());
+}
+
+function paintChanges(state: State): void {
+  if (!state.home) return;
   const a = state.active;
-  return agentsStrip(a, feedSeen(a?.board, a?.at ?? Date.now(), a?.fromCache), Date.now());
+  fillChanges(
+    state.home,
+    {
+      board: a?.board,
+      seen: feedSeen(a?.board, a?.at ?? Date.now(), a?.fromCache),
+      fromCache: a?.fromCache === true,
+      news: state.news,
+      feed: {
+        urgentOnly: loadUrgentOnly(),
+        onUrgentOnly: (on) => {
+          saveUrgentOnly(on);
+          paintChanges(state);
+        },
+        onSeen: () => {
+          if (state.active?.board) saveSeen(snapshotOf(state.active.board, state.active.at));
+          paintChanges(state);
+        },
+      },
+    },
+    render,
+    Date.now(),
+  );
+}
+
+function paintOps(state: State): void {
+  if (!state.home) return;
+  const el = fillOps(state.home, state.ops, Date.now());
+  clearInterval(state.ticker);
+  if (state.home.slots.opsBox.open) {
+    state.ticker = setInterval(() => {
+      if (!document.hidden) tickOps(el, Date.now());
+    }, 1000);
+  }
+}
+
+function sectionOpenNow(state: State, id: SectionId): boolean {
+  return state.home?.sections[id].details.open === true;
 }
 
 function activeDue(state: State): boolean {
   return !state.activeRunning && Date.now() - state.activeStarted >= OPS_POLL_INTERVAL_MS;
 }
 
-/** Put a fresh strip in place of the queue's, without re-rendering the queue under it. */
-function showStrip(state: State): void {
-  if (state.closed || route().route !== "queue") return;
-  document.querySelector(`.${STRIP_CLASS}`)?.replaceWith(stripOf(state));
+/**
+ * Start the reads the open sections show: the agents' and usage's
+ * (always, they are cheap and fill their counts), the merged PRs while
+ * the changes are open, the ops detail and the themes while their folds
+ * are, and the decisions, which are rows of "Needs you".
+ */
+function loadSections(state: State): void {
+  if (state.closed || !state.loaded || route().route !== "home" || !state.home) return;
+  if (activeDue(state)) void refreshActive(state);
+  if (sectionOpenNow(state, "changes") && !state.news) void refreshNews(state);
+  if (state.home.slots.opsBox.open && opsDue(state)) void refreshOps(state);
+  if (state.home.slots.themesBox.open && !state.openBoard) void refreshTriage(state);
+  if (!state.decisions) void refreshDecisions(state);
 }
 
 /**
- * Re-read the strip's board and heartbeat (as often as the ops view, and
- * only while the queue shows). The first time, what the cache has shows
- * first, as the ops view does.
+ * Re-read the board, heartbeat and usage, as often as the ops detail,
+ * and only while the page shows. The first time, what the cache has
+ * shows first.
  */
 async function refreshActive(state: State): Promise<void> {
   if (state.activeRunning) return;
@@ -416,15 +590,17 @@ async function refreshActive(state: State): Promise<void> {
     if (!state.active) {
       const cached = state.gh.cacheOnly();
       const active = await loadActive(cached);
-      if (!state.active && (active.board || active.local !== undefined)) {
+      if (!state.active && (active.board || active.local !== undefined || active.usage)) {
         active.at = cached.oldest ?? active.at;
         active.fromCache = true;
         state.active = active;
-        showStrip(state);
+        paintActive(state);
+        paintChanges(state);
       }
     }
     state.active = await loadActive(state.gh);
-    showStrip(state);
+    paintActive(state);
+    paintChanges(state);
   } finally {
     state.activeRunning = false;
   }
@@ -450,30 +626,14 @@ function renderRoute(state: State): void {
     renderPr(state, r.ref);
     return;
   }
-  if (r.route === "news") {
-    showMain(newsView(state.news, render));
-    if (!state.news) void refreshNews(state);
-    return;
-  }
-  if (r.route === "ops") {
-    showOps(state);
-    if (opsDue(state)) void refreshOps(state);
-    return;
-  }
-  if (r.route === "triage") {
-    showTriage(state);
-    if (!state.openBoard) void refreshTriage(state);
-    return;
-  }
-  if (r.route === "decisions") {
-    showDecisions(state);
-    if (!state.decisions) void refreshDecisions(state);
+  if (r.route === "home") {
+    renderHome(state);
     return;
   }
   const item = r.route === "item" ? state.items.find((i) => i.nodeId === r.id) : undefined;
   if (!item) {
     if (r.route === "item") setNotice("That item no longer needs you (or isn't on the board).");
-    renderQueue(state);
+    renderHome(state);
     return;
   }
   const ctx = state.context.get(item.nodeId);
@@ -568,7 +728,7 @@ function renderPr(state: State, ref: { owner: string; repo: string; number: numb
   const key = refKey(ref);
   const detail = state.details.get(key);
   if (!detail) {
-    showMain(h("main", { class: "item" }, h("a", { href: "#", class: "back" }, "← Queue (u)"), h("p", { class: "empty" }, `Loading ${key}…`)));
+    showMain(h("main", { class: "item" }, h("a", { href: "#", class: "back" }, "← Back (u)"), h("p", { class: "empty" }, `Loading ${key}…`)));
     void loadPr(state, ref, true);
     return;
   }
@@ -711,14 +871,14 @@ interface Done {
   stillWaiting?: boolean;
   /** The list to step through, when not the one the entry was opened from (a view acting in place). */
   origin?: Origin;
-  /** Move on by focusing the next stop, by key, on the same page instead of changing the hash. */
+  /** Move on to a next stop that is answered in place by focusing it, by key, instead of changing the hash. */
   focus?: (key: string) => void;
 }
 
-/** "" and "#" are both the bare queue. */
+/** "" and "#" are both the bare page. */
 const sameHash = (a: string, b: string) => a.replace(/^#$/, "") === b.replace(/^#$/, "");
 
-/** The queue, as the list an entry was opened from. */
+/** The "By priority" list, as the list an entry was opened from. */
 function queueOrigin(state: State, hash: string): Origin {
   const filter = state.filter;
   return { hash, stops: queueStops(state.entries, filter), live: () => queueStops(state.entries, filter) };
@@ -730,7 +890,8 @@ function queueOrigin(state: State, hash: string): Origin {
  * board and the forge now rather than at the next poll, and move on to
  * the next entry of the list he came from, if the setting is on, the
  * entry no longer waits on him, he is still on its view and he isn't
- * writing something else there.
+ * writing something else there. The list is "Needs you" unless he opened
+ * the entry from "By priority" or the themes under it.
  */
 function acted(state: State, done: Done): void {
   if (state.closed) return;
@@ -738,7 +899,7 @@ function acted(state: State, done: Done): void {
   // Its own effect isn't news to the page it was done on.
   if (state.shownPr && done.key === `pr:${state.shownPr.key}`) state.shownPr.wait = JSON.stringify(prEntry(state, state.shownPr.key)?.wait);
   refreshSoon(state);
-  const origin = done.origin ?? state.origin ?? queueOrigin(state, "#");
+  const origin = done.origin ?? state.origin ?? needsOrigin(state, "#");
   const live = origin.live();
   const next = pickNext(origin.stops, done.key, live);
   const decision = decideAdvance(
@@ -753,7 +914,7 @@ function acted(state: State, done: Done): void {
   );
   switch (decision.kind) {
     case "go":
-      if (done.focus) {
+      if (done.focus && decision.to.inPlace) {
         showDone(state, `Done: ${done.title} → ${decision.to.title}`);
         done.focus(decision.to.key);
       } else moveOn(state, decision.to.href, `Done: ${done.title} → ${decision.to.title}`, done.hash);
@@ -832,7 +993,7 @@ async function loadPr(state: State, ref: { owner: string; repo: string; number: 
       h(
         "main",
         { class: "item" },
-        h("a", { href: "#", class: "back" }, "← Queue (u)"),
+        h("a", { href: "#", class: "back" }, "← Back (u)"),
         h("p", { class: "warn" }, `Couldn't load ${key}: ${message(e)}. Press r to retry.`),
       ),
     );
@@ -857,8 +1018,9 @@ async function refreshContext(state: State, item: Item): Promise<void> {
 }
 
 /**
- * Re-read the news (conditionally), and show it if the pane is open and
- * it changed. The first time, a complete cached copy shows first.
+ * Re-read the merged PRs (conditionally), and show them if the changes
+ * section is on the page and they changed. The first time, a complete
+ * cached copy shows first.
  */
 async function refreshNews(state: State): Promise<void> {
   if (!state.news) {
@@ -868,10 +1030,8 @@ async function refreshNews(state: State): Promise<void> {
     if (news && !news.warnings.length && !state.news) {
       state.news = news;
       state.newsCachedAt = cached.oldest ?? Date.now();
-      if (route().route === "news") {
-        showMain(newsView(news, render));
-        renderChrome(state);
-      }
+      paintChanges(state);
+      renderChrome(state);
     }
   }
   try {
@@ -879,51 +1039,28 @@ async function refreshNews(state: State): Promise<void> {
     const first = !state.news;
     delete state.newsCachedAt;
     state.news = news;
-    if ((news.changed || first) && route().route === "news") showMain(newsView(news, render));
+    if (news.changed || first) paintChanges(state);
     renderChrome(state);
   } catch (e) {
-    state.error = `Couldn't read the news: ${message(e)}`;
+    state.error = `Couldn't read the merged PRs: ${message(e)}`;
     renderChrome(state);
   }
 }
 
-/** Where the triage view opens an item in the app: only one in the queue; others open on GitHub. */
-function triageItemHref(state: State, item: Item): string | undefined {
-  return state.items.some((i) => i.nodeId === item.nodeId) ? itemHref(item) : undefined;
-}
-
-function showTriage(state: State): void {
-  const r = route();
-  const filter = r.route === "triage" ? r.filter : "all";
-  showMain(
-    triageView(state.openBoard, filter, {
-      itemHref: (item) => triageItemHref(state, item),
-      open: state.triageOpen,
-      toggled: (theme, open) => {
-        if (open) state.triageOpen.add(theme);
-        else state.triageOpen.delete(theme);
-      },
-    }),
-  );
-}
-
 /**
- * Re-read every open board item (conditionally), and show them if the
- * triage view is open and they changed. The first time, a cached copy
- * shows first.
+ * Re-read every open board item (conditionally) for the themes under
+ * "By priority", and show them if they changed. The first time, a
+ * cached copy shows first.
  */
 async function refreshTriage(state: State): Promise<void> {
-  const shown = () => route().route === "triage";
   if (!state.openBoard) {
     const cached = state.gh.cacheOnly();
     const board = await loadOpenBoard(cached).catch(() => undefined);
     if (board && !state.openBoard) {
       state.openBoard = board;
       state.openBoardCachedAt = cached.oldest ?? Date.now();
-      if (shown()) {
-        showTriage(state);
-        renderChrome(state);
-      }
+      paintThemes(state);
+      renderChrome(state);
     }
   }
   try {
@@ -931,75 +1068,67 @@ async function refreshTriage(state: State): Promise<void> {
     const redraw = board.changed || state.openBoardCachedAt !== undefined || !state.openBoard;
     delete state.openBoardCachedAt;
     state.openBoard = board;
-    if (redraw && shown()) showTriage(state);
+    if (redraw) paintThemes(state);
     renderChrome(state);
   } catch (e) {
-    state.error = `Couldn't read the board for triage: ${message(e)}`;
+    state.error = `Couldn't read the board for the themes: ${message(e)}`;
     renderChrome(state);
   }
 }
 
-/** Whether he has started answering on the decisions view: a pick or a note not sent yet. */
-function decisionDraft(): boolean {
-  const view = byId("view");
-  const typed = [...view.querySelectorAll<HTMLTextAreaElement>("form.answer:not([data-sent]) textarea")].some((t) => t.value.trim() !== "");
-  const picked = view.querySelector("form.answer:not([data-sent]) input[type=radio]:checked") !== null;
-  return typed || picked;
+/**
+ * Answer a row of "Needs you" in place: post the comment as him, mark
+ * the row done until the page reloads, and move on to the next row.
+ */
+async function sendNeed(state: State, need: Need, answer: Answer): Promise<string> {
+  const item = need.decision?.item ?? need.entry?.item;
+  if (!item?.ref) throw new Error("this question has no issue to answer on");
+  const hash = window.location.hash;
+  const posted = await postAnswer(state.gh, item.ref, answer);
+  // The next read confirms it: his comment is now after the bot's last.
+  if (need.entry?.item) {
+    state.sent.add(need.entry.item.nodeId);
+    state.context.delete(need.entry.item.nodeId);
+  }
+  if (need.decision) state.decisionsAnswered.add(need.decision.item.nodeId);
+  state.answeredHere.add(need.key);
+  const title = need.decision ? `${decisionLabel(need.decision)}: ${need.title}` : need.title;
+  acted(state, {
+    key: need.key,
+    title,
+    hash,
+    from: document.getElementById(needId(need))?.querySelector("form.answer") ?? null,
+    origin: needsOrigin(state, hash),
+    focus: (key) => focusRow(state, "needs", key),
+  });
+  return posted.url;
 }
 
-function showDecisions(state: State): void {
-  // A redraw keeps him on the card he is on (e.g. the one he moved on to).
-  const on = document.activeElement?.closest("article.decision")?.id;
-  showMain(
-    decisionsView(
-      state.decisions,
-      {
-        ...(state.login ? { login: state.login } : {}),
-        answered: state.decisionsAnswered,
-        send: async (d, answer) => {
-          if (!d.item.ref) throw new Error("this decision has no issue");
-          const hash = window.location.hash;
-          const posted = await postAnswer(state.gh, d.item.ref, answer);
-          // The next read confirms it: his comment is now after the bot's last.
-          state.decisionsAnswered.add(d.item.nodeId);
-          // Moving on here is focusing the next card: the view answers in place.
-          acted(state, {
-            key: decisionKey(d),
-            title: decisionTitle(d),
-            hash,
-            from: document.getElementById(decisionCardId(d))?.querySelector("form.answer") ?? null,
-            origin: decisionsOrigin(state, hash),
-            focus: (key) => focusDecision(state, key),
-          });
-          return posted.url;
-        },
-      },
-      render,
-    ),
-  );
-  if (on) document.getElementById(on)?.focus({ preventScroll: true });
+/** Move to the row of `section` with stop key `key`, opening "View all" if it is hidden. */
+function focusRow(state: State, section: string, key: string): void {
+  const row = allRows().find((r) => r.getAttribute(ROW_SECTION_ATTR) === section && r.getAttribute(ROW_KEY_ATTR) === key);
+  if (!row || !state.home) return;
+  reveal(row, state.home.slots.needs, LIMIT_ID.needs, NEED_ROW_SELECTOR);
+  row.scrollIntoView?.({ block: "start" });
+  // The row, not a field in it: the single-key shortcuts keep working.
+  row.focus({ preventScroll: true });
+  state.selected = rowId(row);
+  markSelected(state, false);
 }
 
-/** The decisions view as a list to step through, in place. */
-function decisionsOrigin(state: State, hash: string): Origin {
-  const stops = () => decisionStops(state.decisions ?? [], state.decisionsAnswered, hash);
-  return { hash, stops: stops(), live: stops };
+/** Every row on the page, shown or not. */
+function allRows(): HTMLElement[] {
+  return [...byId("view").querySelectorAll<HTMLElement>(`.${ROW_CLASS}`)];
 }
 
-/** Move to the decision card with stop key `key`. */
-function focusDecision(state: State, key: string): void {
-  const d = state.decisions?.find((x) => decisionKey(x) === key);
-  const card = d && document.getElementById(decisionCardId(d));
-  if (!card) return;
-  card.scrollIntoView?.({ block: "start" });
-  // The card, not a field in it: the single-key shortcuts keep working.
-  card.focus({ preventScroll: true });
+/** "Needs you" as a list to step through: questions are answered in place, the rest open. */
+function needsOrigin(state: State, hash: string): Origin {
+  return { hash, stops: needStops(state.needs), live: () => needStops(currentNeeds(state)) };
 }
 
-/** The triage view as a list to step through: its rows that open in the app, in its order. */
-function triageOrigin(state: State, hash: string): Origin {
-  const r = parseRoute(hash);
-  const filter = r.route === "triage" ? r.filter : "all";
+/** The themes under "By priority" as a list to step through: their rows that open in the app, in their order. */
+function themesOrigin(state: State, hash: string): Origin {
+  const filter = state.triageFilter;
   const stops = () =>
     triageStops(state.openBoard ? triageOrder(buildTriage(state.openBoard.items, filter)) : [], state.entries, {
       opens: (i) => triageItemHref(state, i),
@@ -1009,19 +1138,11 @@ function triageOrigin(state: State, hash: string): Origin {
 }
 
 /**
- * Re-read the open decisions and which he answered, and show them if the
- * view is open and they changed; with an answer half written, only say
- * so, unless `force` (he asked to reload).
+ * Re-read the open decisions and which he answered, and show them among
+ * the rows of "Needs you" if they changed; with an answer half written,
+ * only say so, unless `force` (he asked to reload).
  */
 async function refreshDecisions(state: State, force = false): Promise<void> {
-  const shown = () => route().route === "decisions";
-  const show = () => {
-    if (!shown()) return;
-    delete state.itemNote;
-    if (!force && decisionDraft()) state.itemNote = "The decisions changed on GitHub; press r to reload them (unsent picks and notes are lost).";
-    else showDecisions(state);
-    renderChrome(state);
-  };
   const read = async (gh: GitHub) => {
     const q = await loadDecisions(gh);
     const answered = await loadAnswered(gh, q.items);
@@ -1034,44 +1155,19 @@ async function refreshDecisions(state: State, force = false): Promise<void> {
       state.decisions = r.decisions;
       state.decisionsAnswered = r.answered;
       state.decisionsCachedAt = cached.oldest ?? Date.now();
-      show();
+      paintNeeds(state);
     }
   }
   try {
     const r = await read(state.gh);
-    const sig = (d: readonly Decision[] | undefined, a: ReadonlySet<string>) => JSON.stringify([d?.map((x) => [x.item.nodeId, x.item.title, x.item.body]), [...a].sort()]);
-    const changed = !state.decisions || state.decisionsCachedAt !== undefined || sig(r.decisions, r.answered) !== sig(state.decisions, state.decisionsAnswered);
     delete state.decisionsCachedAt;
     state.decisions = r.decisions;
     state.decisionsAnswered = r.answered;
-    if (changed || force) show();
-    else renderChrome(state);
+    paintNeeds(state, force);
   } catch (e) {
     state.error = `Couldn't read the decisions: ${message(e)}`;
     renderChrome(state);
   }
-}
-
-function showOps(state: State): void {
-  const ops = state.ops;
-  const seen = ops ? feedSeen(ops.board, ops.at, ops.fromCache) : loadSeen();
-  const view = opsView(ops, Date.now(), {
-    seen,
-    urgentOnly: loadUrgentOnly(),
-    onUrgentOnly: (on) => {
-      saveUrgentOnly(on);
-      showOps(state);
-    },
-    onSeen: () => {
-      if (state.ops?.board) saveSeen(snapshotOf(state.ops.board, state.ops.at));
-      showOps(state);
-    },
-  });
-  showMain(view);
-  clearInterval(state.ticker);
-  state.ticker = setInterval(() => {
-    if (!document.hidden) tickOps(view, Date.now());
-  }, 1000);
 }
 
 function opsDue(state: State): boolean {
@@ -1079,8 +1175,8 @@ function opsDue(state: State): boolean {
 }
 
 /**
- * Re-read the ops view's data, and show it if the view is still open.
- * The first time, what the cache has shows first, marked as cached:
+ * Re-read the ops detail's data, and show it if its fold is open. The
+ * first time, what the cache has shows first, marked as cached:
  * sections it lacks say so rather than warn.
  */
 async function refreshOps(state: State): Promise<void> {
@@ -1095,23 +1191,19 @@ async function refreshOps(state: State): Promise<void> {
         ops.at = cached.oldest ?? ops.at;
         ops.fromCache = true;
         state.ops = ops;
-        if (route().route === "ops") {
-          showOps(state);
-          renderChrome(state);
-        }
+        paintOps(state);
       }
     }
     state.ops = await loadOps(state.gh, state.jobs);
-    // The same reads serve the queue's strip, so it needn't repeat them.
-    const { board, local, at } = state.ops;
-    if (board || local !== undefined) {
-      state.active = { warnings: [], at, ...(board ? { board } : {}), ...(local !== undefined ? { local } : {}) };
+    // The same reads serve the agents, changes and usage sections, so they needn't repeat them.
+    const { board, local, usage, at } = state.ops;
+    if (board || local !== undefined || usage) {
+      state.active = { warnings: [], at, ...(board ? { board } : {}), ...(local !== undefined ? { local } : {}), ...(usage ? { usage } : {}) };
       state.activeStarted = Date.now();
     }
-    if (route().route === "ops") {
-      showOps(state);
-      renderChrome(state);
-    }
+    paintOps(state);
+    paintActive(state);
+    paintChanges(state);
   } finally {
     state.opsRunning = false;
   }
@@ -1265,17 +1357,22 @@ function rebuildEntries(state: State): void {
 
 /**
  * Rebuild the queue after new data, and refresh the view without losing
- * a half-typed answer or review: only the queue is re-rendered; an open
- * item or PR just gets a note if it changed underneath.
+ * a half-typed answer or review: only the page's lists are redrawn, and
+ * "Needs you" not at all while he is writing in it; an open item or PR
+ * just gets a note if it changed underneath.
  */
 function update(state: State, boardChanged: boolean, first: boolean): void {
   if (state.closed) return;
   rebuildEntries(state);
   const r = route();
-  if (isPane(r.route)) {
-    renderChrome(state);
-  } else if (first || r.route === "queue") {
+  if (first) {
     renderRoute(state);
+  } else if (r.route === "home") {
+    // The page stays as it is; only the lists that follow the queue are redrawn.
+    if (state.home?.el.isConnected) {
+      paintNeeds(state);
+      paintPriority(state);
+    } else renderRoute(state);
   } else if (r.route === "item") {
     const item = state.items.find((i) => i.nodeId === r.id);
     if (!item) state.itemNote = "This item no longer needs you; the bot may have acted on it.";
@@ -1298,17 +1395,23 @@ function update(state: State, boardChanged: boolean, first: boolean): void {
   }
 }
 
+/** What the poll re-reads for the page: the open sections' data, and the decisions. */
+function pollSections(state: State): void {
+  if (route().route !== "home" || !state.home || !state.loaded) return;
+  if (activeDue(state)) void refreshActive(state);
+  if (sectionOpenNow(state, "changes")) void refreshNews(state);
+  if (state.home.slots.opsBox.open && opsDue(state)) void refreshOps(state);
+  if (state.home.slots.themesBox.open) void refreshTriage(state);
+  void refreshDecisions(state);
+}
+
 /**
  * One poll; state.poller runs them one at a time and schedules the next.
  * One it gave up on (no longer `current`) drops what it reads late.
  */
 async function poll(state: State, current: () => boolean): Promise<void> {
   if (state.closed) return;
-  if (route().route === "news") void refreshNews(state);
-  if (route().route === "ops" && opsDue(state)) void refreshOps(state);
-  if (route().route === "queue" && activeDue(state)) void refreshActive(state);
-  if (route().route === "triage") void refreshTriage(state);
-  if (route().route === "decisions") void refreshDecisions(state);
+  pollSections(state);
   // The board and the forge load side by side; whichever answers first shows first.
   const forge = pollForge(state);
   try {
@@ -1379,31 +1482,21 @@ function run(state: State, cmd: Command, where: Route): void {
     case "prev": {
       const step = cmd === "next" ? 1 : -1;
       const all = rows();
-      const i = all.findIndex((r) => r.getAttribute(ROW_KEY_ATTR) === state.selected);
+      const i = all.findIndex((r) => rowId(r) === state.selected);
       const next = all[Math.max(0, Math.min(all.length - 1, i + step))];
-      state.selected = next?.getAttribute(ROW_KEY_ATTR) ?? undefined;
+      state.selected = next ? rowId(next) : undefined;
       markSelected(state, true);
       return;
     }
     case "open": {
       const sel = rows().find((r) => r.classList.contains("sel"));
-      if (sel) window.location.hash = sel.getAttribute("href") ?? "#";
+      if (!sel) return;
+      state.openedFrom = openedFrom(sel);
+      window.location.hash = sel.getAttribute("href") ?? sel.getAttribute(ROW_HREF_ATTR) ?? "#";
       return;
     }
     case "back":
       window.location.hash = "#";
-      return;
-    case "news":
-      window.location.hash = "#news";
-      return;
-    case "ops":
-      window.location.hash = "#ops";
-      return;
-    case "triage":
-      window.location.hash = "#triage";
-      return;
-    case "decisions":
-      window.location.hash = "#decisions";
       return;
     case "refresh": {
       const r = route();
@@ -1411,25 +1504,17 @@ function run(state: State, cmd: Command, where: Route): void {
         void loadPr(state, r.ref);
         return;
       }
-      if (r.route === "news") {
-        void refreshNews(state);
-        return;
-      }
-      if (r.route === "ops") {
-        void refreshOps(state);
-        return;
-      }
-      if (r.route === "triage") {
-        void refreshTriage(state);
-        return;
-      }
-      if (r.route === "decisions") {
-        // A reload on request drops unsent picks, as the note warned.
+      if (r.route === "home") {
+        // The sections' data is re-read too, now rather than when due; a reload on request drops unsent picks, as the note warned.
+        state.activeStarted = 0;
+        state.opsStarted = 0;
         void refreshDecisions(state, true);
-        return;
+        if (sectionOpenNow(state, "changes")) void refreshNews(state);
+        if (state.home?.slots.themesBox.open) void refreshTriage(state);
+        paintNeeds(state, true);
+        void refreshActive(state);
+        if (state.home?.slots.opsBox.open) void refreshOps(state);
       }
-      // The queue's strip is re-read too, now rather than when due.
-      if (r.route === "queue") state.activeStarted = 0;
       refreshSoon(state);
       return;
     }
@@ -1448,7 +1533,37 @@ function run(state: State, cmd: Command, where: Route): void {
     case "capture":
       state.capture?.focus();
       return;
+    default:
+      if (cmd.startsWith("section:")) jumpTo(state, cmd.slice("section:".length));
   }
+}
+
+/** Open a section and scroll to it, as the section keys do; remembered like any opening. */
+function jumpTo(state: State, id: string): void {
+  if (!isSection(id) || !state.home) return;
+  setSectionOpen(state.home, id, true, true, homeHooks(state));
+  loadSections(state);
+  state.home.sections[id].details.scrollIntoView?.({ block: "start" });
+  // The first row of it, so j/k go on from there.
+  const first = state.home.sections[id].details.querySelector<HTMLElement>(`.${ROW_CLASS}`);
+  if (first) {
+    state.selected = rowId(first);
+    markSelected(state, false);
+  }
+}
+
+/** The list a row belongs to, for where "next" goes after acting on what it opens. */
+function openedFrom(el: Element): State["openedFrom"] {
+  if (el.closest(".themes-fold")) return "themes";
+  return el.closest(`[${ROW_SECTION_ATTR}="priority"]`) ? "priority" : "needs";
+}
+
+/** Remember which list a link to an item or PR is in, so acting on it moves on in that list. */
+function installOpenedFrom(state: State): void {
+  byId("view").addEventListener("click", (ev) => {
+    const a = ev.target instanceof Element ? ev.target.closest("a[href^='#item/'], a[href^='#pr/']") : null;
+    if (a) state.openedFrom = openedFrom(a);
+  });
 }
 
 function installKeys(state: State): void {
@@ -1581,6 +1696,11 @@ async function start(source: TokenSource): Promise<void> {
     hash: window.location.hash,
     advance: loadAdvance(),
     selected: undefined,
+    openedFrom: "needs",
+    prefs: loadSectionPrefs(),
+    needs: [],
+    answeredHere: new Set(),
+    triageFilter: "all",
     harness: new Map(),
     opsStarted: 0,
     opsRunning: false,
@@ -1612,7 +1732,6 @@ async function start(source: TokenSource): Promise<void> {
     state.tokenWarning = `This token lacks the ${lacking.map((n) => n.any.join(" or ")).join(", ")} scope${lacking.length > 1 ? "s" : ""}; some reads or answers will fail.`;
   }
   byId("signout").hidden = false;
-  byId("nav").hidden = false;
   if (state.login === OPERATOR) showCapture(state);
   byId("signout").onclick = () => {
     state.closed = true;
@@ -1626,21 +1745,24 @@ async function start(source: TokenSource): Promise<void> {
     state.hash = window.location.hash;
     if (state.doneAt === undefined || !sameHash(state.hash, state.doneAt)) hideDone(state);
     else delete state.doneAt;
-    // An entry opened from the queue: an action on it moves on in the queue's order.
+    // An entry opened from a list of the page: an action on it moves on in
+    // that list's order. From anywhere else (a link), no list of his:
+    // acted() then follows "Needs you". Moving between entries keeps the list.
     const to = route().route;
-    // From anywhere else (news, ops, a link), no list of his: acted() then
-    // follows the queue's order. Moving between entries keeps the list.
+    const came = parseRoute(from).route;
     if (to === "item" || to === "pr") {
-      const came = parseRoute(from).route;
-      if (came === "queue") state.origin = queueOrigin(state, from || "#");
-      else if (came === "triage") state.origin = triageOrigin(state, from);
-      else if (came !== "item" && came !== "pr") delete state.origin;
+      if (came === "home") {
+        state.origin =
+          state.openedFrom === "themes" ? themesOrigin(state, "#") : state.openedFrom === "priority" ? queueOrigin(state, "#") : needsOrigin(state, "#");
+      } else if (came !== "item" && came !== "pr") delete state.origin;
     }
     renderRoute(state);
-    if (route().route === "queue") markSelected(state, true);
-    else window.scrollTo(0, 0);
+    // Back on the page from an entry, he is on the row he left; picking a filter leaves him where he is.
+    if (to === "home" && came !== "home") markSelected(state, true);
+    else if (to !== "home") window.scrollTo(0, 0);
   });
   installKeys(state);
+  installOpenedFrom(state);
   installAdvance(state);
   // Mobile Safari suspends a page in the background, often without a
   // visibilitychange on return; any of these may be the first sign of it.
@@ -1649,7 +1771,11 @@ async function start(source: TokenSource): Promise<void> {
   for (const ev of ["pageshow", "focus"]) window.addEventListener(ev, () => state.poller.wake(frozenSince(state)));
   state.metaTicker = setInterval(() => {
     state.tickedAt = Date.now();
-    if (state.loaded && !document.hidden) renderChrome(state);
+    if (state.loaded && !document.hidden) {
+      renderChrome(state);
+      // Waiting ages move on without a redraw of the rows.
+      for (const el of document.querySelectorAll<HTMLElement>(".need .age[data-since]")) el.textContent = age(el.dataset.since, Date.now());
+    }
   }, META_TICK_MS);
   await cached;
   if (state.loaded) renderChrome(state);
@@ -1680,6 +1806,12 @@ function showCapture(state: State): void {
   const slot = byId("capture");
   slot.replaceChildren(state.capture.el);
   slot.hidden = false;
+  const chat = chatPanel();
+  if (chat) {
+    const chatSlot = byId("chat");
+    chat.mount(chatSlot);
+    chatSlot.hidden = false;
+  }
 }
 
 function scopeList(): HTMLElement {

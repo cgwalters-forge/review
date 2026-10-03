@@ -210,8 +210,6 @@ export const OPS_EVENTS_SHOWN = 20;
  * agents strip atop the queue shows the count against it.
  */
 export const AGENT_TARGET = 4;
-/** Board changes the strip shows before pointing at the ops view for the rest. */
-export const AGENT_FEED_PREVIEW = 3;
 
 /** localStorage key for the chosen theme (auto, light, dark). */
 export const THEME_KEY = "review.theme";

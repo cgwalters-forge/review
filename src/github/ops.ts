@@ -552,18 +552,23 @@ function guarded(warnings: string[]) {
 }
 
 /**
- * What the queue's active agents strip needs, and no more: the whole
- * board and the heartbeat, both conditional reads that cost nothing
- * while unchanged. The ops view reads the same two, so either view's
- * read serves the other.
+ * What the agents, changes and usage sections need, and no more: the
+ * whole board, the heartbeat and the usage, all conditional reads that
+ * cost nothing while unchanged. The ops detail reads the same three, so
+ * either read serves the other.
  */
 export async function loadActive(gh: GitHub, now: number = Date.now()): Promise<Active> {
   const warnings: string[] = [];
   const guard = guarded(warnings);
-  const [board, local] = await Promise.all([guard("the board", loadWholeBoard(gh).then((q) => q.items)), guard("the coordinator's heartbeat", loadHeartbeat(gh))]);
+  const [board, local, usage] = await Promise.all([
+    guard("the board", loadWholeBoard(gh).then((q) => q.items)),
+    guard("the coordinator's heartbeat", loadHeartbeat(gh)),
+    guard("the plan's usage", loadUsage(gh)),
+  ]);
   const active: Active = { warnings, at: now };
   if (board) active.board = board;
   if (local !== undefined) active.local = local;
+  if (usage) active.usage = usage;
   return active;
 }
 

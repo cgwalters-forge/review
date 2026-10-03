@@ -26,7 +26,8 @@ import {
   timeLeft,
   workGroups,
 } from "../src/github/ops.ts";
-import { coreHoursText, duration, leftText, opsView, tickOps, tokensText } from "../src/github/opsview.ts";
+import type { UsageData, UsageWindow } from "../src/github/usage.ts";
+import { coreHoursText, duration, leftText, opsDetail, tickOps, tokensText, usageSection, usageSummary } from "../src/github/opsview.ts";
 import { fields, fixture, installDom, scriptedFetch } from "./helpers.ts";
 
 installDom();
@@ -417,7 +418,7 @@ describe("loadOps", () => {
   });
 });
 
-describe("opsView", () => {
+describe("opsDetail and usageSection", () => {
   async function view(agent: "missing" | "present" = "missing", local: unknown[] = heartbeat(), now = NOW, usage: { status?: number; body?: unknown } = { body: usageComments() }) {
     const { fetchImpl } = scriptedFetch((_m, url) => {
       const u = new URL(url);
@@ -434,7 +435,13 @@ describe("opsView", () => {
       if (u.pathname === USAGE_PATH) return usage;
       return undefined;
     });
-    return opsView(await loadOps(new GitHub(async () => "t", fetchImpl), new Map(), NOW), now);
+    const ops = await loadOps(new GitHub(async () => "t", fetchImpl), new Map(), NOW);
+    // The page puts the usage in a section of its own; here they are read together.
+    const root = document.createElement("div");
+    root.append(opsDetail(ops, now));
+    const section = usageSection(ops.usage, ops.local, now);
+    if (section) root.append(section);
+    return root;
   }
 
   it("shows the live devspace with its host, size and a bounded time left", async () => {
@@ -480,7 +487,7 @@ describe("opsView", () => {
   });
 
   it("shows the plan's usage: a bar per window, its reset, and the top consumers", async () => {
-    const usageSec = (el: HTMLElement) => [...el.querySelectorAll(".ops-sec")].find((s) => s.querySelector("h2")?.textContent === "Usage");
+    const usageSec = (el: HTMLElement) => el.querySelector(".usage-body");
     const sec = usageSec(await view());
     assert.ok(sec);
     const rows = [...sec.querySelectorAll(".uw")];
@@ -523,22 +530,22 @@ describe("opsView", () => {
   });
 
   it("says quietly when the token can't read the private usage, or none is published", async () => {
-    const usageSec = (el: HTMLElement) => [...el.querySelectorAll(".ops-sec")].find((s) => s.querySelector("h2")?.textContent === "Usage");
+    const usageSec = (el: HTMLElement) => el.querySelector(".usage-body");
     for (const status of [403, 404]) {
       const el = await view("missing", heartbeat(), NOW, { status, body: { message: "Not Found" } });
-      assert.equal(el.querySelector(":scope > .warn"), null, `no warning on ${status}`);
+      assert.equal(el.querySelector(".ops > .warn"), null, `no warning on ${status}`);
       assert.equal(usageSec(el)?.querySelector(".note")?.textContent, "Private: it's in cgwalters-forge/bot-ops, which this token can't read.");
       assert.ok(el.querySelector(".lw"), "the local agents still show");
     }
     assert.equal(usageSec(await view("missing", heartbeat(), NOW, { body: usageComments().slice(0, 1) }))?.querySelector(".note")?.textContent, "No usage published to cgwalters-forge/bot-ops yet.");
     // A rate limit is a failed read, not a private repository.
     const limited = await view("missing", heartbeat(), NOW, { status: 403, body: { message: "API rate limit exceeded for user ID 1." } });
-    assert.match(limited.querySelector(":scope > .warn")?.textContent ?? "", /the plan's usage.*rate limit/);
-    assert.equal(usageSec(limited), undefined);
+    assert.match(limited.querySelector(".ops > .warn")?.textContent ?? "", /the plan's usage.*rate limit/);
+    assert.equal(usageSec(limited), null);
     // Any other failure is a warning like any section's.
     const broken = await view("missing", heartbeat(), NOW, { status: 500, body: { message: "boom" } });
-    assert.match(broken.querySelector(":scope > .warn")?.textContent ?? "", /the plan's usage.*HTTP 500/);
-    assert.equal(usageSec(broken), undefined);
+    assert.match(broken.querySelector(".ops > .warn")?.textContent ?? "", /the plan's usage.*HTTP 500/);
+    assert.equal(usageSec(broken), null);
   });
 
   it("warns when the heartbeat is stale", async () => {
@@ -566,4 +573,25 @@ describe("opsView", () => {
     const bar = el.querySelector(".tick-bar");
     assert.ok(Number(bar?.getAttribute("width")) < 100 * (224 / 240));
   });
+});
+
+describe("usageSummary", () => {
+  const tokens = { input: 1, output: 2, cacheRead: 1_000_000, cacheWrite: 3 };
+  const win = (kind: string, usedPercent?: number): UsageWindow => ({
+    kind,
+    since: "2026-09-28T10:00:00Z",
+    requests: 1,
+    tokens,
+    ...(usedPercent === undefined ? {} : { usedPercent, resetsAt: "2026-09-28T20:00:00Z" }),
+  });
+  const ok = (...windows: UsageWindow[]): UsageData => ({ state: "ok", usage: { updatedAt: "2026-09-28T15:00:00Z", windows, workers: [] } });
+  const cases: [string, UsageData | undefined, string][] = [
+    ["not read yet", undefined, "…"],
+    ["none published", { state: "none" }, "none yet"],
+    ["private", { state: "unreadable" }, "private"],
+    ["the most used window", ok(win("five_hour", 42.5), win("seven_day", 63)), "7-day 63%"],
+    ["a fractional percent", ok(win("five_hour", 42.5)), "5-hour 42.5%"],
+    ["no percent: the tokens", ok(win("five_hour")), "1.0M tokens"],
+  ];
+  for (const [name, data, want] of cases) it(name, () => assert.equal(usageSummary(data), want));
 });
