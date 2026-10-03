@@ -20,13 +20,15 @@ import { type Need, waitingCount } from "./needs.ts";
 import { NEED_CLASS, needRow, type NeedsHooks } from "./needsview.ts";
 import { type Ops } from "./ops.ts";
 import { opsDetail, usageSection, usageSummary } from "./opsview.ts";
-import type { Entry } from "./queue.ts";
+import { type Entry, priorityRank } from "./queue.ts";
 import { PREVIEW_ROWS, SECTION_HINT, SECTION_TITLE, SECTIONS, type SectionId } from "./sections.ts";
-import type { OpenBoard } from "./backend.ts";
+import type { OpenBoard, ProjectStatus } from "./backend.ts";
+import { refKey, VERDICT_LABEL } from "./forge.ts";
+import { ON_BOT_LABEL, REASON_LABEL } from "./waiting.ts";
 import type { TriageFilter } from "./triage.ts";
 import type { UsageData } from "./usage.ts";
 import { triageView, type TriageHooks } from "./triageview.ts";
-import { CAUGHT_UP_CLASS, type ListExtras, priorityList, ROW_CLASS, type RowLabel } from "./view.ts";
+import { CAUGHT_UP_CLASS, type ListExtras, priorityList, ROW_CLASS, type RowLabel, rowText } from "./view.ts";
 
 /** The class of the page, of a section, and of its count. */
 export const HOME_CLASS = "home";
@@ -43,6 +45,8 @@ export interface SectionEls {
 
 /** The places the sections' data goes. */
 export interface Slots {
+  status: HTMLElement;
+  focus: HTMLElement;
   needs: HTMLElement;
   agents: HTMLElement;
   /** The ops detail under the agents, and its fold. */
@@ -112,6 +116,8 @@ function fold(cls: string, label: string, onToggle: (open: boolean) => void): { 
 export function homeSkeleton(hooks: HomeHooks): Home {
   const expected = new Map<SectionId, boolean>();
   const needs = h("div", { class: "needs-slot" });
+  const status = h("section", { class: "dashboard-status", "aria-label": "Status" }, h("h2", {}, "Status"));
+  const focus = h("section", { class: "dashboard-focus", "aria-label": "Focus" }, h("h2", {}, "Focus"));
   const agents = h("div", { class: "agents-slot" });
   const ops = fold("ops-fold", "Devspaces, agent runs and the bot's activity", hooks.opsToggled);
   const feed = h("div", { class: "feed-slot" });
@@ -127,8 +133,8 @@ export function homeSkeleton(hooks: HomeHooks): Home {
     priority: section("priority", ctx, hooks, priority, themes.box),
     usage: section("usage", ctx, hooks, usage),
   };
-  const el = h("div", { class: HOME_CLASS }, ...SECTIONS.map((id) => sections[id].details));
-  return { el, sections, slots: { needs, agents, ops: ops.slot, opsBox: ops.box, feed, news, priority, themes: themes.slot, themesBox: themes.box, usage }, expected };
+  const el = h("div", { class: HOME_CLASS }, sections.needs.details, status, focus, ...SECTIONS.filter((id) => id !== "needs").map((id) => sections[id].details));
+  return { el, sections, slots: { status, focus, needs, agents, ops: ops.slot, opsBox: ops.box, feed, news, priority, themes: themes.slot, themesBox: themes.box, usage }, expected };
 }
 
 /** Open or close a section from code (a jump, or its default changing). With `remember`, as if he did. */
@@ -179,6 +185,8 @@ export function applyLimit(slot: HTMLElement, id: string, rowSelector: string, l
 
 /** Make sure a row can be seen: open "View all" for the list it is in, if it is hidden. */
 export function reveal(row: HTMLElement, slot: HTMLElement, id: string, rowSelector: string): void {
+  const watching = row.closest<HTMLDetailsElement>("details.watching");
+  if (watching) watching.open = true;
   if (!row.hidden && !row.closest("[hidden]")) return;
   expanded.add(id);
   applyLimit(slot, id, rowSelector);
@@ -201,14 +209,75 @@ export const NEED_ROW_SELECTOR = `.${NEED_CLASS}`;
 
 // What each section is filled with.
 
-export function fillNeeds(home: Home, needs: readonly Need[], hooks: NeedsHooks): number {
+export const DECISION_LIMIT = 15;
+
+export function fillNeeds(home: Home, needs: readonly Need[], hooks: NeedsHooks, entries: readonly Entry[] = []): number {
   const slot = home.slots.needs;
   const waiting = waitingCount(needs);
   if (needs.length === 0) slot.replaceChildren(h("p", { class: `empty ${CAUGHT_UP_CLASS}` }, "All caught up: nothing needs you right now."));
-  else slot.replaceChildren(...needs.map((n) => needRow(n, hooks)));
-  applyLimit(slot, LIMIT_ID.needs, NEED_ROW_SELECTOR);
+  else slot.replaceChildren(...needs.slice(0, DECISION_LIMIT).map((n) => needRow(n, hooks)));
+  const keys = new Set(needs.map((n) => n.key));
+  const identity = (e: Entry): string => {
+    const ref = e.pr?.ref ?? e.item?.ref;
+    return ref ? refKey(ref).toLowerCase() : e.key;
+  };
+  const seen = new Set(needs.flatMap((n) => n.entry ? [identity(n.entry)] : n.decision?.item.ref ? [refKey(n.decision.item.ref).toLowerCase()] : []));
+  const watching = entries.flatMap((e) => [e, ...(e.children ?? [])]).filter((e) => {
+    const key = identity(e);
+    if (keys.has(e.key) || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  const overflow = needs.slice(DECISION_LIMIT);
+  if (watching.length || overflow.length) slot.append(h("details", { class: "watching" }, h("summary", {}, `Watching (${watching.length + overflow.length})`), ...overflow.map((n) => needRow(n, hooks)), ...watching.map((e) => {
+    const label = hooks.labelOf(e);
+    const state = e.verdict ? VERDICT_LABEL[e.verdict.state] : label?.text ?? "read";
+    const reason = e.wait?.onBot ? ON_BOT_LABEL : e.wait?.reasons.length ? e.wait.reasons.map((r) => REASON_LABEL[r]).join(" · ") : rowText(e) || "No concrete ask; read for context.";
+    return h("p", { class: "watching-item" }, h("a", { href: e.href }, e.title), ` · ${e.where} `, h("span", { class: `state ${label?.cls ?? "read"}` }, state), h("span", { class: "why" }, ` · ${reason}`));
+  })));
   setCount(home, "needs", String(waiting), { title: `${waiting} waiting on you`, hot: waiting > 0 });
   return waiting;
+}
+
+export function fillStatus(home: Home, status: ProjectStatus | null | undefined, render: Renderer, error?: string): void {
+  const slot = home.slots.status;
+  if (status && slot.dataset.signature === JSON.stringify(status)) return;
+  slot.dataset.signature = JSON.stringify(status) ?? "";
+  slot.replaceChildren(h("h2", {}, "Status"));
+  if (!status) {
+    slot.append(h("p", { class: "note" }, error ?? (status === null ? "No project status update yet." : "Reading project status…")));
+    return;
+  }
+  const body = h("div", { class: "md status-preview" }, render(status.body));
+  const button = h("button", { type: "button", class: "small", "aria-expanded": "false" }, "Expand");
+  button.addEventListener("click", () => {
+    const open = button.getAttribute("aria-expanded") !== "true";
+    body.classList.toggle("status-preview", !open);
+    button.setAttribute("aria-expanded", String(open));
+    button.textContent = open ? "Collapse" : "Expand";
+  });
+  slot.append(body, button);
+}
+
+/** Active epics, with GitHub's progress and their running child work. */
+export function fillFocus(home: Home, board: readonly Item[] | undefined): void {
+  const slot = home.slots.focus;
+  slot.replaceChildren(h("h2", {}, "Focus"));
+  if (!board) {
+    slot.append(h("p", { class: "note" }, "Reading active epics…"));
+    return;
+  }
+  const live = (i: Item) => i.state !== "closed" && i.state !== "merged" && i.status !== "Done";
+  const epics = board.filter((i) => live(i) && (i.labels.includes("epic") || i.subIssues) && i.status !== "Todo" && i.status !== "Draft").sort((a, b) => priorityRank(a.priority) - priorityRank(b.priority) || a.title.localeCompare(b.title));
+  for (const epic of epics) {
+    const paused = epic.status === "Paused" || epic.verdict?.toLowerCase() === "park";
+    const row = h("article", { class: `focus-epic${paused ? " paused" : ""}` }, h("h3", {}, epic.priority ? `${epic.priority} · ` : "", h("a", { href: epic.url ?? "#" }, epic.title)), h("p", {}, epic.subIssues ? `${epic.subIssues.completed}/${epic.subIssues.total} complete` : "Progress not reported", ` · ${epic.status ?? "No status"}`));
+    if (epic.subIssues) row.append(h("progress", { max: String(epic.subIssues.total), value: String(epic.subIssues.completed), "aria-label": `${epic.title} progress` }));
+    const children = board.filter((i) => live(i) && i.status === "In Progress" && i.parent && epic.ref && refKey(i.parent).toLowerCase() === refKey(epic.ref).toLowerCase());
+    row.append(h("ul", {}, ...children.map((i) => h("li", {}, h("a", { href: i.url ?? "#" }, i.title), i.lead ? ` · ${i.lead}` : "", " · running"))));
+    slot.append(row);
+  }
+  if (!epics.length) slot.append(h("p", { class: "note" }, "No active epics."));
 }
 
 export function fillAgents(home: Home, active: Active | undefined, now: number): void {

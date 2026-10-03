@@ -8,7 +8,7 @@ export const SECTIONS = ["needs", "agents", "changes", "priority", "usage"] as c
 export type SectionId = (typeof SECTIONS)[number];
 
 export const SECTION_TITLE: Record<SectionId, string> = {
-  needs: "Needs you",
+  needs: "Decisions",
   agents: "Agents",
   changes: "Changes",
   priority: "By priority",

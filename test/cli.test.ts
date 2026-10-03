@@ -73,6 +73,7 @@ describe("review-queue --json", () => {
     "item:PVTI_synthetic_redacted report-bug",
     "item:PVTI_synthetic_unrecommended_question answer",
     "item:PVTI_synthetic_open_question answer",
+    "pr:cgwalters-forge/homegit#9 comment",
     "pr:cgwalters-forge/bootc#3 review",
     "item:PVTI_synthetic_home_issue report-bug",
     "item:PVTI_synthetic_closed_question wait",
@@ -84,7 +85,7 @@ describe("review-queue --json", () => {
       argv: ["--json", "--filter", "composefs"],
       want: all.filter((l) => /widget#5|upstream_issue|review_ask|chore_ask|upstream_pr|upstream_question|bootc#3/.test(l)),
     },
-    { name: "infra: the bot's own", argv: ["--json", "--filter=infra"], want: ["item:PVTI_synthetic_home_issue report-bug"] },
+    { name: "infra: the bot's own", argv: ["--json", "--filter=infra"], want: ["pr:cgwalters-forge/homegit#9 comment", "item:PVTI_synthetic_home_issue report-bug"] },
     { name: "a bare priority", argv: ["--json", "--filter", "P0"], want: all.slice(0, 3) },
     { name: "one org and a priority", argv: ["--json", "--filter", "org:bootc-dev+P1"], want: [] },
     { name: "org and no priority", argv: ["--filter", "org:bootc-dev+none"], want: ["pr:cgwalters-forge/bootc#3 review"] },
@@ -124,7 +125,7 @@ describe("review-queue --json", () => {
       action: { verb: "review", summary: "review the commits pushed since your approval" },
       asks: [],
     });
-    assert.deepEqual(doc.counts, { entries: 11, rows: 15, open: 11 });
+    assert.deepEqual(doc.counts, { entries: 12, rows: 16, open: 12 });
     const asks = doc.entries.find((e) => e.key === "item:PVTI_synthetic_upstream_issue")?.asks ?? [];
     assert.deepEqual(
       asks.map((a) => a.action.targets),

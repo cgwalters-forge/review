@@ -29,7 +29,7 @@ function withStorage<T>(storage: unknown, body: () => T): T {
 
 describe("sections", () => {
   it("are, in order, what needs him, the agents, the changes, everything by priority, and the usage", () => {
-    assert.deepEqual(SECTIONS.map((id) => SECTION_TITLE[id]), ["Needs you", "Agents", "Changes", "By priority", "Usage"]);
+    assert.deepEqual(SECTIONS.map((id) => SECTION_TITLE[id]), ["Decisions", "Agents", "Changes", "By priority", "Usage"]);
     assert.ok(isSection("usage"));
     assert.ok(!isSection("ops"));
   });

@@ -25,6 +25,7 @@ import {
   ciChecks,
   type ForgePr,
   parseSearchPr,
+  promotionAction,
   type RawCheckRun,
   type RawIssueComment,
   type RawReview,
@@ -39,12 +40,12 @@ import {
 /** The search for the bot's open draft PRs on the forge. */
 export const FORGE_QUERY = `is:pr is:open draft:true org:${FORGE_ORG} author:${BOT_LOGIN}`;
 /**
- * The bot's open PRs anywhere that request his review, from him
+ * The bot's open non-draft PRs anywhere that request his review, from him
  * directly (review-requested: would also match teams he is on, such as
  * CODEOWNERS' automatic requests). GitHub drops the request once he
  * reviews.
  */
-export const REQUESTED_QUERY = `is:pr is:open author:${BOT_LOGIN} user-review-requested:${OPERATOR}`;
+export const REQUESTED_QUERY = `is:pr is:open draft:false author:${BOT_LOGIN} user-review-requested:${OPERATOR}`;
 /**
  * All the bot's open PRs: upstream, in its own repositories, and in the
  * forge's own (non-fork) repositories, which open ready rather than as
@@ -78,8 +79,8 @@ function isForgeDraft(pr: ForgePr): boolean {
 export async function loadOtherPrs(gh: GitHub): Promise<OtherPr[]> {
   const [all, requested] = await Promise.all([searchPrs(gh, OTHER_QUERY), searchPrs(gh, REQUESTED_QUERY)]);
   const want = new Set(requested.map((p) => refKey(p.ref).toLowerCase()));
-  // The search asks for the bot's PRs; check, since the queue acts on them.
-  return all.filter((pr) => pr.author === BOT_LOGIN && !isForgeDraft(pr)).map((pr) => ({ pr, requested: want.has(refKey(pr.ref).toLowerCase()) }));
+  const merged = new Map([...all, ...requested].filter((pr) => pr.author === BOT_LOGIN).map((pr) => [refKey(pr.ref).toLowerCase(), pr]));
+  return [...merged.values()].filter((pr) => !isForgeDraft(pr)).map((pr) => ({ pr, requested: want.has(refKey(pr.ref).toLowerCase()) }));
 }
 
 /** Every PR a search finds, oldest first. */
@@ -115,6 +116,7 @@ export async function mapLimit<T, R>(items: readonly T[], limit: number, fn: (it
 }
 
 interface RawPull {
+  requested_reviewers?: { login?: string }[];
   number: number;
   html_url: string;
   title?: string;
@@ -179,13 +181,15 @@ export async function refreshVerdicts(
 }
 
 /** His verdict on a PR at `head`, and whether the bot replied since he asked for changes. */
-async function readVerdict(gh: GitHub, ref: IssueRef, head: string): Promise<{ verdict: Verdict; botReplied: boolean }> {
+async function readVerdict(gh: GitHub, ref: IssueRef, head: string): Promise<{ verdict: Verdict; botReplied: boolean; reviewedCurrentHead?: boolean }> {
   const { reviews, comments } = await readDecisions(gh, ref);
   const verdict = reviewVerdict(reviews, head, OPERATOR, comments);
-  if (verdict.state !== "changes-requested") return { verdict, botReplied: false };
+  const reviewed = reviews.some((r) => r.user?.login === OPERATOR && r.commit_id === head && ["APPROVED", "CHANGES_REQUESTED", "COMMENTED"].includes(r.state ?? ""));
+  const current = reviewed ? { reviewedCurrentHead: true } : {};
+  if (verdict.state !== "changes-requested") return { verdict, botReplied: false, ...current };
   // Replies to his line comments are review comments; read them only when they matter.
   const replies = await gh.getAll<RawTimed>(`/repos/${ref.owner}/${ref.repo}/pulls/${ref.number}/comments?per_page=${PAGE_SIZE}`);
-  return { verdict, botReplied: botRepliedSince(verdict.at, [...comments, ...replies.data]) };
+  return { verdict, botReplied: botRepliedSince(verdict.at, [...comments, ...replies.data]), ...current };
 }
 
 /** His reviews and conversation comments on a PR: what bot-pr decides by. */
@@ -229,6 +233,7 @@ async function headCheckRuns(gh: GitHub, repo: string, sha: string): Promise<Raw
 
 /** A PR other than a forge draft the queue lists, and where it stands. */
 export interface WaitingPr {
+  verdict?: Verdict;
   pr: ForgePr;
   head: string;
   wait: PrWait;
@@ -252,12 +257,12 @@ export async function loadWaiting(gh: GitHub, others: readonly OtherPr[]): Promi
       const { ref } = pr;
       const repo = `${ref.owner}/${ref.repo}`;
       const pull = (await gh.get<RawPull & { mergeable_state?: string }>(pullPath(ref))).data;
-      if (pull.state !== "open") return undefined;
+      if (pull.state !== "open" || pull.merged_at) return undefined;
       const head = pull.head.sha;
-      const { verdict, botReplied } = await readVerdict(gh, ref, head);
+      const { verdict, botReplied, reviewedCurrentHead } = await readVerdict(gh, ref, head);
       const facts: PrFacts = {
         owner: ref.owner,
-        requested,
+        requested: pull.requested_reviewers === undefined ? requested : pull.requested_reviewers.some((r) => r.login?.toLowerCase() === OPERATOR.toLowerCase()),
         verdict,
         botReplied,
         conflicting: pull.mergeable_state === "dirty",
@@ -265,7 +270,7 @@ export async function loadWaiting(gh: GitHub, others: readonly OtherPr[]): Promi
         unsigned: [],
         failedRequired: [],
       };
-      if (!isOwnOwner(ref.owner)) {
+      if (pr.author === BOT_LOGIN && !isOwnOwner(ref.owner)) {
         const base = pull.base.ref ?? "";
         const key = `${repo}:${base}`;
         // Rules this token can't read mean none; any other failure fails
@@ -284,8 +289,17 @@ export async function loadWaiting(gh: GitHub, others: readonly OtherPr[]): Promi
           facts.unsigned = unsignedCommits(commits.data);
         }
       }
-      const wait = classifyPr(facts);
-      return wait ? { pr, head, wait } : undefined;
+      const freshPr = { ...pr, title: pull.title ?? pr.title, draft: pull.draft === true, body: pull.body ?? "" };
+      const wait: PrWait | undefined = classifyPr(facts) ?? (promotionAction(freshPr, verdict) ? { reasons: [], onBot: false } : undefined);
+      if (wait) {
+        if (reviewedCurrentHead) wait.reviewedCurrentHead = true;
+        if (facts.requested) {
+          const events = await gh.getAll<{ event?: string; created_at?: string; requested_reviewer?: { login?: string } }>(`/repos/${repo}/issues/${ref.number}/timeline?per_page=${PAGE_SIZE}`).catch(() => undefined);
+          const at = events?.data.findLast((e) => e.event === "review_requested" && e.requested_reviewer?.login === OPERATOR)?.created_at;
+          if (at) wait.askedAt = at;
+        }
+      }
+      return wait ? { pr: freshPr, head, wait, verdict } : undefined;
     } catch (e) {
       errors.push(`${refKey(pr.ref)}: ${e instanceof Error ? e.message : String(e)}`);
       failed.add(refKey(pr.ref));

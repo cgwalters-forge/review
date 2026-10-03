@@ -7,7 +7,7 @@
 
 import { askKind, blockedBy, isAsk, type Item, NO_PRIORITY, PRIORITY_ORDER } from "./board.ts";
 import { DRAFT, FORGE_ORG, NEEDS_HUMAN } from "./config.ts";
-import { type ForgePr, parseBotMeta, refKey, type Verdict, waitsOnReviewer } from "./forge.ts";
+import { type ForgePr, parseBotMeta, promotionAction, refKey, type Verdict, waitsOnReviewer } from "./forge.ts";
 import { forgeWait, type PrWait } from "./waiting.ts";
 
 /** A PR, an ask of one kind, or another board item. */
@@ -111,7 +111,7 @@ export interface QueueInputs {
    * where each stands (see classifyPr): those with something for him, and those
    * waiting on the bot.
    */
-  others?: readonly { pr: ForgePr; wait: PrWait }[];
+  others?: readonly { pr: ForgePr; wait: PrWait; verdict?: Verdict }[];
   /** Forge PRs (refKeys) where the bot commented after his latest decision. */
   replied?: ReadonlySet<string>;
   /** Board items outside the queue (In Review) that only rank the PRs in their Branch. */
@@ -188,16 +188,18 @@ export function buildEntries(
     if (self && (self.status === DRAFT || !wait?.onBot)) tracked.add(self.nodeId);
   };
 
-  for (const pr of prs) {
+  for (const searched of prs) {
+    const current = inputs.others?.find((o) => refKey(o.pr.ref).toLowerCase() === refKey(searched.ref).toLowerCase());
+    const pr = current?.pr ?? searched;
     const metaItem = parseBotMeta(pr.body).item;
     const self = byUrl.get(pr.url.toLowerCase());
     const item = (metaItem ? byNode.get(metaItem) : undefined) ?? byBranch.get(pr.url.toLowerCase()) ?? self;
     // Tracked even when not listed: a Draft item isn't a second entry for its own PR.
     for (const i of [item, self]) if (i?.status === DRAFT) tracked.add(i.nodeId);
     const key = refKey(pr.ref);
-    const verdict = verdicts.get(key);
-    const wait = verdict ? forgeWait(verdict, inputs.replied?.has(key) === true) : undefined;
-    if (verdict && !wait && !waitsOnReviewer(verdict)) continue;
+    const verdict = current?.verdict ?? verdicts.get(key);
+    const wait = current?.verdict ? current.wait : verdict ? forgeWait(verdict, inputs.replied?.has(key) === true) : undefined;
+    if (verdict && !wait && !waitsOnReviewer(verdict) && !promotionAction(pr, verdict)) continue;
     const e = prEntry(pr, item, item?.status === DRAFT);
     if (verdict) e.verdict = verdict;
     if (wait) e.wait = wait;
@@ -206,13 +208,14 @@ export function buildEntries(
   }
 
   const listed = new Set(out.map((e) => e.key));
-  for (const { pr, wait } of inputs.others ?? []) {
+  for (const { pr, wait, verdict } of inputs.others ?? []) {
     if (listed.has(`pr:${refKey(pr.ref)}`)) continue;
     const self = byUrl.get(pr.url.toLowerCase());
     const item = byBranch.get(pr.url.toLowerCase()) ?? self;
     if (item?.status === DRAFT) tracked.add(item.nodeId);
     const e = prEntry(pr, item, !wait.onBot && (item?.status === NEEDS_HUMAN || item?.status === DRAFT));
     e.wait = wait;
+    if (verdict) e.verdict = verdict;
     trackSelf(self, wait);
     out.push(e);
   }

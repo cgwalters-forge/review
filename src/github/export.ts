@@ -6,7 +6,7 @@
 import { commentNote, itemAction } from "./asks.ts";
 import { NO_PRIORITY, questionOf } from "./board.ts";
 import { entryOrg, filterToken, type QueueFilter } from "./filter.ts";
-import { VERDICT_LABEL } from "./forge.ts";
+import { promotionAction, VERDICT_LABEL } from "./forge.ts";
 import { effectivePriority, type Entry, type EntryKind, SETTLED_GROUP } from "./queue.ts";
 
 /** The schema name and major version; a breaking change bumps it. */
@@ -98,6 +98,9 @@ export interface QueueJson {
 }
 
 function prAction(e: Entry): ActionJson {
+  const promotion = e.pr ? promotionAction(e.pr, e.verdict) : undefined;
+  if (promotion === "promote") return { verb: "comment", summary: "send /promote on the approved fork PR to publish it upstream" };
+  if (promotion === "write") return { verb: "read", summary: "write your title, description and commit messages for the upstream human-text policy" };
   const state = e.verdict?.state ?? "none";
   if (state === "promoted") return { verb: "wait", summary: "you sent /promote; bot-pr acts next" };
   const summary =

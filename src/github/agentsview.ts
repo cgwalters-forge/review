@@ -25,6 +25,7 @@ function agentRow(a: ActiveAgent, now: number): HTMLElement {
     "li",
     { class: `${AGENT_ROW_CLASS}${a.stale ? " stale" : ""}`, title: SOURCE_TITLE[a.source] },
     workerStatus(a.status),
+    h("span", { class: "agent-engine" }, `${a.location} · ${a.engine ?? "engine unknown"}`),
     h(
       "span",
       { class: "as-who" },
@@ -80,7 +81,7 @@ export function agentsBody(data: Active | undefined, now: number): HTMLElement {
     h(
       "div",
       { class: "as-head" },
-      h("span", { class: "as-lanes" }, lanes.join(" · ")),
+      h("span", { class: "as-lanes" }, `${s.running}/${s.target} agents · remote ${s.locations.remote} · local ${s.locations.local} · OpenCode ${s.running ? Math.round(100 * s.opencode / s.running) : 0}% (${s.opencode}/${s.running})${s.unknownEngine ? ` · ${s.unknownEngine} engine unknown` : ""} · ${lanes.join(" · ")}`),
       s.unconfirmed ? h("span", { class: "as-unconfirmed warn", title: "listed only by a stale heartbeat" }, `+${s.unconfirmed} unconfirmed`) : null,
       h("span", { class: `as-hb ${hb.cls}`, title: hb.title }, hb.text),
       data.board ? null : h("span", { class: "warn", title: `The board couldn't be read, so only the heartbeat's workers show.${why}` }, "board unread"),

@@ -42,6 +42,7 @@ export interface RawContent {
   draft?: boolean;
   merged_at?: string | null;
   updated_at?: string;
+  created_at?: string;
   user?: RawUser | null;
   labels?: RawLabel[];
   assignees?: (RawUser | null)[] | null;
@@ -76,6 +77,7 @@ export interface IssueRef {
 }
 
 export interface Item {
+  engine?: string;
   /** Numeric project item id, for REST. */
   id: number;
   /** PVTI_... node id, as the bot and bot-board name items. */
@@ -178,7 +180,7 @@ export function fieldIds(fields: readonly RawField[]): number[] {
     }
     return id;
   });
-  const optional = [...Object.values(TRIAGE_FIELD), ...Object.values(FEED_FIELD)].flatMap((name) => byName.get(name) ?? []);
+  const optional = [...Object.values(TRIAGE_FIELD), ...Object.values(FEED_FIELD), "Engine"].flatMap((name) => byName.get(name) ?? []);
   return [...required, ...optional];
 }
 
@@ -248,7 +250,8 @@ export function parseItem(raw: RawItem): Item {
   opt("lead", fields.get(FEED_FIELD.lead)?.trim() || undefined);
   opt("news", fields.get(FEED_FIELD.news)?.trim() || undefined);
   opt("run", urls(fields.get(FEED_FIELD.run))[0]);
-  opt("createdAt", raw.created_at);
+  opt("engine", fields.get("Engine")?.trim().toLowerCase() || undefined);
+  opt("createdAt", c.created_at ?? raw.created_at);
   opt("movedAt", raw.updated_at);
   opt("updatedAt", c.updated_at ?? raw.updated_at);
   if (kind !== "draft" && c.html_url) {

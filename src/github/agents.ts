@@ -12,9 +12,12 @@ import { AGENT_TARGET, IN_PROGRESS, TRACKER_REPO } from "./config.ts";
 import { isOwnOrg, itemOrg } from "./filter.ts";
 import { type Heartbeat, isStale } from "./heartbeat.ts";
 import type { UsageData } from "./usage.ts";
+import type { ProjectStatus } from "./backend.ts";
 
 /** What the strip shows: the whole board and the heartbeat, as last read. */
 export interface Active {
+  status?: ProjectStatus | null;
+  statusError?: string;
   /** Every unarchived board item; undefined when its read failed or isn't cached. */
   board?: Item[];
   /** The heartbeat: undefined when its read failed or isn't cached, null when none is published. */
@@ -34,6 +37,8 @@ export type Lane = "harness" | "upstream" | "unknown";
 export type AgentSource = "heartbeat" | "board" | "both";
 
 export interface ActiveAgent {
+  engine?: string;
+  location: "remote" | "local";
   /** The worker's name, else the item's Lead, else "agent run". */
   name: string;
   itemUrl?: string;
@@ -64,6 +69,9 @@ export interface HeartbeatState {
 }
 
 export interface AgentSummary {
+  locations: { remote: number; local: number };
+  opencode: number;
+  unknownEngine: number;
   /** Running ones first (by priority, then longest running), then the unconfirmed. */
   agents: ActiveAgent[];
   /** Agents counted as working: all but those only a stale heartbeat lists. */
@@ -148,6 +156,7 @@ export function activeAgents(board: readonly Item[], hb: Heartbeat | null | unde
       status: w.status,
       since: w.startedAt,
       source: claimed ? "both" : "heartbeat",
+      location: w.devspace || (claimed && item.run) ? "remote" : "local",
       lane: item ? laneOf(itemOrg(item)) : urlLane(w.itemUrl),
       // The board still claiming it vouches for it; a stale heartbeat alone doesn't.
       stale: hbStale && !claimed,
@@ -159,6 +168,8 @@ export function activeAgents(board: readonly Item[], hb: Heartbeat | null | unde
       if (claimed && item.run) a.runUrl = item.run;
     }
     if (w.devspace) a.devspace = w.devspace;
+    const engine = w.engine ?? item?.engine;
+    if (engine) a.engine = engine;
     agents.push(a);
   }
   for (const item of board) {
@@ -168,6 +179,7 @@ export function activeAgents(board: readonly Item[], hb: Heartbeat | null | unde
       title: item.title,
       status: item.run ? "run" : "claimed",
       source: "board",
+      location: item.run ? "remote" : "local",
       lane: laneOf(itemOrg(item)),
       stale: false,
     };
@@ -179,13 +191,16 @@ export function activeAgents(board: readonly Item[], hb: Heartbeat | null | unde
     if (since) a.since = since;
     if (item.lead) a.lead = item.lead;
     if (item.run) a.runUrl = item.run;
+    if (item.engine) a.engine = item.engine;
     agents.push(a);
   }
   const live = agents.filter((a) => !a.stale).sort(byPriorityThenAge);
   const unconfirmed = agents.filter((a) => a.stale).sort(byPriorityThenAge);
   const lanes: Record<Lane, number> = { harness: 0, upstream: 0, unknown: 0 };
   for (const a of live) lanes[a.lane]++;
-  const summary: AgentSummary = { agents: [...live, ...unconfirmed], running: live.length, target, lanes, unconfirmed: unconfirmed.length };
+  const locations = { remote: 0, local: 0 };
+  for (const a of live) locations[a.location]++;
+  const summary: AgentSummary = { agents: [...live, ...unconfirmed], running: live.length, target, lanes, unconfirmed: unconfirmed.length, locations, opencode: live.filter((a) => a.engine === "opencode").length, unknownEngine: live.filter((a) => !a.engine).length };
   if (hb === null) summary.heartbeat = null;
   else if (hb) summary.heartbeat = { updatedAt: hb.updatedAt, loopState: hb.loopState, stale: isStale(hb, now), stopped };
   return summary;

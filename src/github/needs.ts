@@ -1,40 +1,29 @@
-// What truly waits on him, as one list of single actions: the queue's
-// entries that are his turn and the open decisions, each once. A PR is
-// reviewed, a forge draft reviewed and promoted, a question answered
-// (in place), a chore done or its text written. Pure, so tests can
-// check the dedupe and the action each row asks for.
+// Concrete operator asks, each once: unanswered questions, explicit
+// current-head review requests, approved forks to promote and escalations.
+// The broader legacy queue is kept in Watching and By priority.
 
-import { itemAction } from "./asks.ts";
-import { isQuestion, type Item } from "./board.ts";
+import { askProblem, blockedBy, isQuestion, type Item } from "./board.ts";
 import { effectivePriority, type Entry, onBot, priorityRank } from "./queue.ts";
 import type { Stop } from "./advance.ts";
 import { type Decision, decisionLabel } from "./triage.ts";
-import type { PrReason } from "./waiting.ts";
-import { refKey } from "./forge.ts";
+import { OPERATOR } from "./config.ts";
+import { promotionAction, refKey } from "./forge.ts";
 
 /** The one thing a row asks of him. */
-export type NeedAction = "answer" | "review" | "promote" | "resign" | "rerun" | "write" | "read" | "fix";
+export type NeedAction = "answer" | "review" | "write" | "promote";
 
 export const ACTION_LABEL: Record<NeedAction, string> = {
   answer: "Answer",
   review: "Review",
-  promote: "Review & promote",
-  resign: "Approve to re-sign",
-  rerun: "Rerun checks",
   write: "Write text",
-  read: "Read",
-  fix: "No ask (bot bug)",
+  promote: "Promote",
 };
 
 export const ACTION_TITLE: Record<NeedAction, string> = {
   answer: "pick an option or write an answer; it is posted as a comment by you",
   review: "review the PR; approving, requesting changes or commenting tells the bot",
-  promote: "the bot's draft PR: review it, and approve with /promote to send it upstream",
-  resign: "DCO fails on commits lacking your sign-off: approving the head lets the bot add it",
-  rerun: "a required check failed and only a maintainer can rerun it",
   write: "the bot asks for something it can't do itself: say what you did or decided",
-  read: "a gist or note to read",
-  fix: "Needs human, yet the bot named no ask: it should say what it wants",
+  promote: "open the approved fork PR and send /promote to publish it upstream",
 };
 
 export interface Need {
@@ -56,53 +45,41 @@ export interface Need {
   decision?: Decision;
   /** An open question he can answer on this page. */
   inPlace: boolean;
+  why?: string;
   /** Answered from this page: kept, dimmed, until the page reloads. */
   done?: boolean;
 }
 
-const REASON_ORDER: readonly PrReason[] = ["resign", "rerun", "review-requested", "updated"];
-const REASON_ACTION: Record<PrReason, NeedAction> = { resign: "resign", rerun: "rerun", "review-requested": "review", updated: "review" };
-
 /** What an entry that waits on him asks of him; "none" for one that does not wait on him at all. */
-function actionOf(e: Entry, openAsks: number): NeedAction | "none" {
+function actionOf(e: Entry): NeedAction | "none" {
   if (e.kind === "pr") {
-    const reason = REASON_ORDER.find((r) => e.wait?.reasons.includes(r));
-    if (reason) return REASON_ACTION[reason];
-    // A forge draft with no wait: his review and /promote is the point of it.
-    if (e.pr && !e.wait) return e.verdict?.state === "promoted" ? "none" : "promote";
+    const promotion = e.pr ? promotionAction(e.pr, e.verdict) : undefined;
+    if (promotion) return promotion;
+    if (e.verdict?.state === "approved") return "none";
+    if (e.verdict?.state === "promoted" && !(e.wait?.askedAt && e.verdict.at && e.wait.askedAt > e.verdict.at)) return "none";
+    if (e.pr && !e.pr.draft && e.wait?.reasons.includes("review-requested") && !e.wait.reviewedCurrentHead && e.verdict?.state !== "changes-requested") return "review";
     return "none";
   }
   const item = e.item;
-  if (!item) return "none";
-  const action = itemAction(item, openAsks);
-  switch (action.kind) {
-    case "answer":
-      return "answer";
-    case "review":
-      return "review";
-    case "rerun":
-      return "rerun";
-    case "comment":
-      return action.ask === "review" ? "review" : "write";
-    case "read":
-      return "read";
-    case "bug":
-      return "fix";
-    case "blocked":
-      return "read";
-    case "asks":
-    case "done":
-      return "none";
-  }
+  if (!item || item.kind === "draft" || item.state !== "open") return "none";
+  if (isQuestion(item)) return askProblem(item, "question") === undefined ? "answer" : "none";
+  if (item.labels.includes("escalate") && item.assignees.includes(OPERATOR)) return "write";
+  // Legacy review/chore asks and inferred board blockers are Watching.
+  return "none";
 }
 
-function needOf(e: Entry, parent: Entry | undefined, openAsks: number): Need | undefined {
-  const action = actionOf(e, openAsks);
+function needOf(e: Entry, parent: Entry | undefined): Need | undefined {
+  const action = actionOf(e);
   if (action === "none") return undefined;
   const n: Need = { key: e.key, action, title: e.title, where: e.where, href: e.href, entry: e, inPlace: action === "answer" && e.item?.ref !== undefined };
+  const why = e.pr ? action === "promote" ? "You approved the current head; send /promote to publish it upstream." : action === "write" ? "You approved the current head; the upstream human-text policy requires your title, description and commit messages." : "Your review is requested for the current, unreviewed head." : e.item?.why;
+  if (why) n.why = why;
+  if (e.pr && action === "promote") n.href = e.pr.url;
+  if (e.item?.labels.includes("escalate") && e.item.url) n.href = e.item.url;
   const priority = effectivePriority(e);
   if (priority) n.priority = priority;
-  if (e.since) n.since = e.since;
+  const since = e.pr ? e.wait?.askedAt : e.since;
+  if (since) n.since = since;
   if (parent) n.parent = parent;
   return n;
 }
@@ -111,6 +88,7 @@ function needOf(e: Entry, parent: Entry | undefined, openAsks: number): Need | u
 const issueKey = (item: Item | undefined): string | undefined => (item?.ref ? refKey(item.ref).toLowerCase() : undefined);
 
 export interface NeedsInput {
+  board?: readonly Item[] | undefined;
   /** The queue, ranked (buildEntries). */
   entries: readonly Entry[];
   /** The open decisions, in order; undefined until read. */
@@ -130,26 +108,30 @@ export interface NeedsInput {
 export function buildNeeds(input: NeedsInput): Need[] {
   const out: Need[] = [];
   const done: Need[] = [];
+  const board = input.board ?? [];
   const keep = input.answeredHere ?? new Set<string>();
-  const push = (e: Entry, parent: Entry | undefined, openAsks: number) => {
+  const push = (e: Entry, parent: Entry | undefined) => {
     // Waiting on the bot, or already answered: not his, unless he answered it from here.
     if (onBot(e)) return;
     if (e.settled) {
-      const n = keep.has(e.key) ? needOf({ ...e, settled: false }, parent, openAsks) : undefined;
+      const n = keep.has(e.key) ? needOf({ ...e, settled: false }, parent) : undefined;
       if (n) done.push({ ...n, done: true });
       return;
     }
-    const n = needOf(e, parent, openAsks);
+    const n = needOf(e, parent);
     if (n) out.push(n);
   };
   for (const e of input.entries) {
-    const open = (e.children ?? []).filter((c) => !c.settled && !onBot(c)).length;
-    // An item with asks under it is only their context.
-    if (e.kind !== "item" || open === 0) push(e, undefined, open);
-    for (const c of e.children ?? []) push(c, e, 0);
+    push(e, undefined);
+    for (const c of e.children ?? []) push(c, e);
+  }
+  const listed = new Set(input.entries.flatMap((e) => [e, ...(e.children ?? [])]).filter((e) => e.kind !== "pr").map((e) => e.item?.nodeId));
+  for (const item of board) {
+    if (!listed.has(item.nodeId) && item.labels.includes("escalate") && item.ref) push({ key: `item:${item.nodeId}`, kind: "item", title: item.title, where: refKey(item.ref), href: `#item/${item.nodeId}`, item, ...(item.priority ? { priority: item.priority } : {}), ...(item.createdAt ? { since: item.createdAt } : {}) }, undefined);
   }
   const questions = new Map(out.concat(done).flatMap((n) => (n.action === "answer" && issueKey(n.entry?.item) ? [[issueKey(n.entry?.item) as string, n] as const] : [])));
   for (const d of input.decisions ?? []) {
+    if (askProblem(d.item, "question") !== undefined) continue;
     const hit = questions.get(issueKey(d.item) ?? "");
     if (hit) {
       hit.decision = d;
@@ -160,13 +142,30 @@ export function buildNeeds(input: NeedsInput): Need[] {
     if (answered && !keep.has(key)) continue;
     const n: Need = { key, action: "answer", title: d.title, where: d.item.ref ? refKey(d.item.ref) : decisionLabel(d), href: d.item.ref ? `#item/${d.item.nodeId}` : "#", decision: d, inPlace: d.item.ref !== undefined && isQuestion(d.item) };
     if (d.item.createdAt) n.since = d.item.createdAt;
+    const priority = board.find((i) => issueKey(i) === issueKey(d.item))?.priority ?? d.item.priority;
+    if (priority) n.priority = priority;
     (answered ? done : out).push(answered ? { ...n, done: true } : n);
   }
   const time = (n: Need) => {
     const t = n.since ? Date.parse(n.since) : Number.NaN;
-    return Number.isNaN(t) ? Number.POSITIVE_INFINITY : t;
+    return Number.isNaN(t) ? Number.NEGATIVE_INFINITY : t;
   };
-  out.sort((a, b) => priorityRank(a.priority) - priorityRank(b.priority) || time(a) - time(b) || a.key.localeCompare(b.key));
+  const focusRank = (n: Need): number => {
+    const ask = n.entry?.item ?? n.decision?.item;
+    const item = board.find((i) => issueKey(i) !== undefined && issueKey(i) === issueKey(ask)) ?? ask;
+    const parent = item ? blockedBy(item) ?? item.parent : undefined;
+    let context = parent ? board.find((i) => i.ref && refKey(i.ref).toLowerCase() === refKey(parent).toLowerCase()) : item;
+    const seen = new Set<string>();
+    let priority = context?.priority ?? n.parent?.priority ?? n.priority;
+    while (context?.parent && !seen.has(context.nodeId)) {
+      seen.add(context.nodeId);
+      const ref = context.parent;
+      context = board.find((i) => i.ref && refKey(i.ref).toLowerCase() === refKey(ref).toLowerCase());
+      if (context?.priority) priority = context.priority;
+    }
+    return priorityRank(priority);
+  };
+  out.sort((a, b) => Number(b.priority === "P0") - Number(a.priority === "P0") || focusRank(a) - focusRank(b) || time(b) - time(a) || a.key.localeCompare(b.key));
   return [...out, ...done];
 }
 

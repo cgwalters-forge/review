@@ -64,8 +64,9 @@ import { type Command, HELP, keyCommand, parseRoute, type Route, type RouteInfo 
 import { type HarnessCache, loadNews, type News } from "./news.ts";
 import { deleteCacheDatabase, IdbStore } from "./idbstore.ts";
 import type { Active } from "./agents.ts";
-import { fillAgents, fillChanges, fillNeeds, fillOps, fillPriority, fillThemes, fillUsage, type Home, type HomeHooks, homeSkeleton, LIMIT_ID, NEED_ROW_SELECTOR, reveal, setSectionOpen, stepRow, walkRows } from "./homeview.ts";
-import { buildNeeds, type Need, needStops, waitingCount } from "./needs.ts";
+import { fillAgents, fillChanges, fillFocus, fillStatus, fillNeeds, fillOps, fillPriority, fillThemes, fillUsage, type Home, type HomeHooks, homeSkeleton, LIMIT_ID, NEED_ROW_SELECTOR, reveal, setSectionOpen, stepRow, walkRows } from "./homeview.ts";
+import { loadProjectStatus } from "./backend.ts";
+import { buildNeeds, type Need, needStops } from "./needs.ts";
 import { needId, type NeedsForm, type NeedsHooks, needsRedraw, needsSignature } from "./needsview.ts";
 import { type JobCache, loadActive, loadOps, type Ops } from "./ops.ts";
 import { tickOps } from "./opsview.ts";
@@ -370,7 +371,7 @@ function markSelected(state: State, scroll: boolean): void {
 /** The page's section hooks: its default open state, what opening one starts, and what is remembered. */
 function homeHooks(state: State): HomeHooks {
   return {
-    open: (id) => sectionOpen(id, state.prefs, id === "needs" && waitingCount(state.needs) > 0),
+    open: (id) => sectionOpen(id, state.prefs, id === "agents" || id === "needs"),
     toggled: (id, open) => {
       state.prefs[id] = open;
       saveSectionPref(id, open);
@@ -421,7 +422,7 @@ function needsHooks(state: State, now: number): NeedsHooks {
 }
 
 function currentNeeds(state: State): Need[] {
-  return buildNeeds({ entries: state.entries, decisions: state.decisions, decisionsAnswered: state.decisionsAnswered, answeredHere: state.answeredHere });
+  return buildNeeds({ entries: state.entries, decisions: state.decisions, decisionsAnswered: state.decisionsAnswered, answeredHere: state.answeredHere, board: state.active?.board });
 }
 
 /**
@@ -434,7 +435,7 @@ function paintNeeds(state: State, force = false): void {
   if (!home || state.closed) return;
   const needs = currentNeeds(state);
   const hooks = needsHooks(state, Date.now());
-  const sig = needsSignature(needs, hooks);
+  const sig = needsSignature(needs, hooks, state.entries);
   const forms: NeedsForm[] = [...home.slots.needs.querySelectorAll("form.answer")].map((form) => ({
     sent: form.hasAttribute("data-sent"),
     text: form.querySelector<HTMLTextAreaElement>("textarea")?.value ?? "",
@@ -452,9 +453,9 @@ function paintNeeds(state: State, force = false): void {
   state.needsSig = sig;
   // A redraw keeps him on the row he is on (e.g. the one he moved on to).
   const on = document.activeElement?.closest(".need")?.id;
-  const waiting = fillNeeds(home, needs, hooks);
-  // Unless he chose, "Needs you" is open exactly while something waits on him.
-  if (state.prefs.needs === undefined) setSectionOpen(home, "needs", waiting > 0, false, homeHooks(state));
+  fillNeeds(home, needs, hooks, state.entries);
+  // The dashboard starts open unless he chose to collapse it.
+  if (state.prefs.needs === undefined) setSectionOpen(home, "needs", true, false, homeHooks(state));
   if (on) document.getElementById(on)?.focus({ preventScroll: true });
   markSelected(state, false);
   renderChrome(state);
@@ -503,6 +504,8 @@ function feedSeen(board: readonly Item[] | undefined, at: number, fromCache: boo
 function paintActive(state: State): void {
   if (!state.home) return;
   fillAgents(state.home, state.active, Date.now());
+  fillStatus(state.home, state.active?.status, render, state.active?.statusError);
+  fillFocus(state.home, state.active?.board);
   fillUsage(state.home, state.active?.usage, state.active?.local, Date.now());
 }
 
@@ -588,8 +591,12 @@ async function refreshActive(state: State): Promise<void> {
         paintChanges(state);
       }
     }
-    state.active = await loadActive(state.gh);
+    const [active, status] = await Promise.all([loadActive(state.gh), loadProjectStatus(state.gh).then((value) => ({ value }), (e: unknown) => ({ error: `Couldn't read project status: ${message(e)}` }))]);
+    state.active = active;
+    if ("value" in status) state.active.status = status.value;
+    else state.active.statusError = status.error;
     paintActive(state);
+    paintNeeds(state);
     paintChanges(state);
   } finally {
     state.activeRunning = false;
@@ -620,7 +627,7 @@ function renderRoute(state: State): void {
     renderHome(state);
     return;
   }
-  const item = r.route === "item" ? state.items.find((i) => i.nodeId === r.id) : undefined;
+  const item = r.route === "item" ? [...state.items, ...(state.active?.board ?? []), ...(state.decisions?.map((d) => d.item) ?? [])].find((i) => i.nodeId === r.id) : undefined;
   if (!item) {
     if (r.route === "item") setNotice("That item no longer needs you (or isn't on the board).");
     renderHome(state);
@@ -1249,7 +1256,7 @@ async function pollWaiting(state: State): Promise<void> {
     const { prs: read, errors, failed } = await loadWaiting(state.gh, state.others);
     // A PR that couldn't be read this time keeps its last standing rather than flicker out.
     const prs = [...read, ...state.waiting.filter((w) => failed.has(refKey(w.pr.ref)))];
-    const sig = (w: readonly WaitingPr[]) => JSON.stringify(w.map((x) => [refKey(x.pr.ref), x.pr.title, x.head, x.wait]));
+    const sig = (w: readonly WaitingPr[]) => JSON.stringify(w.map((x) => [refKey(x.pr.ref), x.pr.title, x.pr.body, x.pr.draft, x.head, x.wait, x.verdict]));
     const changed = sig(prs) !== sig(state.waiting);
     state.waiting = prs;
     if (errors.length) {
@@ -1886,6 +1893,7 @@ function signInView(reason: SignInReason): HTMLElement {
 function showSignIn(reason: SignInReason): void {
   byId("meta").textContent = "";
   byId("signout").hidden = true;
+  byId("nav").hidden = true;
   byId("capture").hidden = true;
   byId("capture").replaceChildren();
   setNotice(undefined);

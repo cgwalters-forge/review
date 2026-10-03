@@ -144,43 +144,36 @@ list's. An answer given in a Needs you row moves on in place, to the
 next row still waiting on you. "Auto-next"
 in the header turns this off (remembered per browser).
 
-**One page of sections.** There are no tabs: under the "Ask anything"
-box (see below) the page is five collapsible sections in this order,
-each with a count in its header and a few rows before "View all". Each
-remembers whether you opened it (localStorage); until you chose, only
-**Needs you** is open, and only while something waits on you. `q`, `d`,
-`n`, `t` and `s` jump to Needs you, Agents, Changes, By priority and
-Usage, and `j`/`k`/`o` walk the rows of the open sections.
+**Operator dashboard.** Under "Ask anything", **Decisions** contains only
+current concrete asks: unanswered open tracker questions assigned to the
+operator, non-draft PRs explicitly requesting the operator's review of an
+unreviewed head (any author), and open items labelled `escalate` assigned to
+the operator. PRs approved by the operator at the current head are excluded,
+including human-text forks. Bot review guides are advisory; the dashboard
+does not infer approval or human-text promotion readiness from them.
+Rows show **Answer**, **Review**, or **Write text**, the reason,
+ask age and repository reference. P0 comes first, then the blocked epic's
+priority, then the newest ask. Missing request timestamps are shown as
+unknown rather than using the PR's creation date. Other queue entries and
+decisions beyond the first fifteen are in collapsed **Watching**.
 
-- **Needs you**: what truly waits on you, once each, one action per
-  row: *Review* (a PR, or a review ask), *Review & promote* (the bot's
-  draft PR in the forge), *Approve to re-sign*, *Rerun checks*,
-  *Answer* (a question, with its options and a note field right in the
-  row, as a comment by you whose first line is the letter you picked;
-  only the `cgwalters` login gets the forms), and *Write text* (a chore
-  or an ask the app can't act on). Open decisions (questions the bot
-  labels `decision`, titled "D<n>: …", with an expandable `Unblocks:`
-  list) are rows too, folded into the question's row when the queue has
-  it. An item with asks under it is only their context. A question you
-  answered from here stays, dimmed, until the page reloads. A redraw
-  never takes away a half-typed answer: it only says to press `r`.
-- **Agents**: how many agents are working against the target of about
-  four (`AGENT_TARGET`), split between the harness (cgwalters-bot and
-  cgwalters-forge) and upstream, with a row per agent: its name, item,
-  status and age (since it started, for a worker; since its board item
-  last changed, for one only the board knows) and, for a remote run, a
-  link to it. It merges the board's In Progress items with a Lead (a
-  topic session) or a Run (a devspace agent run) and the coordinator's
-  heartbeat, a worker on a claimed item being one agent; workers that
-  only a stale heartbeat (or a stopped coordinator's) lists are counted
-  apart as unconfirmed. A fold below holds the ops detail: devspaces,
-  the coordinator, agent runs, active work and the bot's activity.
-- **Changes**: the board changes feed, then the recently merged PRs
-  (below).
-- **By priority**: the whole queue ranked by priority, with the
-  filters, collapsed until you open it. A fold under it holds the
-  themes (below).
-- **Usage**: the plan's windows and who used the most (below).
+Questions retain their inline answer forms and draft protection. Reviews
+open the existing head-checked review pane; **Write text** on an escalation
+opens its GitHub issue.
+
+**Status** renders the newest ProjectV2 status update as sanitized markdown,
+with a four-line preview and Expand. **Focus** shows active epics by priority,
+sub-issue progress and running child items; paused or parked epics are gray.
+**Agents** shows remote/local placement, engine, item and age, the count
+against `AGENT_TARGET`, and OpenCode's share. Engines come from the optional
+board Engine field or heartbeat worker `engine`; absent engines stay unknown.
+Board claims and heartbeat workers are merged, with stale-only workers
+counted separately as unconfirmed.
+
+The existing **Changes**, **By priority** (including themes), **Usage**, and
+ops detail remain below and start collapsed. Section choices are remembered.
+`q`, `d`, `n`, `t`, `s` jump to Decisions, Agents, Changes, By priority, Usage;
+`j`/`k`/`o` walk visible rows.
 
 **Filters** in By priority narrow the queue by the organization an
 entry targets and by priority, with each chip's count. The target is the
