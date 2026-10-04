@@ -445,3 +445,191 @@ schema/capability contract; whether to authorize browser artifact redirects;
 and the pinned Forgejo metadata convention/version. None blocks the initial
 Workstream Command shell. Rust adoption follows measurements, not a rewrite
 commitment.
+
+## 6. Addendum: one inbox across GitHub, Fedora Forgejo and GitLab
+
+**Proposal, 2026-10-04.** Add one operator inbox spanning `github.com`,
+`forge.fedoraproject.org` (Forgejo) and `gitlab.com`: review requests, mentions,
+assigned issues and my open PRs/MRs, with current CI/review summaries and
+**Open** / capability-dependent **Mark done** actions. This is an aggregate
+projection of native records, not another work store. The endpoint contracts
+below are implementation candidates: no target API, deployment configuration
+or external source was probed for this addendum. Version, token-scope and
+hosted CORS compatibility must be confirmed before shipping.
+
+### Provider boundary and inbox semantics
+
+Keep a small provider interface: establish `viewer`, report `capabilities`,
+`listInbox(cursor, filters)`, `readSubject(subject)` for on-demand CI/review,
+and `acknowledge(notificationIds, mode)` where supported. **Open** uses the
+native subject URL; it needs no write API. Keep transport/auth separate so
+the same provider contract can run in the browser or a server adapter.
+
+Identity is **forge instance + viewer's native ID + native subject identity**
+(repository/project ID, issue/PR/MR kind and native ID/number), not login or
+display URL alone. A row contains all contributing reasons and source records:
+review requested, mention, assigned, authored, or bot ask. Deduplicate a subject
+within that identity while preserving every notification/to-do ID and its
+reason; never collapse distinct instances or viewers. Detail summaries name
+the head SHA and freshness; missing CI/review access means unknown, not green
+or approved. Load details lazily rather than querying every row every poll.
+
+Capabilities describe each source and action separately, including repository
+coverage, available CI/review fields, pagination and acknowledgment modes.
+Use per-source opaque cursors; follow all native pages within a bounded fetch
+budget and label unfinished, capped, denied, stale or unsupported sources.
+An aggregate count is partial until all its sources are complete. Native
+notification streams and query membership differ: acknowledging a notification
+does not remove an assigned issue or an outstanding review request query.
+
+**Mark done acknowledges attention, not work completion.** Offer only the
+provider's native notification/to-do operation, with its exact meaning shown.
+Preserve **Mark read** separately where it differs from done. When one row
+has multiple notification IDs, acknowledge those IDs and retain other reasons;
+report partial write failures per source. Assignment, authored-PR and bot-ask
+queries have no equivalent acknowledgment: do not close an issue, unassign
+someone, resolve a discussion or submit a review. If desired later, an explicit
+**Dismiss locally** can hide a query reason in disposable viewer/instance-local
+state; it is not workflow resolution, forge state or a cross-device guarantee.
+
+### Concrete API candidates
+
+All paths below are relative to the stated API root, with encoded query values
+and the viewer's per-instance token. `{R}` is `owner/repo`, `{N}` a native
+issue/PR number, `{P}` an encoded GitLab project ID/path and `{M}` an MR IID.
+
+**GitHub — `https://api.github.com`.** `GET /user` establishes identity.
+`GET /notifications?all=false&per_page=100` supplies native thread IDs and
+reasons such as `review_requested`, `mention`, `team_mention` and `assign`;
+notifications alone do not enumerate all current assignments or requests.
+Supplement with `GET /search/issues?q={query}&per_page=100&page={page}`:
+`is:pr is:open review-requested:{viewer}` (explicitly account for team requests
+where available), `is:issue is:open assignee:{viewer}`, and
+`is:pr is:open author:{viewer}`. Search is indexed, may lag, and is capped at
+1,000 results per query; partition configured repositories when needed and
+show incomplete coverage rather than a universal total.
+
+For PR detail use `GET /repos/{R}/pulls/{N}` and
+`GET /repos/{R}/pulls/{N}/reviews`, plus
+`GET /repos/{R}/commits/{sha}/check-runs` and
+`GET /repos/{R}/commits/{sha}/status`; page collection reads. An optional
+`POST /graphql` search for open PullRequests can return `reviewDecision` and
+`commits(last:1).nodes.commit.statusCheckRollup`, with connection pagination
+and permission/null handling. It does not replace REST notifications or their
+acknowledgment IDs. `PATCH /notifications/threads/{thread_id}` marks read;
+`DELETE /notifications/threads/{thread_id}` marks done. Neither resolves the PR.
+
+Use `Authorization: Bearer …`. Classic PAT candidates are `notifications`
+for notifications and `repo` for private repository access (broad enough to
+permit writes, even for a read-only UI); add `read:org` only if team/org
+discovery needs it. Public-only repository access needs a separate scope
+assessment. Fine-grained PAT support and permissions must be verified for
+each operation, especially notifications/search and cross-owner access; do
+not promise that one owner-scoped token covers a global inbox.
+
+**Forgejo — `https://forge.fedoraproject.org/api/v1`.** Candidate reads are
+`GET /user`, `GET /notifications` (thread reasons and native IDs),
+`GET /repos/{owner}/{repo}/pulls?state=open`,
+`GET /repos/{owner}/{repo}/pulls/{index}` and
+`GET /repos/{owner}/{repo}/pulls/{index}/reviews`. Verify the deployed version's
+OpenAPI/fixtures for review-request notification reasons and
+`requested_reviewers` on pull responses; do not invent a deployment-wide
+review-request search. If necessary, enumerate explicitly configured
+repositories' open pulls and filter verified requested-reviewer IDs locally.
+For assignments use `GET /repos/{owner}/{repo}/issues?state=open` with a
+version-supported assignee filter or local assignee matching; exclude pulls
+from the issue category. Authored pulls likewise require repository enumeration
+and author matching unless a verified native query is available. Mentions come
+from verified notification reasons, not an assumed global mention search.
+CI candidates are `GET /repos/{owner}/{repo}/commits/{sha}/status` and, for
+individual contexts, `/commits/{sha}/statuses`; status alone is not proof that
+all required checks passed. No Actions parity is assumed.
+
+Use `Authorization: token …` for a Forgejo PAT. Candidate scoped read access
+is `read:user`, `read:notification`, `read:repository` and `read:issue`, subject
+to the deployed version's operation-to-scope mapping and repository access.
+Native notification acknowledgment, if supported, is
+`PATCH /notifications/threads/{id}` with the version's documented `to-status`
+value for read/pinned/unread; verify semantics and write scope before enabling
+it. Do not translate GitHub's DELETE/done operation into Forgejo by analogy.
+An instance with no equivalent done operation exposes only its supported
+acknowledgment, labelled accurately. The first slice below has no writes.
+
+**GitLab — `https://gitlab.com/api/v4`.** `GET /user` supplies the numeric
+viewer ID. `GET /todos?state=pending` supplies to-do IDs, target URLs and native
+actions for mentions/assignments/review requests where available. Supplement
+with `GET /issues?scope=assigned_to_me&state=opened`,
+`GET /merge_requests?scope=all&state=opened&reviewer_id={viewer_id}` and
+`GET /merge_requests?scope=created_by_me&state=opened`. Review-query membership
+does not itself prove that a fresh review is still outstanding; inspect native
+review state where supported and label gaps. Detail candidates are
+`GET /projects/{P}/merge_requests/{M}`,
+`GET /projects/{P}/merge_requests/{M}/approvals` and
+`GET /projects/{P}/merge_requests/{M}/pipelines`; approval features can vary
+by tier/version. Identify the pipeline for the current head and fetch
+`GET /projects/{P}/pipelines/{pipeline_id}` when needed.
+`POST /todos/{todo_id}/mark_as_done` acknowledges that to-do only.
+Use `PRIVATE-TOKEN: …` for PATs (Bearer for OAuth); `read_api` is a read-only
+candidate, while to-do writes generally require `api`. Verify each operation
+and token type; the broader write scope is not required for the initial read UI.
+
+For quotas, read GitHub's `X-RateLimit-*` per-resource budgets (REST search and
+GraphQL differ), GitLab's available `RateLimit-*`/pagination headers, and
+Forgejo's deployed pagination/limit responses. Follow GitHub Link/GraphQL
+cursors, Forgejo `page`/`limit`, and GitLab Link/`X-Next-Page` with `per_page`;
+do not assume one maximum page size. Handle 429, `Retry-After`, GitHub secondary
+limits/403 and reset headers with bounded backoff and visible last-confirmed
+state. No Fedora-specific numeric quotas or current CORS policy are asserted.
+
+### Bot asks and native navigation
+
+Treat the intended assignee model referenced by
+[tracker#348](https://github.com/cgwalters-forge/tracker/issues/348) as another
+inbox source. Its contents are not present locally and were not researched
+for this addendum. Query the configured tracker for **open issues authored by
+the configured bot, assigned to the operator, with the exact configured ask
+label** (for questions, `question`): on GitHub,
+`GET /repos/{tracker}/issues?state=open&creator={bot}&assignee={operator}&labels={ask-label}`.
+Validate all predicates, exclude PRs, and reuse the existing unanswered-ask
+derivation; do not infer an ask from board status alone. Merge this reason
+with assigned/notification reasons while retaining provenance. Answering and
+bot closure stay in the existing workflow; inbox acknowledgment is separate.
+
+Extend, rather than replace, section 2's sidebar: **Inbox** is aggregate,
+then **Forges** lists the configured instances with viewer and coverage, and
+each instance exposes native **Projects** / **Boards** entries. GitHub
+ProjectV2 is a board; a GitLab project is a repository/workspace container,
+with issue boards beneath it; Forgejo projects/boards retain their native
+scope and capabilities. Do not coerce them all into ProjectV2 fields. Keep
+selected-board Command destinations and the shared phone drawer. Routes and
+caches carry instance/viewer/native project or board identity; unreadable or
+unsupported board discovery does not block the instance inbox.
+
+### Smallest first slice and client choice
+
+Ship **read-only Forgejo review requests** first: one configured Fedora
+instance/viewer, verified review-request notifications or explicitly configured
+repositories with verified requested-reviewer responses, pagination, source
+coverage, native links, and empty/denied/stale/rate-limited states. State which
+route is used: notification coverage and configured-repository coverage are
+not universal review-request coverage. No mark-done, review submission, board
+port or CI expansion is needed to validate this slice. Before shipping, pin
+the supported deployment schema and exercise fixtures plus the actual browser
+origin with a suitable token; those checks have not been performed here.
+
+**Recommendation: TypeScript/direct DOM first, with a provider/transport seam.**
+A static deployment works only if all required hosts permit the browser's
+authenticated CORS requests and expose needed pagination/quota headers; check
+preflights, methods and headers from the actual UI origin. Today's GitHub-only
+CSP also needs explicit configured API origins. Same-origin hosting alongside
+Forgejo is possible only with control of that host/proxy, not assumed for
+`forge.fedoraproject.org`, and does not make GitHub/GitLab same-origin.
+
+If hosted cross-origin access fails, or server-held tokens are desired, use
+section 3's conditional server adapter/axum + Datastar design to make forge
+requests server-side and serve authenticated UI fragments same-origin. This
+extends its earlier credential-only trigger to CORS compatibility, and adds
+server/session operations. A server does not narrow the underlying PAT scopes.
+Rust/WASM retains browser CORS and token visibility; it is no remedy for this
+transport constraint. Decide transport from verified host behavior before a
+client-framework migration.
