@@ -44,6 +44,7 @@ import { chatPanel } from "./chat.ts";
 import { DecisionsRefresh } from "./decisionsrefresh.ts";
 import {
   CLASSIC_SCOPES,
+  BOT_LOGIN,
   DONE_NOTICE_MS,
   FETCH_CONCURRENCY,
   FORGE_MIN_INTERVAL_MS,
@@ -64,7 +65,7 @@ import { type Command, HELP, keyCommand, parseRoute, type Route, type RouteInfo 
 import { type HarnessCache, loadNews, type News } from "./news.ts";
 import { deleteCacheDatabase, IdbStore } from "./idbstore.ts";
 import type { Active } from "./agents.ts";
-import { fillAgents, fillChanges, fillFocus, fillStatus, fillNeeds, fillOps, fillPriority, fillThemes, fillUsage, type Home, type HomeHooks, homeSkeleton, LIMIT_ID, NEED_ROW_SELECTOR, reveal, setSectionOpen, stepRow, walkRows } from "./homeview.ts";
+import { fillAgents, fillChanges, fillFocus, fillStatus, fillNeeds, fillOps, fillPeople, fillPriority, fillThemes, fillUsage, type Home, type HomeHooks, homeSkeleton, LIMIT_ID, NEED_ROW_SELECTOR, reveal, setSectionOpen, stepRow, walkRows } from "./homeview.ts";
 import { loadProjectStatus } from "./backend.ts";
 import { buildNeeds, type Need, needStops } from "./needs.ts";
 import { needId, type NeedsForm, type NeedsHooks, needsRedraw, needsSignature } from "./needsview.ts";
@@ -73,6 +74,7 @@ import { tickOps } from "./opsview.ts";
 import { Poller, pollDelay, pollNote } from "./poller.ts";
 import { saveMine } from "./mine.ts";
 import { MINE_CLASS } from "./mineview.ts";
+import { loadPeople, markPeopleDone, type People } from "./people.ts";
 import {
   loadFileLines,
   loadForgePrs,
@@ -99,6 +101,10 @@ import { afterReview, ON_BOT_LABEL, REASON_LABEL } from "./waiting.ts";
 const render = createRenderer(window);
 
 interface State {
+  people?: People;
+  peopleRunning?: boolean;
+  peopleRevision?: number;
+  peopleWrites?: number;
   gh: GitHub;
   source: TokenSource;
   session: CacheSession;
@@ -289,6 +295,8 @@ function renderMeta(state: State): void {
   const who = state.login ? `signed in as ${state.login}` : undefined;
   const api = state.gh.rate ? `API ${state.gh.rate.remaining}/${state.gh.rate.limit}` : undefined;
   if (who) part("mp-who", who);
+  const botCount = state.needs.filter((n) => !n.done && (n.entry?.pr?.author ?? n.entry?.item?.author ?? n.decision?.item.author)?.toLowerCase() === BOT_LOGIN.toLowerCase()).length;
+  part("mp-queues", `people ${state.people ? state.people.rows.length : "…"} · bot ${botCount}`);
   const since = cachedSince(state);
   if (since !== undefined) part("mp-age", h("span", { class: "cached", title: "Shown from this browser's cache; checking GitHub for changes" }, cachedLabel(since, Date.now())));
   else if (state.lastPoll) part("mp-age", `checked ${clock(state.lastPoll.getTime())}`);
@@ -407,6 +415,7 @@ function renderHome(state: State): void {
   const home = mountHome(state);
   if (r.route === "home" && r.filter) setSectionOpen(home, "priority", true, true, homeHooks(state));
   paintNeeds(state, fresh);
+  paintPeople(state);
   paintPriority(state);
   paintActive(state);
   paintChanges(state);
@@ -465,6 +474,38 @@ function paintPriority(state: State): void {
   if (!state.home) return;
   fillPriority(state.home, state.entries, labelOf(state), Date.now(), state.filter, { stale: staleItems(state.items, state.entries) });
   markSelected(state, false);
+}
+
+function paintPeople(state: State): void {
+  if (!state.home || state.closed) return;
+  fillPeople(state.home, state.people, Date.now(), {
+    done: async (id) => {
+      state.peopleWrites = (state.peopleWrites ?? 0) + 1;
+      state.peopleRevision = (state.peopleRevision ?? 0) + 1;
+      try {
+        await markPeopleDone(state.gh, id);
+      } finally {
+        state.peopleWrites!--;
+        state.peopleRevision = (state.peopleRevision ?? 0) + 1;
+      }
+    },
+    changed: () => { paintPeople(state); renderChrome(state); },
+  });
+}
+
+async function refreshPeople(state: State): Promise<void> {
+  if (state.peopleRunning || state.peopleWrites || state.closed) return;
+  state.peopleRunning = true;
+  const revision = state.peopleRevision;
+  try {
+    const people = await loadPeople(state.gh, Date.now(), state.login === OPERATOR);
+    if (state.closed || revision !== state.peopleRevision) return;
+    state.people = people;
+    paintPeople(state);
+    renderChrome(state);
+  } finally {
+    state.peopleRunning = false;
+  }
 }
 
 /** Where the themes under "By priority" open an item in the app: only one in the queue; others open on GitHub. */
@@ -568,6 +609,7 @@ function loadSections(state: State): void {
   if (state.home.slots.opsBox.open && opsDue(state)) void refreshOps(state);
   if (state.home.slots.themesBox.open && !state.openBoard) void refreshTriage(state);
   if (!state.decisions) void refreshDecisions(state);
+  if (!state.people) void refreshPeople(state);
 }
 
 /**
@@ -1412,6 +1454,7 @@ function pollSections(state: State): void {
   if (state.home.slots.opsBox.open && opsDue(state)) void refreshOps(state);
   if (state.home.slots.themesBox.open) void refreshTriage(state);
   void refreshDecisions(state);
+  void refreshPeople(state);
 }
 
 /**
@@ -1517,6 +1560,7 @@ function run(state: State, cmd: Command, where: Route): void {
         state.activeStarted = 0;
         state.opsStarted = 0;
         void refreshDecisions(state, true);
+        void refreshPeople(state);
         if (sectionOpenNow(state, "changes")) void refreshNews(state);
         if (state.home?.slots.themesBox.open) void refreshTriage(state);
         paintNeeds(state, true);

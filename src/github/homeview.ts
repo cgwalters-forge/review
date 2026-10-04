@@ -16,6 +16,8 @@ import type { QueueFilter } from "./filter.ts";
 import type { Heartbeat } from "./heartbeat.ts";
 import type { News } from "./news.ts";
 import { newsList } from "./newsview.ts";
+import type { People } from "./people.ts";
+import { peopleView, type PeopleHooks } from "./peopleview.ts";
 import { type Need, waitingCount } from "./needs.ts";
 import { NEED_CLASS, needRow, type NeedsHooks } from "./needsview.ts";
 import { type Ops } from "./ops.ts";
@@ -45,6 +47,8 @@ export interface SectionEls {
 
 /** The places the sections' data goes. */
 export interface Slots {
+  people: HTMLElement;
+  peopleCount: HTMLElement;
   status: HTMLElement;
   focus: HTMLElement;
   needs: HTMLElement;
@@ -115,6 +119,9 @@ function fold(cls: string, label: string, onToggle: (open: boolean) => void): { 
 
 export function homeSkeleton(hooks: HomeHooks): Home {
   const expected = new Map<SectionId, boolean>();
+  const people = h("div", { class: "people-slot sec-body" });
+  const peopleCount = h("span", { class: COUNT_CLASS }, "…");
+  const peopleSection = h("details", { class: `${SECTION_CLASS} sec-people`, id: "sec-people", open: "" }, h("summary", {}, h("span", { class: "sec-title" }, "From people"), peopleCount), people);
   const needs = h("div", { class: "needs-slot" });
   const status = h("section", { class: "dashboard-status", "aria-label": "Status" }, h("h2", {}, "Status"));
   const focus = h("section", { class: "dashboard-focus", "aria-label": "Focus" }, h("h2", {}, "Focus"));
@@ -133,8 +140,8 @@ export function homeSkeleton(hooks: HomeHooks): Home {
     priority: section("priority", ctx, hooks, priority, themes.box),
     usage: section("usage", ctx, hooks, usage),
   };
-  const el = h("div", { class: HOME_CLASS }, sections.needs.details, status, focus, ...SECTIONS.filter((id) => id !== "needs").map((id) => sections[id].details));
-  return { el, sections, slots: { status, focus, needs, agents, ops: ops.slot, opsBox: ops.box, feed, news, priority, themes: themes.slot, themesBox: themes.box, usage }, expected };
+  const el = h("div", { class: HOME_CLASS }, peopleSection, sections.needs.details, status, focus, ...SECTIONS.filter((id) => id !== "needs").map((id) => sections[id].details));
+  return { el, sections, slots: { people, peopleCount, status, focus, needs, agents, ops: ops.slot, opsBox: ops.box, feed, news, priority, themes: themes.slot, themesBox: themes.box, usage }, expected };
 }
 
 /** Open or close a section from code (a jump, or its default changing). With `remember`, as if he did. */
@@ -210,6 +217,13 @@ export const NEED_ROW_SELECTOR = `.${NEED_CLASS}`;
 // What each section is filled with.
 
 export const DECISION_LIMIT = 15;
+
+export function fillPeople(home: Home, people: People | undefined, now: number, hooks: PeopleHooks): void {
+  home.slots.people.replaceChildren(peopleView(people, now, hooks));
+  applyLimit(home.slots.people, "people", ".people-row");
+  home.slots.peopleCount.textContent = people ? String(people.rows.length) : "…";
+  home.slots.peopleCount.title = people?.warnings.length ? "Partial results; see source warnings" : "Human asks";
+}
 
 export function fillNeeds(home: Home, needs: readonly Need[], hooks: NeedsHooks, entries: readonly Entry[] = []): number {
   const slot = home.slots.needs;

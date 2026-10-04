@@ -1,0 +1,138 @@
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { describe, it } from "node:test";
+import { GitHub } from "../src/github/api.ts";
+import { humanAsk, loadPeople, markPeopleDone, PEOPLE_QUERY, PEOPLE_RECENT_DAYS, type PeopleEvent, type PeopleNotification, type PeopleSubject } from "../src/github/people.ts";
+import type { Recorded, Scripted } from "./helpers.ts";
+
+const data = JSON.parse(readFileSync(new URL("fixtures/people.json", import.meta.url), "utf8")) as { search: PeopleSubject[]; notifications: PeopleNotification[]; timelines: Record<string, PeopleEvent[]> };
+const now = Date.parse("2026-10-04T00:00:00Z");
+
+function client(options: { notificationsStatus?: number; searchStatus?: number; failedThread?: number; failedTimeline?: number; failedCI?: boolean; truncatedCI?: boolean; notifications?: PeopleNotification[]; paginated?: boolean } = {}) {
+  const calls: Recorded[] = [];
+  const route = (method: string, url: string): Scripted | undefined => {
+    const path = new URL(url).pathname;
+    if (method === "PATCH") return { status: 204 };
+    if (path === "/search/issues") return options.searchStatus ? { status: options.searchStatus } : { body: { items: data.search } };
+    if (path === "/notifications") {
+      if (options.notificationsStatus) return { status: options.notificationsStatus, body: { message: "notifications denied" } };
+      const notifications = options.notifications ?? data.notifications;
+      if (options.paginated) return new URL(url).searchParams.has("page") ? { body: notifications.slice(1) } : { body: notifications.slice(0, 1), headers: { link: '<https://api.github.com/notifications?page=2>; rel="next"' } };
+      return { body: notifications };
+    }
+    const timeline = /\/issues\/(\d+)\/timeline$/.exec(path);
+    if (timeline) return Number(timeline[1]) === options.failedTimeline ? { status: 403 } : { body: data.timelines[timeline[1]!] ?? [] };
+    const issue = /\/issues\/(\d+)$/.exec(path);
+    if (issue) {
+      const n = Number(issue[1]);
+      if (n === options.failedThread) return { status: 404 };
+      return { body: data.search.find((s) => s.number === n) ?? { number: n, title: `Thread ${n}`, user: { login: "cgwalters-bot", type: "User" }, ...(n === 12 ? { pull_request: {} } : {}) } };
+    }
+    if (/\/pulls\/\d+$/.test(path)) return { body: { head: { sha: "abc" } } };
+    if (path.endsWith("/check-runs")) return options.failedCI ? { status: 403 } : { body: { total_count: options.truncatedCI ? 101 : 1, check_runs: [{ name: "test", status: "completed", conclusion: "success" }] } };
+    if (path.endsWith("/status")) return { body: { statuses: [] } };
+    return undefined;
+  };
+  // Keep model fixtures runnable with Node alone; no DOM or real fetch needed.
+  const gh = new GitHub(async () => "fixture-only", async (url, init) => {
+    const method = init?.method ?? "GET";
+    calls.push({ method, url, headers: {}, body: init?.body ? JSON.parse(String(init.body)) : undefined });
+    const response = route(method, url);
+    assert.ok(response, `unexpected fixture request: ${method} ${url}`);
+    const status = response.status ?? 200;
+    return new Response(status === 204 ? null : JSON.stringify(response.body ?? {}), { status, headers: { "content-type": "application/json", ...response.headers } });
+  });
+  return { gh, calls };
+}
+
+describe("From people loader", () => {
+  it("merges human review search with recent participating asks, excluding bot-only and unknown activity", async () => {
+    const { gh, calls } = client();
+    const people = await loadPeople(gh, now);
+    assert.deepEqual(people.rows.map((r) => r.key), ["upstream/widget#1", "upstream/widget#12", "upstream/widget#6"]);
+    assert.deepEqual(people.rows.map((r) => r.action), ["Review", "Review", "Reply"]);
+    assert.deepEqual(people.rows.map((r) => r.ci), ["success", "success", "n/a"]);
+    assert.deepEqual(people.rows[0]?.notificationIds, ["101"]);
+    assert.equal(people.rows[0]?.requestedAt, "2026-10-02T00:00:00Z");
+    assert.equal(people.rows[2]?.author, "cgwalters-bot", "a bot-authored thread with a human ask still counts");
+    assert.deepEqual(people.warnings, []);
+    const search = new URL(calls.find((c) => c.url.includes("/search/issues"))!.url);
+    assert.equal(search.searchParams.get("q"), PEOPLE_QUERY);
+    const notifications = new URL(calls.find((c) => new URL(c.url).pathname === "/notifications")!.url);
+    assert.equal(notifications.searchParams.get("participating"), "true");
+    assert.equal(notifications.searchParams.get("all"), "false");
+    assert.equal(notifications.searchParams.get("since"), new Date(now - PEOPLE_RECENT_DAYS * 86_400_000).toISOString());
+    assert.equal(calls.filter((c) => c.url.includes("/issues/1/timeline")).length, 1);
+    assert.ok(!calls.some((c) => /\/issues\/(8|11)(?:\/|$)/.test(new URL(c.url).pathname)));
+  });
+
+  for (const status of [403, 404, 500]) it(`retains search when notifications fail with ${status}`, async () => {
+    const { gh } = client({ notificationsStatus: status });
+    const people = await loadPeople(gh, now);
+    assert.deepEqual(people.rows.map((r) => r.key), ["upstream/widget#1"]);
+    assert.match(people.warnings.join(" "), /Notifications unavailable/);
+  });
+
+  it("keeps other rows after an inaccessible thread and keeps unknown ages/CI honest", async () => {
+    const { gh } = client({ failedThread: 6, failedTimeline: 1, failedCI: true });
+    const people = await loadPeople(gh, now);
+    assert.deepEqual(people.rows.map((r) => r.key), ["upstream/widget#1", "upstream/widget#12"]);
+    assert.equal(people.rows[0]?.requestedAt, undefined);
+    assert.equal(people.rows[0]?.ci, "unknown");
+    assert.match(people.warnings.join(" "), /Request age unavailable/);
+    assert.match(people.warnings.join(" "), /Notification 106 unavailable/);
+  });
+
+  it("doesn't read another signed-in viewer's notifications", async () => {
+    const { gh, calls } = client();
+    assert.equal((await loadPeople(gh, now, false)).rows.length, 1);
+    assert.ok(!calls.some((c) => new URL(c.url).pathname === "/notifications"));
+  });
+
+  it("follows notification pagination and retains notifications when search fails", async () => {
+    const { gh, calls } = client({ paginated: true, searchStatus: 500 });
+    const people = await loadPeople(gh, now);
+    assert.deepEqual(people.rows.map((r) => r.key), ["upstream/widget#12", "upstream/widget#1", "upstream/widget#6"]);
+    assert.match(people.warnings.join(" "), /Review-request search unavailable/);
+    assert.equal(calls.filter((c) => new URL(c.url).pathname === "/notifications").length, 2);
+  });
+
+  it("excludes read, invalid, future, stale-event and foreign notification subjects", async () => {
+    const base = data.notifications[1]!;
+    const notifications = [
+      { ...base, unread: false }, { ...base, updated_at: "invalid" },
+      { ...base, updated_at: "2026-10-05T00:00:00Z" },
+      { ...base, subject: { type: "Issue", url: "https://evil.example/repos/upstream/widget/issues/6" } },
+      { ...base, repository: { full_name: "other/widget" } },
+      { ...base, subject: { type: "Issue", url: "https://api.github.com/repos/upstream/widget/issues/8" } },
+    ];
+    const { gh } = client({ notifications });
+    const people = await loadPeople(gh, now);
+    assert.deepEqual(people.rows.map((r) => r.key), ["upstream/widget#1"]);
+  });
+
+  it("leaves a truncated CI summary unknown instead of claiming success", async () => {
+    const { gh } = client({ truncatedCI: true });
+    const people = await loadPeople(gh, now);
+    assert.equal(people.rows[0]?.ci, "unknown");
+  });
+
+  it("requires exact mentions and operator-targeted human review requests", () => {
+    const base = { event: "commented", user: { login: "alice", type: "User" } };
+    assert.equal(humanAsk({ ...base, body: "@cgwalters-other" }, "mention"), false);
+    assert.equal(humanAsk({ ...base, body: "@CGWALTERS hello" }, "mention"), true);
+    assert.equal(humanAsk({ event: "review_requested", actor: base.user, requested_reviewer: { login: "other" } }, "review_requested"), false);
+    assert.equal(humanAsk({ ...base, event: "committed", body: "@cgwalters" }, "mention"), false);
+  });
+
+  it("marks only the notification read and invalidates notification response caches", async () => {
+    const { gh, calls } = client();
+    await gh.get("/notifications");
+    await markPeopleDone(gh, "106");
+    assert.equal(calls.at(-1)?.method, "PATCH");
+    assert.equal(calls.at(-1)?.url, "https://api.github.com/notifications/threads/106");
+    assert.equal(calls.at(-1)?.body, undefined);
+    await assert.rejects(gh.cacheOnly().get("/notifications"), /not cached/);
+    await assert.rejects(markPeopleDone(gh, "106/other"), /invalid notification/);
+  });
+});

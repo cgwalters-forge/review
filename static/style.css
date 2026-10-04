@@ -582,6 +582,9 @@ details.sec[open] > summary { border-bottom: 1px solid var(--line); }
 .sec-body .empty { padding: 12px 0; }
 .sec-body .filters { margin-top: 0; }
 .view-all { justify-self: start; margin-top: 4px; }
+.people-list { display: grid; gap: 10px; }
+.people-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 10px; padding: 8px 0; border-bottom: 1px solid var(--line); min-width: 0; overflow-wrap: anywhere; }
+.people-row > a:first-child { flex-basis: 100%; font-weight: 600; }
 details.sub-fold { border-top: 1px solid var(--line); padding-top: 8px; font-size: 14px; }
 details.sub-fold > summary { cursor: pointer; color: var(--accent); min-height: 32px; }
 details.sub-fold > div { padding-top: 8px; }

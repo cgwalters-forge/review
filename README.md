@@ -157,6 +157,23 @@ priority, then the newest ask. Missing request timestamps are shown as
 unknown rather than using the PR's creation date. Other queue entries and
 decisions beyond the first fifteen are in collapsed **Watching**.
 
+**From people**, above Decisions, combines open human-authored PRs requesting
+the operator's review (`review-requested:cgwalters -author:cgwalters-bot`)
+with participating unread mention/review-request notifications from the last
+14 days. Notifications require a recent explicit human comment/review mentioning
+the operator or a human review-request event; unknown actors and bot-only
+activity are excluded. Matching threads appear once. Five rows show before
+View all, with author, request age (unknown when unavailable), CI, and GitHub
+Review/Reply links. Mark done marks the notification read on GitHub; an open
+search review request stays until reviewed. The header shows people and bot
+ask counts. No separate inbox or dismissal state is stored.
+
+Notifications need access to the signed-in operator's notifications: a classic
+token needs the `notifications` scope (or `repo`, which also grants access).
+Fine-grained tokens do not support these notification endpoints. When access
+is unavailable, the section shows a warning and retains review-request search
+results. Repository access is still needed for private PRs, timelines and CI.
+
 Questions retain their inline answer forms and draft protection. Reviews
 open the existing head-checked review pane; **Write text** on an escalation
 opens its GitHub issue.
