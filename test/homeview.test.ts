@@ -125,11 +125,11 @@ describe("operator dashboard", () => {
 });
 
 describe("homeSkeleton", () => {
-  it("has the five sections in order, each with a count, closed unless its hook says otherwise", () => {
+  it("has From people above the five remembered sections, each with a count", () => {
     const home = homeSkeleton(hooks(["needs"]));
     const sections = [...home.el.querySelectorAll<HTMLDetailsElement>("details.sec")];
-    assert.deepEqual(sections.map((d) => text(d.querySelector(".sec-title"))), SECTIONS.map((id) => SECTION_TITLE[id]));
-    assert.deepEqual(sections.map((d) => d.open), [true, false, false, false, false]);
+    assert.deepEqual(sections.map((d) => text(d.querySelector(".sec-title"))), ["From people", ...SECTIONS.map((id) => SECTION_TITLE[id])]);
+    assert.deepEqual(sections.map((d) => d.open), [true, true, false, false, false, false]);
     for (const d of sections) assert.ok(d.querySelector(`summary .${COUNT_CLASS}`), "a count in each header");
     assert.ok(home.slots.opsBox, "the ops detail folds under the agents");
     assert.ok(home.sections.priority.body.contains(home.slots.themesBox), "the themes fold under by-priority");

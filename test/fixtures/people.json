@@ -1,0 +1,28 @@
+{
+  "search": [
+    {"number":1,"title":"Human review <script>","html_url":"https://github.com/upstream/widget/pull/1","state":"open","pull_request":{},"user":{"login":"alice","type":"User"}},
+    {"number":2,"title":"Configured bot","html_url":"https://github.com/upstream/widget/pull/2","state":"open","pull_request":{},"user":{"login":"cgwalters-bot","type":"User"}},
+    {"number":3,"title":"App bot","html_url":"https://github.com/upstream/widget/pull/3","state":"open","pull_request":{},"user":{"login":"renovate[bot]","type":"Bot"}},
+    {"number":4,"title":"Unknown actor","html_url":"https://github.com/upstream/widget/pull/4","state":"open","pull_request":{},"user":{"login":"unknown"}},
+    {"number":13,"title":"Closed PR","html_url":"https://github.com/upstream/widget/pull/13","state":"closed","pull_request":{},"user":{"login":"alice","type":"User"}}
+  ],
+  "notifications": [
+    {"id":"101","unread":true,"reason":"review_requested","updated_at":"2026-10-03T00:00:00Z","repository":{"full_name":"upstream/widget"},"subject":{"type":"PullRequest","url":"https://api.github.com/repos/upstream/widget/pulls/1"}},
+    {"id":"106","unread":true,"reason":"mention","updated_at":"2026-10-03T00:00:00Z","repository":{"full_name":"upstream/widget"},"subject":{"type":"Issue","url":"https://api.github.com/repos/upstream/widget/issues/6"}},
+    {"id":"107","unread":true,"reason":"mention","updated_at":"2026-10-03T00:00:00Z","repository":{"full_name":"upstream/widget"},"subject":{"type":"Issue","url":"https://api.github.com/repos/upstream/widget/issues/7"}},
+    {"id":"108","unread":true,"reason":"mention","updated_at":"2026-09-01T00:00:00Z","repository":{"full_name":"upstream/widget"},"subject":{"type":"Issue","url":"https://api.github.com/repos/upstream/widget/issues/8"}},
+    {"id":"109","unread":true,"reason":"mention","updated_at":"2026-10-03T00:00:00Z","repository":{"full_name":"upstream/widget"},"subject":{"type":"Issue","url":"https://api.github.com/repos/upstream/widget/issues/9"}},
+    {"id":"110","unread":true,"reason":"mention","updated_at":"2026-10-03T00:00:00Z","repository":{"full_name":"upstream/widget"},"subject":{"type":"Issue","url":"https://api.github.com/repos/upstream/widget/issues/10"}},
+    {"id":"111","unread":true,"reason":"subscribed","updated_at":"2026-10-03T00:00:00Z","repository":{"full_name":"upstream/widget"},"subject":{"type":"Issue","url":"https://api.github.com/repos/upstream/widget/issues/11"}},
+    {"id":"112","unread":true,"reason":"review_requested","updated_at":"2026-10-03T00:00:00Z","repository":{"full_name":"upstream/widget"},"subject":{"type":"PullRequest","url":"https://api.github.com/repos/upstream/widget/pulls/12"}}
+  ],
+  "timelines": {
+    "1":[{"event":"review_requested","actor":{"login":"alice","type":"User"},"requested_reviewer":{"login":"cgwalters"},"created_at":"2026-10-02T00:00:00Z"}],
+    "6":[{"event":"commented","user":{"login":"alice","type":"User"},"body":"@cgwalters can you reply?","created_at":"2026-10-02T00:00:00Z"},{"event":"commented","user":{"login":"cgwalters-bot","type":"User"},"body":"Automated update","created_at":"2026-10-03T00:00:00Z"}],
+    "7":[{"event":"commented","user":{"login":"cgwalters-bot","type":"User"},"body":"@cgwalters bot-only","created_at":"2026-10-03T00:00:00Z"},{"event":"labeled","actor":{"login":"alice","type":"User"},"created_at":"2026-10-03T00:00:00Z"}],
+    "8":[{"event":"commented","user":{"login":"alice","type":"User"},"body":"@cgwalters old mention","created_at":"2026-09-01T00:00:00Z"}],
+    "9":[{"event":"commented","user":{"login":"unknown"},"body":"@cgwalters unknown","created_at":"2026-10-03T00:00:00Z"}],
+    "10":[{"event":"commented","user":{"login":"cgwalters","type":"User"},"body":"@cgwalters own comment","created_at":"2026-10-03T00:00:00Z"}],
+    "12":[{"event":"review_requested","actor":{"login":"bob","type":"User"},"requested_reviewer":{"login":"cgwalters"},"created_at":"2026-10-03T00:00:00Z"}]
+  }
+}
