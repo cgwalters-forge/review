@@ -600,6 +600,13 @@ details.sub-fold > div { padding-top: 8px; }
 /* Operator dashboard: expanded status is rendered by the existing sanitizer. */
 .dashboard-status, .dashboard-focus { padding: 1rem; border-bottom: 1px solid var(--border, #8884); }
 .dashboard-status, .dashboard-focus, .watching-item { min-width: 0; overflow-wrap: anywhere; }
+.dashboard-runs { padding: 1rem; min-width: 0; overflow-wrap: anywhere; border-bottom: 1px solid var(--line); }
+.action-run { padding: .5rem 0; border-top: 1px solid var(--line); }
+.action-run summary { cursor: pointer; }
+.runs-spark { display: flex; align-items: end; gap: 3px; height: 48px; max-width: 100%; margin-bottom: 1rem; }
+.runs-spark span { flex: 1; min-width: 0; background: var(--accent); }
+.source-freshness { overflow-wrap: anywhere; padding: .5rem 1rem; }
+.state-export pre { white-space: pre-wrap; overflow-wrap: anywhere; }
 .status-preview { display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; line-height: 1.5em; max-height: 6em; overflow: hidden; }
 .status-preview > :first-child { margin-top: 0; }
 .focus-epic.paused { color: #888; }

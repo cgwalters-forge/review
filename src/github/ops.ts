@@ -29,6 +29,7 @@ import { isOwnOrg, itemOrg, type Preset } from "./filter.ts";
 import { type Heartbeat, loadHeartbeat } from "./heartbeat.ts";
 import { loadUsage, type UsageData } from "./usage.ts";
 import { mapLimit } from "./prs.ts";
+import { readSource, type Sources } from "./freshness.ts";
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
@@ -466,6 +467,7 @@ export interface DevspaceData {
 export type AgentData = { deployed: true; runs: AgentRun[] } | { deployed: false };
 
 export interface Ops {
+  sources?: Sources;
   /** Each section is undefined when its read failed; see warnings. */
   devspaces?: DevspaceData;
   agents?: AgentData;
@@ -559,13 +561,14 @@ function guarded(warnings: string[]) {
  */
 export async function loadActive(gh: GitHub, now: number = Date.now()): Promise<Active> {
   const warnings: string[] = [];
-  const guard = guarded(warnings);
+  const sources: Sources = {};
   const [board, local, usage] = await Promise.all([
-    guard("the board", loadWholeBoard(gh).then((q) => q.items)),
-    guard("the coordinator's heartbeat", loadHeartbeat(gh)),
-    guard("the plan's usage", loadUsage(gh)),
+    readSource(sources, "board", (source) => loadWholeBoard(source).then((q) => q.items), gh),
+    readSource(sources, "heartbeat", (source) => loadHeartbeat(source), gh),
+    readSource(sources, "usage", (source) => loadUsage(source), gh),
   ]);
-  const active: Active = { warnings, at: now };
+  for (const [name, source] of Object.entries(sources)) if (source.error) warnings.push(`Couldn't read ${name}: ${source.error}`);
+  const active: Active = { warnings, at: now, sources };
   if (board) active.board = board;
   if (local !== undefined) active.local = local;
   if (usage) active.usage = usage;
@@ -576,15 +579,27 @@ export async function loadActive(gh: GitHub, now: number = Date.now()): Promise<
 export async function loadOps(gh: GitHub, cache: JobCache, now: number = Date.now()): Promise<Ops> {
   const warnings: string[] = [];
   const guard = guarded(warnings);
+  const sources: Sources = {};
+  const tracked = async <T>(name: string, read: (gh: GitHub) => Promise<T>): Promise<T> => {
+    const scope = gh.readScope();
+    try {
+      const value = await read(scope);
+      sources[name] = { state: scope.oldest === undefined ? "ok" : "cached", checkedAt: Date.now(), fetchedAt: scope.oldest ?? Date.now() };
+      return value;
+    } catch (e) {
+      sources[name] = { state: "unavailable", checkedAt: Date.now(), error: message(e) };
+      throw e;
+    }
+  };
   const [devspaces, agents, local, usage, board, events] = await Promise.all([
     guard(`the devspaces in ${DEVSPACE_REPO}`, loadDevspaces(gh, cache, now)),
     guard(`the agent runs in ${DEVSPACE_REPO}`, loadAgents(gh)),
-    guard("the coordinator's heartbeat", loadHeartbeat(gh)),
-    guard("the plan's usage", loadUsage(gh)),
-    guard("the board", loadWholeBoard(gh).then((q) => q.items)),
+    guard("the coordinator's heartbeat", tracked("heartbeat", (source) => loadHeartbeat(source))),
+    guard("the plan's usage", tracked("usage", (source) => loadUsage(source))),
+    guard("the board", tracked("board", (source) => loadWholeBoard(source).then((q) => q.items))),
     guard(`${BOT_LOGIN}'s recent activity`, loadEvents(gh)),
   ]);
-  const ops: Ops = { warnings, at: now };
+  const ops: Ops = { warnings, at: now, sources };
   if (devspaces) ops.devspaces = devspaces;
   if (agents) ops.agents = agents;
   if (local !== undefined) ops.local = local;
@@ -595,4 +610,16 @@ export async function loadOps(gh: GitHub, cache: JobCache, now: number = Date.no
   }
   if (events) ops.events = events;
   return ops;
+}
+
+/** Keep last known shared data while applying every ops read's freshness, including failures. */
+export function activeFromOps(previous: Active | undefined, ops: Ops): Active {
+  const sources: Sources = { ...previous?.sources };
+  for (const [name, source] of Object.entries(ops.sources ?? {})) sources[name] = source.state === "unavailable" ? { ...sources[name], ...source } : { ...source };
+  return {
+    ...previous, fromCache: false, warnings: ops.warnings, at: ops.at, sources,
+    ...(ops.board !== undefined ? { board: ops.board } : {}),
+    ...(ops.local !== undefined ? { local: ops.local } : {}),
+    ...(ops.usage !== undefined ? { usage: ops.usage } : {}),
+  };
 }

@@ -100,26 +100,26 @@ describe("activeAgents", () => {
       0,
     ],
     [
-      "claimed items no worker names are agents of their own: a topic session, a devspace run",
+      "board claims without execution evidence stay unconfirmed",
       [
         item("PVTI_wfc", "https://github.com/cgwalters-forge/gh-aw/issues/1", { lead: "wfc", priority: "P1", org: "cgwalters-forge" }),
         item("PVTI_run", `${TRACKER}/58`, { run: "https://github.com/bootc-dev/cgwalters-devspace-sandbox/actions/runs/1", priority: "P0", org: "bootc-dev" }),
         item("PVTI_idle", `${TRACKER}/62`, { priority: "P0" }),
       ],
       heartbeat([]),
-      [["agent run", "board", "upstream", "run", false], ["wfc", "board", "harness", "claimed", false]],
-      2,
-      [1, 1, 0],
+      [["agent run", "board", "upstream", "run", true], ["wfc", "board", "harness", "claimed", true]],
       0,
+      [0, 0, 0],
+      2,
     ],
     [
-      "a stale heartbeat's workers are unconfirmed, unless the board still claims their item",
+      "board claims cannot rescue stale heartbeat workers",
       [item("PVTI_c", `${TRACKER}/173`, { lead: "fsck", org: "bootc-dev" })],
       heartbeat([worker("old", "https://github.com/bootc-dev/bootc/issues/9"), worker("fsck", `${TRACKER}/173`)], 3 * 60 * MIN),
-      [["fsck", "both", "upstream", "working", false], ["old", "heartbeat", "upstream", "working", true]],
-      1,
-      [0, 1, 0],
-      1,
+      [["fsck", "both", "upstream", "working", true], ["old", "heartbeat", "upstream", "working", true]],
+      0,
+      [0, 0, 0],
+      2,
     ],
     [
       "a stopped coordinator's workers are unconfirmed, however fresh its heartbeat",
@@ -131,13 +131,13 @@ describe("activeAgents", () => {
       1,
     ],
     [
-      "without a heartbeat, the board's claims still count",
+      "without a heartbeat, board claims are not execution",
       [item("PVTI_wfc", "https://github.com/cgwalters-forge/gh-aw/issues/1", { lead: "wfc", org: "cgwalters-forge" })],
       null,
-      [["wfc", "board", "harness", "claimed", false]],
-      1,
-      [1, 0, 0],
+      [["wfc", "board", "harness", "claimed", true]],
       0,
+      [0, 0, 0],
+      1,
     ],
   ];
   for (const [name, board, hb, want, running, [harness, upstream, unknown], unconfirmed] of cases) {
@@ -164,7 +164,7 @@ describe("activeAgents", () => {
       source: "both",
       location: "remote",
       lane: "unknown",
-      stale: false,
+      stale: true,
       title: "safe outputs",
       priority: "P0",
       lead: "wfc",
@@ -188,12 +188,12 @@ describe("activeAgents", () => {
     const board = [item("remote", `${TRACKER}/1`, { run: "https://github.com/o/r/actions/runs/1", engine: "opencode" })];
     const hb = heartbeat([worker("local", `${TRACKER}/2`, { engine: "claude" }), worker("unknown", `${TRACKER}/3`)]);
     const s = activeAgents(board, hb, NOW);
-    assert.deepEqual(s.locations, { remote: 1, local: 2 });
-    assert.equal(s.opencode, 1);
+    assert.deepEqual(s.locations, { remote: 0, local: 2 });
+    assert.equal(s.opencode, 0);
     assert.equal(s.unknownEngine, 1);
     const stale = activeAgents(board, { ...hb, updatedAt: ago(60 * MIN) }, NOW);
-    assert.deepEqual(stale.locations, { remote: 1, local: 0 });
-    assert.equal(stale.running, 1);
+    assert.deepEqual(stale.locations, { remote: 0, local: 0 });
+    assert.equal(stale.running, 0);
   });
 
   it("reads Run from the board", () => {
@@ -217,12 +217,12 @@ describe("agentsBody", () => {
     const data = { board, local: heartbeat([worker("fsck", `${TRACKER}/173`), worker("old", "https://github.com/bootc-dev/bootc/issues/9")], 3 * 60 * MIN), warnings: [], at: NOW };
     const el = agentsBody(data, NOW);
     const t = text(el);
-    assert.match(t, /harness 1 · upstream 1/);
-    assert.match(t, /\+1 unconfirmed/);
+    assert.match(t, /harness 0 · upstream 0/);
+    assert.match(t, /\+3 unconfirmed/);
     assert.match(t, /heartbeat 3h old/);
     assert.deepEqual([...el.querySelectorAll(`.${AGENT_ROW_CLASS} strong`)].map((s) => s.textContent), ["wfc", "fsck", "old"]);
-    assert.equal(el.querySelectorAll(`.${AGENT_ROW_CLASS}.stale`).length, 1);
-    assert.deepEqual(agentsSummary(data, NOW), { count: "2/4", title: "2 working, aiming for about 4", under: true });
+    assert.equal(el.querySelectorAll(`.${AGENT_ROW_CLASS}.stale`).length, 3);
+    assert.deepEqual(agentsSummary(data, NOW), { count: "0/4", title: "0 working, aiming for about 4", under: true });
   });
 
   it("links a remote agent run to its run", () => {

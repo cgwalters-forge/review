@@ -184,8 +184,79 @@ sub-issue progress and running child items; paused or parked epics are gray.
 **Agents** shows remote/local placement, engine, item and age, the count
 against `AGENT_TARGET`, and OpenCode's share. Engines come from the optional
 board Engine field or heartbeat worker `engine`; absent engines stay unknown.
-Board claims and heartbeat workers are merged, with stale-only workers
-counted separately as unconfirmed.
+The running count combines live `agent.yml` Actions runs (remote) and fresh
+heartbeat jobs without a devspace (local). The board's Lead/Run fields supply
+context, never proof of execution: completed or unvalidated Run links and
+Lead-only claims remain unconfirmed. Board claims cannot rescue a stale,
+stopped, cached or unread heartbeat. Lead-only epics and sub-issue umbrellas
+stay in Focus and are excluded from agent claims.
+
+Remote sightings are merged by repository plus concrete run id, ignoring URL
+case, attempt suffixes, queries and fragments. A remote heartbeat worker can
+be associated through its board item's Run link; without a validated live
+Actions run it remains unconfirmed. A local heartbeat job stays distinct even
+when its item also links to a remote run. Duplicate heartbeat worker names
+within one session count once. Retained Actions rows after a failed/cached
+read, or readings older than two 60-second poll intervals, are unconfirmed.
+Actions-only counts render even when board and heartbeat reads fail; agents
+with unknown engines stay unknown in the OpenCode share. Counts include only
+known execution; inaccessible or truncated sources may hide additional jobs.
+
+**Live Actions runs** is visible outside the Agents and ops disclosures. It
+reads `agent.yml` independently of the heartbeat, conditionally every 60 seconds
+while the dashboard tab is visible. Rows link to Actions and expand to show
+the attempt, actor, timestamps, job status, runner and labels. The last-24-hour
+summary counts runs created in the window; core-hours sum job spans clipped to
+that window, using only runner labels that report a core count. The sparkline
+shows those known core-hours per hour. Lists are bounded to 100 runs per query
+and 100 jobs per attempt; truncation or missing job sizes makes totals partial.
+Active statuses are queried separately so older live runs can still appear.
+Only the latest attempt's jobs are included; retries make accounting partial.
+
+Model usage can be explicitly published in a run's `display_title`, for example
+`Agent: review [tokens=1200; cost=$0.25]`. The conservative parser accepts
+standalone `tokens` or `cost` fields, separated from other text by brackets,
+parentheses, semicolons, pipes or `·`; a comma separates fields only when
+followed by another `tokens` or `cost` label. Labels are case-insensitive and
+use `:` or `=`. Tokens must be an unsigned integer; cost must have an explicit
+`$` or `USD ` prefix and an unsigned decimal with at most six fractional digits.
+For example, `(TOKENS: 0 | cost: USD 0.125)` is also supported. Signs, exponents,
+abbreviations (`1k`), thousands separators, other currencies, bare costs,
+trailing prose and duplicate labels are unsupported. Each metric is independent:
+an absent, malformed, duplicate or unsafe numeric value remains `null`.
+
+The shared state and panel sum known title readings for runs **created** in the
+last 24 hours, with separate known-run counts and partial flags for tokens and
+USD cost. Explicit zero is known; no readings is unknown (except a successfully
+read, complete empty window, whose sum is zero). Active runs, missing readings,
+truncated history and retries make coverage partial. Costs are summed in integer
+millionths of USD; an unsafe aggregate remains unknown. These run-level readings
+are not prorated into the window or treated as exact 24-hour consumption. No
+artifact downloads, pricing estimates or conversions from runner time or the
+plan's five-hour/seven-day windows are used.
+
+The menu's **state.json** (`#state.json`) displays the serializable
+`review-state/v1` snapshot; **Copy state** copies the same model. It includes
+status, people (concrete asks), decisions, agent summaries, Focus board items,
+Actions runs/metrics, usage, and per-source check times/errors. Published
+heartbeat/usage timestamps distinguish a fresh fetch from an old publication.
+Unfetched sources are pending; inaccessible or absent sources are explicit.
+The snapshot contains no authentication token, but does contain the board and
+private usage data visible to the signed-in user.
+
+With Node 22.18 or later, the same loaders and model run on the command line:
+
+```sh
+GH_TOKEN=... node src/cli/state.ts --json
+node src/cli/state.ts --json --fixture test/fixtures --now 2026-10-02T12:00:00Z
+```
+
+The live command uses `GH_TOKEN`, else `GITHUB_TOKEN`; it needs the same read
+permissions as the page. Project status uses a read-only GraphQL query sent
+via POST; other sources use GET. Fixture mode never contacts GitHub. Source
+failures produce a partial snapshot; invalid arguments or a missing token
+exit nonzero. Run the source entrypoint directly: there is no npm `state`
+script because `package.json` is protected for this change.
 
 The existing **Changes**, **By priority** (including themes), **Usage**, and
 ops detail remain below and start collapsed. Section choices are remembered.
