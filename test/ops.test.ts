@@ -16,6 +16,7 @@ import {
   type JobCache,
   jobsFinal,
   loadOps,
+  loadActive,
   outcomeOf,
   parseDevspaceTitle,
   parseEvent,
@@ -415,6 +416,33 @@ describe("loadOps", () => {
     assert.match(ops.warnings[0] ?? "", /cgwalters-bot's recent activity.*HTTP 500/);
     assert.equal(ops.agents?.deployed, true);
     assert.equal(ops.devspaces?.devspaces.length, 4);
+  });
+
+  it("keeps parallel cached source ages separate from each other and earlier reads", async () => {
+    const { fetchImpl, calls } = script("present");
+    const cache = new ResponseCache({ now: () => NOW });
+    const gh = new GitHub(async () => "t", fetchImpl, cache);
+    await loadOps(gh, new Map(), NOW);
+    for (const url of new Set(calls.map((call) => call.url))) {
+      const entry = await cache.get(url);
+      if (!entry) continue;
+      const path = new URL(url).pathname;
+      const age = path === HEARTBEAT_PATH ? 5 * MIN : path === USAGE_PATH ? 30 * MIN : path.endsWith("/fields") ? 2 * HOUR : path.endsWith("/items") ? HOUR : 3 * HOUR;
+      cache.put(url, { ...entry, fetchedAt: NOW - age }, JSON.stringify(entry.data).length);
+    }
+    const cached = gh.cacheOnly();
+    const eventUrl = calls.find((call) => new URL(call.url).pathname === "/users/cgwalters-bot/events/public")!.url;
+    await cached.get(eventUrl);
+    const before = calls.length;
+    const [active, ops] = await Promise.all([loadActive(cached, NOW), loadOps(cached, new Map(), NOW)]);
+    for (const result of [active, ops]) {
+      assert.equal(result.sources?.board?.fetchedAt, NOW - 2 * HOUR, "board uses its oldest page");
+      assert.equal(result.sources?.heartbeat?.fetchedAt, NOW - 5 * MIN);
+      assert.equal(result.sources?.usage?.fetchedAt, NOW - 30 * MIN);
+      for (const name of ["board", "heartbeat", "usage"]) assert.equal(result.sources?.[name]?.state, "cached");
+    }
+    assert.equal(cached.oldest, NOW - 3 * HOUR, "the aggregate age remains available to existing callers");
+    assert.equal(calls.length, before, "scoped cached reads never touch the network");
   });
 });
 

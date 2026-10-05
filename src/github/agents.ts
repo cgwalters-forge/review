@@ -1,11 +1,5 @@
-// The active agents strip atop the queue: who is working on what now,
-// against the target of agents the bot aims to keep busy. Two sources,
-// merged: the board's In Progress items that a topic session (Lead) or
-// a devspace agent run (Run) claimed, and the coordinator's heartbeat
-// (heartbeat.ts), which lists the workers on its own machine. Neither
-// is complete alone: the heartbeat can't see topic sessions and goes
-// stale when the coordinator stops, and the board says nothing of a
-// worker's progress. Pure, so tests can check the merge.
+// Execution evidence comes from live Actions runs and fresh heartbeat jobs.
+// The board supplies context, never proof that a claimed agent still runs.
 
 import { type Item, parseIssueUrl, PRIORITY_ORDER, repoOf } from "./board.ts";
 import { AGENT_TARGET, IN_PROGRESS, TRACKER_REPO } from "./config.ts";
@@ -13,9 +7,12 @@ import { isOwnOrg, itemOrg } from "./filter.ts";
 import { type Heartbeat, isStale } from "./heartbeat.ts";
 import type { UsageData } from "./usage.ts";
 import type { ProjectStatus } from "./backend.ts";
+import type { Sources } from "./freshness.ts";
+import { RUNS_POLL_MS, type RunsData } from "./runs.ts";
 
 /** What the strip shows: the whole board and the heartbeat, as last read. */
 export interface Active {
+  sources?: Sources;
   status?: ProjectStatus | null;
   statusError?: string;
   /** Every unarchived board item; undefined when its read failed or isn't cached. */
@@ -34,7 +31,7 @@ export interface Active {
 export type Lane = "harness" | "upstream" | "unknown";
 
 /** Where an agent was seen. */
-export type AgentSource = "heartbeat" | "board" | "both";
+export type AgentSource = "heartbeat" | "board" | "both" | "actions";
 
 export interface ActiveAgent {
   engine?: string;
@@ -55,7 +52,7 @@ export interface ActiveAgent {
   lead?: string;
   runUrl?: string;
   devspace?: string;
-  /** Only a stale heartbeat says it is running, so it may have ended. */
+  /** Execution isn't confirmed: stale/unread sources or only a board claim. */
   stale: boolean;
 }
 
@@ -69,17 +66,19 @@ export interface HeartbeatState {
 }
 
 export interface AgentSummary {
+  /** At least one execution source was read, even if it reported no agents. */
+  executionKnown: boolean;
   locations: { remote: number; local: number };
   opencode: number;
   unknownEngine: number;
   /** Running ones first (by priority, then longest running), then the unconfirmed. */
   agents: ActiveAgent[];
-  /** Agents counted as working: all but those only a stale heartbeat lists. */
+  /** Confirmed live Actions runs and fresh local heartbeat jobs. */
   running: number;
   target: number;
   /** The running ones by lane. */
   lanes: Record<Lane, number>;
-  /** Agents only a stale heartbeat lists. */
+  /** Unconfirmed heartbeat workers and board claims, excluded from running. */
   unconfirmed: number;
   /** The heartbeat's freshness: undefined when it couldn't be read, null when none is published. */
   heartbeat?: HeartbeatState | null;
@@ -87,7 +86,8 @@ export interface AgentSummary {
 
 /** A board item claimed by an agent: In Progress, with a Lead or a Run. */
 export function isClaimed(item: Item): boolean {
-  return item.status === IN_PROGRESS && (item.lead !== undefined || item.run !== undefined);
+  const umbrella = item.labels.includes("epic") || item.subIssues !== undefined;
+  return item.status === IN_PROGRESS && (item.run !== undefined || (item.lead !== undefined && !umbrella));
 }
 
 export function laneOf(org: string | undefined): Lane {
@@ -129,26 +129,69 @@ function byPriorityThenAge(a: ActiveAgent, b: ActiveAgent): number {
   return rank(a.priority) - rank(b.priority) || (a.since ?? "￿").localeCompare(b.since ?? "￿") || a.name.localeCompare(b.name);
 }
 
-/**
- * Merge the heartbeat's workers with the board's claimed items. A worker
- * whose item is a claimed board item (by its URL, or a PR in its Branch)
- * is one agent seen in both; a claimed item no worker names is an agent
- * of its own (a topic session, or a devspace run). `board` is the whole
- * board, so a worker on an item that isn't claimed still gets its title,
- * priority and lane. `hb` is undefined when the heartbeat couldn't be
- * read, null when none is published.
- */
-export function activeAgents(board: readonly Item[], hb: Heartbeat | null | undefined, now: number, target: number = AGENT_TARGET): AgentSummary {
+/** Repository plus numeric run id; attempts, query strings and fragments aren't new agents. */
+export function actionRunIdentity(url: string | undefined): string | undefined {
+  const match = /^https:\/\/github\.com\/([A-Za-z0-9-]+)\/([A-Za-z0-9._-]+)\/actions\/runs\/([1-9]\d*)(?:\/attempts\/[1-9]\d*)?\/?(?:[?#].*)?$/i.exec(url ?? "");
+  return match ? `${match[1]!.toLowerCase()}/${match[2]!.toLowerCase()}/${match[3]}` : undefined;
+}
+
+/** Merge by concrete run identity, not by issue: local and remote jobs may share an item. */
+export function activeAgents(board: readonly Item[], hb: Heartbeat | null | undefined, now: number, target: number = AGENT_TARGET, execution: { runs?: RunsData | undefined; sources?: Sources } = {}): AgentSummary {
   const stopped = hb?.loopState === "stopped";
   // A stopped coordinator isn't stale to the ops view, but nothing
   // vouches for the workers it last listed any more either.
-  const hbStale = hb ? isStale(hb, now) || stopped : false;
+  const hbSource = execution.sources?.heartbeat?.state;
+  const hbStale = hb ? isStale(hb, now) || stopped || hbSource === "cached" || hbSource === "unavailable" : false;
+  const runs = execution.runs;
+  const runSource = execution.sources?.runs?.state;
+  const runsFresh = runs?.state === "ok" && runSource !== "cached" && runSource !== "unavailable" && now >= runs.at && now - runs.at <= 2 * RUNS_POLL_MS;
   const used = new Set<string>();
   const agents: ActiveAgent[] = [];
+  const remote = new Map<string, ActiveAgent>();
+  // Loaders already deduplicate run ids; also tolerate duplicate snapshot rows.
+  const records = new Map<string, RunsData["runs"][number]>();
+  for (const run of runs?.runs ?? []) {
+    const key = actionRunIdentity(run.url);
+    if (!key) continue;
+    const previous = records.get(key);
+    const updated = (run.updatedAt ?? run.createdAt).localeCompare(previous?.updatedAt ?? previous?.createdAt ?? "");
+    if (!previous || run.attempt > previous.attempt || (run.attempt === previous.attempt && (updated > 0 || (updated === 0 && previous.active && !run.active)))) records.set(key, run);
+  }
+  const context = (a: ActiveAgent, item: Item): void => {
+    if (item.url) a.itemUrl = item.url;
+    const ref = refText(item.url);
+    if (ref) a.itemRef = ref;
+    a.title = item.title;
+    if (item.priority) a.priority = item.priority;
+    if (item.lead) a.lead = item.lead;
+    if (item.engine) a.engine ??= item.engine;
+    a.lane = laneOf(itemOrg(item));
+  };
+  for (const [key, run] of records) {
+    if (!run.active) continue;
+    const a: ActiveAgent = { name: run.title, title: run.title, status: run.status, since: run.startedAt, source: "actions", location: "remote", lane: "unknown", runUrl: run.url, stale: !runsFresh };
+    for (const item of board) if (actionRunIdentity(item.run) === key) {
+      used.add(item.nodeId);
+      if (!a.itemUrl) context(a, item);
+    }
+    remote.set(key, a);
+    agents.push(a);
+  }
+  const workersSeen = new Set<string>();
   for (const w of hb?.workers ?? []) {
+    if (workersSeen.has(w.name)) continue;
+    workersSeen.add(w.name);
     const item = itemFor(w.itemUrl, board);
     const claimed = item !== undefined && isClaimed(item);
     if (claimed) used.add(item.nodeId);
+    // A Run link alone must never reclassify a local heartbeat job as remote.
+    const key = w.devspace ? actionRunIdentity(item?.run) : undefined;
+    const seen = key ? remote.get(key) : undefined;
+    if (seen) {
+      if (w.devspace) seen.devspace ??= w.devspace;
+      if (!hbStale && w.engine) seen.engine ??= w.engine;
+      continue;
+    }
     const a: ActiveAgent = {
       name: w.name,
       itemUrl: w.itemUrl,
@@ -156,10 +199,10 @@ export function activeAgents(board: readonly Item[], hb: Heartbeat | null | unde
       status: w.status,
       since: w.startedAt,
       source: claimed ? "both" : "heartbeat",
-      location: w.devspace || (claimed && item.run) ? "remote" : "local",
+      location: w.devspace ? "remote" : "local",
       lane: item ? laneOf(itemOrg(item)) : urlLane(w.itemUrl),
-      // The board still claiming it vouches for it; a stale heartbeat alone doesn't.
-      stale: hbStale && !claimed,
+      // Remote heartbeat sightings need confirmation by Actions, not a board URL.
+      stale: hbStale || !!w.devspace,
     };
     if (item) {
       a.title = item.title;
@@ -170,6 +213,7 @@ export function activeAgents(board: readonly Item[], hb: Heartbeat | null | unde
     if (w.devspace) a.devspace = w.devspace;
     const engine = w.engine ?? item?.engine;
     if (engine) a.engine = engine;
+    if (key) remote.set(key, a);
     agents.push(a);
   }
   for (const item of board) {
@@ -181,7 +225,7 @@ export function activeAgents(board: readonly Item[], hb: Heartbeat | null | unde
       source: "board",
       location: item.run ? "remote" : "local",
       lane: laneOf(itemOrg(item)),
-      stale: false,
+      stale: true,
     };
     if (item.url) a.itemUrl = item.url;
     const ref = refText(item.url);
@@ -192,6 +236,9 @@ export function activeAgents(board: readonly Item[], hb: Heartbeat | null | unde
     if (item.lead) a.lead = item.lead;
     if (item.run) a.runUrl = item.run;
     if (item.engine) a.engine = item.engine;
+    const key = actionRunIdentity(item.run);
+    if (key && remote.has(key)) continue;
+    if (key) remote.set(key, a);
     agents.push(a);
   }
   const live = agents.filter((a) => !a.stale).sort(byPriorityThenAge);
@@ -200,8 +247,8 @@ export function activeAgents(board: readonly Item[], hb: Heartbeat | null | unde
   for (const a of live) lanes[a.lane]++;
   const locations = { remote: 0, local: 0 };
   for (const a of live) locations[a.location]++;
-  const summary: AgentSummary = { agents: [...live, ...unconfirmed], running: live.length, target, lanes, unconfirmed: unconfirmed.length, locations, opencode: live.filter((a) => a.engine === "opencode").length, unknownEngine: live.filter((a) => !a.engine).length };
+  const summary: AgentSummary = { executionKnown: hb !== undefined || runs?.state === "ok", agents: [...live, ...unconfirmed], running: live.length, target, lanes, unconfirmed: unconfirmed.length, locations, opencode: live.filter((a) => a.engine === "opencode").length, unknownEngine: live.filter((a) => !a.engine).length };
   if (hb === null) summary.heartbeat = null;
-  else if (hb) summary.heartbeat = { updatedAt: hb.updatedAt, loopState: hb.loopState, stale: isStale(hb, now), stopped };
+  else if (hb) summary.heartbeat = { updatedAt: hb.updatedAt, loopState: hb.loopState, stale: isStale(hb, now) || hbSource === "cached" || hbSource === "unavailable", stopped };
   return summary;
 }

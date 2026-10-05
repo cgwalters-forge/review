@@ -80,6 +80,7 @@ export class GitHub {
   /** Answer GETs from the cache only, never the network (see cacheOnly). */
   #cacheOnly = false;
   #oldest: number | undefined;
+  #ageParent: GitHub | undefined;
   rate: RateLimit | undefined;
   /** A classic token's scopes, from X-OAuth-Scopes; unset for other tokens. */
   scopes: string | undefined;
@@ -108,6 +109,14 @@ export class GitHub {
   /** On a cache-only client: when the oldest response it served was fetched (epoch ms). */
   get oldest(): number | undefined {
     return this.#oldest;
+  }
+
+  /** Isolate a source's cache ages; live reads keep this client's request and rate tracking. */
+  readScope(): GitHub {
+    if (!this.#cacheOnly) return this;
+    const scope = this.cacheOnly();
+    scope.#ageParent = this;
+    return scope;
   }
 
   /** The API URL for PATH; the token never goes anywhere else. */
@@ -182,6 +191,7 @@ export class GitHub {
     if (this.#cacheOnly) {
       if (!cached) throw new CacheMiss(`not cached: GET ${url}`);
       this.#oldest = Math.min(this.#oldest ?? cached.fetchedAt, cached.fetchedAt);
+      if (this.#ageParent) this.#ageParent.#oldest = Math.min(this.#ageParent.#oldest ?? cached.fetchedAt, cached.fetchedAt);
       return { entry: cached, changed: true };
     }
     const validators: Record<string, string> = {};

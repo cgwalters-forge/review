@@ -6,8 +6,10 @@
 // before "View all".
 
 import { h } from "../dom.ts";
+import { runsPanel } from "./runsview.ts";
+import type { PageState } from "./state.ts";
 import type { Renderer } from "../markdown.ts";
-import type { Active } from "./agents.ts";
+import type { Active, AgentSummary } from "./agents.ts";
 import { agentsBody, agentsSummary } from "./agentsview.ts";
 import type { Item } from "./board.ts";
 import { diffBoard, type Snapshot } from "./boardfeed.ts";
@@ -49,6 +51,8 @@ export interface SectionEls {
 export interface Slots {
   people: HTMLElement;
   peopleCount: HTMLElement;
+  runs: HTMLElement;
+  freshness: HTMLElement;
   status: HTMLElement;
   focus: HTMLElement;
   needs: HTMLElement;
@@ -125,6 +129,8 @@ export function homeSkeleton(hooks: HomeHooks): Home {
   const needs = h("div", { class: "needs-slot" });
   const status = h("section", { class: "dashboard-status", "aria-label": "Status" }, h("h2", {}, "Status"));
   const focus = h("section", { class: "dashboard-focus", "aria-label": "Focus" }, h("h2", {}, "Focus"));
+  const runs = h("div", { class: "runs-slot" });
+  const freshness = h("p", { class: "source-freshness note", "aria-label": "Source freshness" });
   const agents = h("div", { class: "agents-slot" });
   const ops = fold("ops-fold", "Devspaces, agent runs and the bot's activity", hooks.opsToggled);
   const feed = h("div", { class: "feed-slot" });
@@ -140,8 +146,19 @@ export function homeSkeleton(hooks: HomeHooks): Home {
     priority: section("priority", ctx, hooks, priority, themes.box),
     usage: section("usage", ctx, hooks, usage),
   };
-  const el = h("div", { class: HOME_CLASS }, peopleSection, sections.needs.details, status, focus, ...SECTIONS.filter((id) => id !== "needs").map((id) => sections[id].details));
-  return { el, sections, slots: { people, peopleCount, status, focus, needs, agents, ops: ops.slot, opsBox: ops.box, feed, news, priority, themes: themes.slot, themesBox: themes.box, usage }, expected };
+  const el = h("div", { class: HOME_CLASS }, peopleSection, sections.needs.details, status, focus, runs, ...SECTIONS.filter((id) => id !== "needs").map((id) => sections[id].details), freshness);
+  return { el, sections, slots: { people, peopleCount, runs, freshness, status, focus, needs, agents, ops: ops.slot, opsBox: ops.box, feed, news, priority, themes: themes.slot, themesBox: themes.box, usage }, expected };
+}
+
+export function fillState(home: Home, state: PageState): void {
+  const signature = JSON.stringify([state.runs, state.sources.runs]);
+  if (home.slots.runs.dataset.signature !== signature) {
+    const open = new Set([...home.slots.runs.querySelectorAll<HTMLDetailsElement>("details[open]")].map((el) => el.dataset.runId));
+    home.slots.runs.replaceChildren(runsPanel(state));
+    home.slots.runs.dataset.signature = signature;
+    for (const el of home.slots.runs.querySelectorAll<HTMLDetailsElement>("details")) el.open = open.has(el.dataset.runId);
+  }
+  home.slots.freshness.textContent = Object.entries(state.sources).map(([name, source]) => `${name}: ${source.state}${source.checkedAt ? ` (checked ${new Date(source.checkedAt).toLocaleTimeString()})` : source.fetchedAt ? ` (cached ${new Date(source.fetchedAt).toLocaleString()})` : ""}${source.publishedAt ? ` · published ${source.publishedAt}` : ""}${source.error ? ` — ${source.error}` : ""}`).join(" · ");
 }
 
 /** Open or close a section from code (a jump, or its default changing). With `remember`, as if he did. */
@@ -294,11 +311,11 @@ export function fillFocus(home: Home, board: readonly Item[] | undefined): void 
   if (!epics.length) slot.append(h("p", { class: "note" }, "No active epics."));
 }
 
-export function fillAgents(home: Home, active: Active | undefined, now: number): void {
+export function fillAgents(home: Home, active: Active | undefined, now: number, summary?: AgentSummary): void {
   const slot = home.slots.agents;
-  slot.replaceChildren(agentsBody(active, now));
+  slot.replaceChildren(agentsBody(active, now, summary));
   applyLimit(slot, LIMIT_ID.agents, ".as-agent");
-  const s = agentsSummary(active, now);
+  const s = agentsSummary(active, now, summary);
   setCount(home, "agents", s.count, { title: s.title });
   home.sections.agents.count.classList.toggle("under", s.under);
 }

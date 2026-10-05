@@ -4,6 +4,9 @@
 
 import type { Answer } from "../answer.ts";
 import { h } from "../dom.ts";
+import { pageState, type PageState } from "./state.ts";
+import { loadActionRuns, runsDue, type RunsData } from "./runs.ts";
+import { readSource, type Sources } from "./freshness.ts";
 import { createRenderer } from "../markdown.ts";
 import { GitHub, GitHubError } from "./api.ts";
 import { missingScopes, type Persistence, savedToken, type TokenSource, useToken } from "./auth.ts";
@@ -65,11 +68,11 @@ import { type Command, HELP, keyCommand, parseRoute, type Route, type RouteInfo 
 import { type HarnessCache, loadNews, type News } from "./news.ts";
 import { deleteCacheDatabase, IdbStore } from "./idbstore.ts";
 import type { Active } from "./agents.ts";
-import { fillAgents, fillChanges, fillFocus, fillStatus, fillNeeds, fillOps, fillPeople, fillPriority, fillThemes, fillUsage, type Home, type HomeHooks, homeSkeleton, LIMIT_ID, NEED_ROW_SELECTOR, reveal, setSectionOpen, stepRow, walkRows } from "./homeview.ts";
+import { fillAgents, fillChanges, fillFocus, fillStatus, fillNeeds, fillOps, fillPeople, fillPriority, fillState, fillThemes, fillUsage, type Home, type HomeHooks, homeSkeleton, LIMIT_ID, NEED_ROW_SELECTOR, reveal, setSectionOpen, stepRow, walkRows } from "./homeview.ts";
 import { loadProjectStatus } from "./backend.ts";
-import { buildNeeds, type Need, needStops } from "./needs.ts";
+import { type Need, needStops } from "./needs.ts";
 import { needId, type NeedsForm, type NeedsHooks, needsRedraw, needsSignature } from "./needsview.ts";
-import { type JobCache, loadActive, loadOps, type Ops } from "./ops.ts";
+import { activeFromOps, type JobCache, loadActive, loadOps, type Ops } from "./ops.ts";
 import { tickOps } from "./opsview.ts";
 import { Poller, pollDelay, pollNote } from "./poller.ts";
 import { saveMine } from "./mine.ts";
@@ -105,6 +108,10 @@ interface State {
   peopleRunning?: boolean;
   peopleRevision?: number;
   peopleWrites?: number;
+  actionRuns?: RunsData;
+  runsStarted: number;
+  runsRunning: boolean;
+  sources: Sources;
   gh: GitHub;
   source: TokenSource;
   session: CacheSession;
@@ -319,6 +326,17 @@ function clock(ms: number): string {
 function renderChrome(state: State): void {
   if (state.closed) return;
   renderMeta(state);
+  const json = document.getElementById("state-json");
+  const model = snapshot(state);
+  if (json) json.textContent = JSON.stringify(model, null, 2);
+  if (state.home?.el.isConnected) {
+    fillState(state.home, model);
+    const signature = JSON.stringify(model.agents);
+    if (state.home.slots.agents.dataset.signature !== signature) {
+      fillAgents(state.home, state.active, Date.now(), model.agents);
+      state.home.slots.agents.dataset.signature = signature;
+    }
+  }
   const r = route().route;
   const warnings = [state.error, state.forgeError, state.tokenWarning, state.itemNote];
   if (state.login && state.login !== OPERATOR) {
@@ -431,7 +449,31 @@ function needsHooks(state: State, now: number): NeedsHooks {
 }
 
 function currentNeeds(state: State): Need[] {
-  return buildNeeds({ entries: state.entries, decisions: state.decisions, decisionsAnswered: state.decisionsAnswered, answeredHere: state.answeredHere, board: state.active?.board });
+  return snapshot(state).people;
+}
+
+function snapshot(state: State): PageState {
+  return pageState({ active: state.active, entries: state.entries, decisions: state.decisions, decisionsAnswered: state.decisionsAnswered, answeredHere: state.answeredHere, runs: state.actionRuns, sources: state.sources });
+}
+
+function actionRunsDue(state: State): boolean {
+  return !state.closed && runsDue(state.runsStarted, state.runsRunning, Date.now(), !document.hidden, route().route === "home" && window.location.hash !== "#state.json");
+}
+
+async function refreshActionRuns(state: State): Promise<void> {
+  if (state.closed || state.runsRunning || document.hidden || route().route !== "home" || window.location.hash === "#state.json") return;
+  state.runsRunning = true;
+  state.runsStarted = Date.now();
+  try {
+    const runs = await loadActionRuns(state.gh);
+    if (state.closed) return;
+    state.sources.runs = { state: runs.state, checkedAt: runs.at, ...(runs.state === "ok" ? { fetchedAt: runs.at } : { error: runs.warnings.join(" ") }) };
+    // Preserve last known rows on a transient failure, while marking them stale.
+    if (runs.state === "ok" || !state.actionRuns) state.actionRuns = runs;
+    renderChrome(state);
+  } finally {
+    state.runsRunning = false;
+  }
 }
 
 /**
@@ -544,10 +586,12 @@ function feedSeen(board: readonly Item[] | undefined, at: number, fromCache: boo
 
 function paintActive(state: State): void {
   if (!state.home) return;
-  fillAgents(state.home, state.active, Date.now());
-  fillStatus(state.home, state.active?.status, render, state.active?.statusError);
-  fillFocus(state.home, state.active?.board);
-  fillUsage(state.home, state.active?.usage, state.active?.local, Date.now());
+  const model = snapshot(state);
+  fillAgents(state.home, state.active, Date.now(), model.agents);
+  fillStatus(state.home, state.active?.status === undefined ? undefined : model.status, render, state.active?.statusError);
+  fillFocus(state.home, state.active?.board ? model.focus : undefined);
+  fillUsage(state.home, model.usage ?? undefined, state.active?.local, Date.now());
+  fillState(state.home, model);
 }
 
 function paintChanges(state: State): void {
@@ -605,6 +649,7 @@ function activeDue(state: State): boolean {
 function loadSections(state: State): void {
   if (state.closed || !state.loaded || route().route !== "home" || !state.home) return;
   if (activeDue(state)) void refreshActive(state);
+  if (actionRunsDue(state)) void refreshActionRuns(state);
   if (sectionOpenNow(state, "changes") && !state.news) void refreshNews(state);
   if (state.home.slots.opsBox.open && opsDue(state)) void refreshOps(state);
   if (state.home.slots.themesBox.open && !state.openBoard) void refreshTriage(state);
@@ -633,10 +678,10 @@ async function refreshActive(state: State): Promise<void> {
         paintChanges(state);
       }
     }
-    const [active, status] = await Promise.all([loadActive(state.gh), loadProjectStatus(state.gh).then((value) => ({ value }), (e: unknown) => ({ error: `Couldn't read project status: ${message(e)}` }))]);
+    const [active, status] = await Promise.all([loadActive(state.gh), readSource(state.sources, "status", () => loadProjectStatus(state.gh))]);
     state.active = active;
-    if ("value" in status) state.active.status = status.value;
-    else state.active.statusError = status.error;
+    if (status !== undefined) state.active.status = status;
+    else state.active.statusError = state.sources.status?.error ?? "Status unavailable";
     paintActive(state);
     paintNeeds(state);
     paintChanges(state);
@@ -658,6 +703,10 @@ function renderRoute(state: State): void {
   renderChrome(state);
   if (!state.loaded) {
     showMain(h("p", { class: "empty" }, "Loading…"));
+    return;
+  }
+  if (window.location.hash === "#state.json") {
+    showMain(h("main", { class: "state-export" }, h("a", { href: "#", class: "back" }, "← Back"), h("h2", {}, "state.json"), h("pre", { id: "state-json" }, JSON.stringify(snapshot(state), null, 2))));
     return;
   }
   const r = route();
@@ -1202,18 +1251,21 @@ async function refreshDecisions(state: State, force = false): Promise<void> {
     },
     read: () => read(state.gh),
     applyCached: (r) => {
+      state.sources.decisions = { state: "cached", fetchedAt: r.at };
       state.decisions = r.decisions;
       state.decisionsAnswered = r.answered;
       state.decisionsCachedAt = r.at;
       paintNeeds(state);
     },
     applyLive: (r, force) => {
+      state.sources.decisions = { state: "ok", checkedAt: Date.now(), fetchedAt: Date.now() };
       delete state.decisionsCachedAt;
       state.decisions = r.decisions;
       state.decisionsAnswered = r.answered;
       paintNeeds(state, force);
     },
     error: (e) => {
+      state.sources.decisions = { ...state.sources.decisions, state: "unavailable", checkedAt: Date.now(), error: message(e) };
       state.error = `Couldn't read the decisions: ${message(e)}`;
       renderChrome(state);
     },
@@ -1247,11 +1299,8 @@ async function refreshOps(state: State): Promise<void> {
     }
     state.ops = await loadOps(state.gh, state.jobs);
     // The same reads serve the agents, changes and usage sections, so they needn't repeat them.
-    const { board, local, usage, at } = state.ops;
-    if (board || local !== undefined || usage) {
-      state.active = { warnings: [], at, ...(board ? { board } : {}), ...(local !== undefined ? { local } : {}), ...(usage ? { usage } : {}) };
-      state.activeStarted = Date.now();
-    }
+    state.active = activeFromOps(state.active, state.ops);
+    state.activeStarted = Date.now();
     paintOps(state);
     paintActive(state);
     paintChanges(state);
@@ -1271,6 +1320,7 @@ async function pollForge(state: State): Promise<boolean> {
     if (forge.status === "rejected") throw forge.reason;
     const prs = forge.value;
     state.lastForgePoll = Date.now();
+    state.sources.forge = { state: "ok", checkedAt: Date.now(), fetchedAt: Date.now() };
     state.forgeKnown = true;
     delete state.forgeError;
     const sig = (p: readonly ForgePr[]) => JSON.stringify(p.map((x) => [refKey(x.ref), x.updatedAt]));
@@ -1278,14 +1328,17 @@ async function pollForge(state: State): Promise<boolean> {
     state.prs = prs;
     void pollVerdicts(state);
     if (others.status === "fulfilled") {
+      state.sources.otherPrs = { state: "ok", checkedAt: Date.now(), fetchedAt: Date.now() };
       state.others = others.value;
       void pollWaiting(state);
     } else {
+      state.sources.otherPrs = { state: "unavailable", checkedAt: Date.now(), error: message(others.reason) };
       state.forgeError = `Couldn't search the bot's other PRs: ${message(others.reason)}`;
     }
     return changed;
   } catch (e) {
     state.forgeError = `Couldn't search the bot's PRs: ${message(e)}`;
+    state.sources.forge = { ...state.sources.forge, state: "unavailable", checkedAt: Date.now(), error: message(e) };
     return false;
   }
 }
@@ -1302,6 +1355,7 @@ async function pollWaiting(state: State): Promise<void> {
     const changed = sig(prs) !== sig(state.waiting);
     state.waiting = prs;
     if (errors.length) {
+      state.sources.otherPrs = { ...state.sources.otherPrs, state: "unavailable", checkedAt: Date.now(), error: errors.join("; ") };
       state.forgeError = `Couldn't read ${errors.length} of the bot's PRs: ${errors.join("; ")}`;
       renderChrome(state);
     }
@@ -1330,6 +1384,7 @@ async function pollVerdicts(state: State): Promise<void> {
     if (changed && state.loaded) update(state, false, false);
   } catch (e) {
     state.forgeError = `Couldn't read the forge PRs' reviews: ${message(e)}`;
+    state.sources.forge = { ...state.sources.forge, state: "unavailable", checkedAt: Date.now(), error: message(e) };
     renderChrome(state);
   } finally {
     state.verdictsRunning = false;
@@ -1378,6 +1433,7 @@ async function showCached(state: State): Promise<void> {
   state.answered = answered;
   state.loaded = true;
   state.cachedAt = queueReads.oldest ?? Date.now();
+  state.sources.queue = { state: "cached", fetchedAt: state.cachedAt };
   update(state, true, true);
 }
 
@@ -1450,6 +1506,7 @@ function update(state: State, boardChanged: boolean, first: boolean): void {
 function pollSections(state: State): void {
   if (route().route !== "home" || !state.home || !state.loaded) return;
   if (activeDue(state)) void refreshActive(state);
+  if (actionRunsDue(state)) void refreshActionRuns(state);
   if (sectionOpenNow(state, "changes")) void refreshNews(state);
   if (state.home.slots.opsBox.open && opsDue(state)) void refreshOps(state);
   if (state.home.slots.themesBox.open) void refreshTriage(state);
@@ -1470,6 +1527,7 @@ async function poll(state: State, current: () => boolean): Promise<void> {
     const q = await loadQueue(state.gh);
     if (!current()) return;
     state.lastPoll = new Date();
+    state.sources.queue = { state: "ok", checkedAt: Date.now(), fetchedAt: Date.now() };
     delete state.error;
     const first = !state.loaded;
     // The first answer after showing the cached queue: re-read what the
@@ -1495,6 +1553,7 @@ async function poll(state: State, current: () => boolean): Promise<void> {
   } catch (e) {
     if (!current()) return;
     state.error = `Couldn't read the board: ${message(e)}`;
+    state.sources.queue = { ...state.sources.queue, state: "unavailable", checkedAt: Date.now(), error: message(e) };
     if (state.loaded) renderChrome(state);
     else renderRoute(state);
   }
@@ -1559,6 +1618,8 @@ function run(state: State, cmd: Command, where: Route): void {
         // The sections' data is re-read too, now rather than when due; a reload on request drops unsent picks, as the note warned.
         state.activeStarted = 0;
         state.opsStarted = 0;
+        state.runsStarted = 0;
+        void refreshActionRuns(state);
         void refreshDecisions(state, true);
         void refreshPeople(state);
         if (sectionOpenNow(state, "changes")) void refreshNews(state);
@@ -1713,6 +1774,9 @@ function rejected(state: State): Promise<void> {
 async function start(source: TokenSource): Promise<void> {
   const session = await openCache(await source.get(), source.persistence === "local", () => IdbStore.open(), () => deleteCacheDatabase());
   const state: State = {
+    sources: {},
+    runsStarted: 0,
+    runsRunning: false,
     poller: newPoller(() => state),
     tickedAt: Date.now(),
     gh: new GitHub(() => source.get(), undefined, session.cache),
@@ -1784,6 +1848,17 @@ async function start(source: TokenSource): Promise<void> {
     state.tokenWarning = `This token lacks the ${lacking.map((n) => n.any.join(" or ")).join(", ")} scope${lacking.length > 1 ? "s" : ""}; some reads or answers will fail.`;
   }
   byId("signout").hidden = false;
+  const copy = document.getElementById("copy-state");
+  if (copy) {
+    copy.hidden = false;
+    copy.onclick = () => {
+      if (state.closed) return;
+      if (!navigator.clipboard) { setNotice("Clipboard unavailable; open state.json to select and copy the text."); return; }
+      navigator.clipboard.writeText(JSON.stringify(snapshot(state), null, 2)).then(() => setNotice("State copied."), (e: unknown) => setNotice(`Couldn't copy state: ${message(e)}`));
+    };
+  }
+  const exportLink = document.getElementById("state-link");
+  if (exportLink) exportLink.hidden = false;
   if (state.login === OPERATOR) showCapture(state);
   byId("signout").onclick = () => {
     state.closed = true;
@@ -1825,6 +1900,7 @@ async function start(source: TokenSource): Promise<void> {
     state.tickedAt = Date.now();
     if (state.loaded && !document.hidden) {
       renderChrome(state);
+      if (actionRunsDue(state)) void refreshActionRuns(state);
       // Waiting ages move on without a redraw of the rows.
       for (const el of document.querySelectorAll<HTMLElement>(".need .age[data-since]")) el.textContent = age(el.dataset.since, Date.now());
     }
@@ -1957,6 +2033,10 @@ function signInView(reason: SignInReason): HTMLElement {
 function showSignIn(reason: SignInReason): void {
   byId("meta").textContent = "";
   byId("signout").hidden = true;
+  for (const id of ["state-link", "copy-state"]) {
+    const control = document.getElementById(id);
+    if (control) control.hidden = true;
+  }
   byId("capture").hidden = true;
   byId("capture").replaceChildren();
   setNotice(undefined);

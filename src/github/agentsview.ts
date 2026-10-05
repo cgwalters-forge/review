@@ -15,8 +15,9 @@ export const AGENT_ROW_CLASS = "as-agent";
 const LANE_LABEL: Record<Lane, string> = { harness: "harness", upstream: "upstream", unknown: "no org" };
 const SOURCE_TITLE: Record<ActiveAgent["source"], string> = {
   heartbeat: "listed by the coordinator's heartbeat",
-  board: "In Progress on the board, claimed by its Lead or Run; not in the heartbeat",
+  board: "board claim only; execution is unconfirmed and excluded from the running count",
   both: "listed by the heartbeat and In Progress on the board",
+  actions: "Actions workflow run; stale sightings are excluded from the running count",
 };
 
 function agentRow(a: ActiveAgent, now: number): HTMLElement {
@@ -56,10 +57,10 @@ function heartbeatText(s: AgentSummary, now: number, why: string): { text: strin
 }
 
 /** What the section's header says: running against the target, or why that is unknown. */
-export function agentsSummary(data: Active | undefined, now: number): { count: string; title: string; under: boolean } {
-  if (!data) return { count: "…", title: "reading the board and the heartbeat", under: false };
-  if (!data.board && data.local === undefined) return { count: "?", title: data.warnings.join("\n") || "couldn't read the board or the heartbeat", under: false };
-  const s = activeAgents(data.board ?? [], data.local, now);
+export function agentsSummary(data: Active | undefined, now: number, summary?: AgentSummary): { count: string; title: string; under: boolean } {
+  if (!data && !summary?.executionKnown) return { count: "…", title: "reading Actions and the heartbeat", under: false };
+  if (!summary?.executionKnown && !data?.board && data?.local === undefined) return { count: "?", title: data?.warnings.join("\n") || "couldn't read Actions or the heartbeat", under: false };
+  const s = summary ?? activeAgents(data?.board ?? [], data?.local, now);
   return { count: `${s.running}/${s.target}`, title: `${s.running} working, aiming for about ${s.target}`, under: s.running < s.target };
 }
 
@@ -67,14 +68,14 @@ export function agentsSummary(data: Active | undefined, now: number): { count: s
  * The section's top: the count against the target, split by lane, the
  * heartbeat's age, then a row per agent.
  */
-export function agentsBody(data: Active | undefined, now: number): HTMLElement {
+export function agentsBody(data: Active | undefined, now: number, summary?: AgentSummary): HTMLElement {
   const sec = h("div", { class: "agents-body", "aria-label": "Active agents" });
-  if (!data?.board && data?.local === undefined) {
+  if (!summary?.executionKnown && !data?.board && data?.local === undefined) {
     sec.append(h("p", { class: "note", title: data?.warnings.join("\n") ?? "" }, data ? "Couldn't read the board or the heartbeat." : "Reading…"));
     return sec;
   }
-  const s = activeAgents(data.board ?? [], data.local, now);
-  const why = data.warnings.length ? `\n${data.warnings.join("\n")}` : "";
+  const s = summary ?? activeAgents(data?.board ?? [], data?.local, now);
+  const why = data?.warnings.length ? `\n${data.warnings.join("\n")}` : "";
   const hb = heartbeatText(s, now, why);
   const lanes = (["harness", "upstream", "unknown"] as const).filter((l) => s.lanes[l] > 0 || l !== "unknown").map((l) => `${LANE_LABEL[l]} ${s.lanes[l]}`);
   sec.append(
@@ -82,9 +83,9 @@ export function agentsBody(data: Active | undefined, now: number): HTMLElement {
       "div",
       { class: "as-head" },
       h("span", { class: "as-lanes" }, `${s.running}/${s.target} agents · remote ${s.locations.remote} · local ${s.locations.local} · OpenCode ${s.running ? Math.round(100 * s.opencode / s.running) : 0}% (${s.opencode}/${s.running})${s.unknownEngine ? ` · ${s.unknownEngine} engine unknown` : ""} · ${lanes.join(" · ")}`),
-      s.unconfirmed ? h("span", { class: "as-unconfirmed warn", title: "listed only by a stale heartbeat" }, `+${s.unconfirmed} unconfirmed`) : null,
+      s.unconfirmed ? h("span", { class: "as-unconfirmed warn", title: "claims or sightings without current execution evidence" }, `+${s.unconfirmed} unconfirmed`) : null,
       h("span", { class: `as-hb ${hb.cls}`, title: hb.title }, hb.text),
-      data.board ? null : h("span", { class: "warn", title: `The board couldn't be read, so only the heartbeat's workers show.${why}` }, "board unread"),
+      data?.board ? null : h("span", { class: "warn", title: `The board couldn't be read; Actions runs and heartbeat jobs can still be counted.${why}` }, "board unread"),
     ),
   );
   if (s.agents.length) sec.append(h("ul", { class: "as-list" }, ...s.agents.map((a) => agentRow(a, now))));
