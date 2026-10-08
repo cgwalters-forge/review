@@ -11,12 +11,14 @@ const row = (n: number, reviewRequested = false): PersonAsk => ({ key: `upstream
 const tick = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
 describe("From people UI", () => {
-  it("sits above Decisions and previews five rows with View all and safe text", () => {
+  it("sits after Decisions, closed by default, and previews five rows with View all and safe text", () => {
     const home = homeSkeleton({ open: () => true, toggled: () => {}, opsToggled: () => {}, themesToggled: () => {} });
     const people: People = { rows: Array.from({ length: 7 }, (_, i) => row(i + 1)), warnings: [] };
     fillPeople(home, people, Date.now(), { done: async () => {}, changed: () => {} });
-    assert.equal(home.el.firstElementChild?.id, "sec-people");
+    assert.equal(home.el.firstElementChild, home.slots.weekly);
     assert.equal(home.el.children[1]?.id, "sec-needs");
+    assert.equal(home.el.children[2]?.id, "sec-people");
+    assert.equal((home.el.children[2] as HTMLDetailsElement).open, false);
     assert.equal(home.slots.peopleCount.textContent, "7");
     assert.equal(home.slots.people.querySelectorAll(".people-row:not([hidden])").length, 5);
     assert.equal(home.slots.people.querySelector("script"), null);
