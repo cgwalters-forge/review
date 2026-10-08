@@ -410,6 +410,9 @@ function homeHooks(state: State): HomeHooks {
     themesToggled: (open) => {
       if (open) void refreshTriage(state);
     },
+    peopleToggled: (open) => {
+      if (open) void refreshPeople(state);
+    },
   };
 }
 
@@ -536,6 +539,7 @@ function paintPeople(state: State): void {
 }
 
 async function refreshPeople(state: State): Promise<void> {
+  if (!state.home?.el.querySelector<HTMLDetailsElement>("#sec-people")?.open) return;
   if (state.peopleRunning || state.peopleWrites || state.closed) return;
   state.peopleRunning = true;
   const revision = state.peopleRevision;

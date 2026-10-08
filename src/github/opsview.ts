@@ -376,6 +376,30 @@ interface Consumer {
   tokens: Tokens;
 }
 
+/** Weekly pace uses the subscription's seven days, not the transcript accounting start. */
+export function weeklyUsage(data: UsageData | undefined, now: number): HTMLElement {
+  const sec = h("div", {}, h("h2", {}, "Weekly subscription usage"));
+  if (!data || data.state !== "ok") {
+    sec.append(h("p", { class: "note" }, !data ? "Reading usage…" : data.state === "unreadable" ? `Usage unavailable: this token cannot read ${USAGE_REPO}.` : "No usage published yet."));
+    return sec;
+  }
+  const usage = data.usage;
+  const weekly = usage.windows.find((w) => w.kind === "seven_day");
+  sec.append(h("h3", {}, "Claude"));
+  if (weekly) {
+    sec.append(windowRow(weekly, now));
+    if (weekly.usedPercent !== undefined && weekly.resetsAt && Date.parse(weekly.resetsAt) > now) {
+      const pace = Math.max(0, Math.min(100, 100 * (1 - (Date.parse(weekly.resetsAt) - now) / (7 * 24 * HOUR))));
+      const delta = weekly.usedPercent - pace;
+      sec.append(h("p", { class: "note" }, `${pace.toFixed(1)}% of weekly time elapsed · ${Math.abs(delta).toFixed(1)} percentage points ${delta > 0 ? "ahead of" : "below"} pace.`));
+    }
+  } else sec.append(h("p", { class: "note" }, "Weekly usage not reported."));
+  sec.append(h("h3", {}, "OpenAI"), h("p", { class: "note" }, "Weekly usage not reported in the available bot-usage/v1 data."));
+  const observed = usage.observedAt;
+  sec.append(h("p", { class: observed && now - Date.parse(observed) <= HEARTBEAT_STALE_MS ? "fine" : "warn" }, observed ? `Observed ${time(observed)}${now - Date.parse(observed) > HEARTBEAT_STALE_MS ? " · stale" : ""}.` : "Observation time unknown; publication does not confirm a fresh subscription reading.", ` Published ${time(usage.updatedAt)}.`, usage.commentUrl ? link(usage.commentUrl, "Source ↗") : ""));
+  return sec;
+}
+
 function consumerRow(c: Consumer, max: number): HTMLElement {
   const n = tokenTotal(c.tokens);
   return h(

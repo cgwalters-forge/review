@@ -23,7 +23,7 @@ import { peopleView, type PeopleHooks } from "./peopleview.ts";
 import { type Need, waitingCount } from "./needs.ts";
 import { NEED_CLASS, needRow, type NeedsHooks } from "./needsview.ts";
 import { type Ops } from "./ops.ts";
-import { opsDetail, usageSection, usageSummary } from "./opsview.ts";
+import { opsDetail, usageSection, usageSummary, weeklyUsage } from "./opsview.ts";
 import { type Entry, priorityRank } from "./queue.ts";
 import { PREVIEW_ROWS, SECTION_HINT, SECTION_TITLE, SECTIONS, type SectionId } from "./sections.ts";
 import type { OpenBoard, ProjectStatus } from "./backend.ts";
@@ -67,6 +67,7 @@ export interface Slots {
   themes: HTMLElement;
   themesBox: HTMLDetailsElement;
   usage: HTMLElement;
+  weekly: HTMLElement;
 }
 
 export interface Home {
@@ -85,6 +86,7 @@ export interface HomeHooks {
   /** He opened or closed the ops detail, or the themes under the priority list. */
   opsToggled(open: boolean): void;
   themesToggled(open: boolean): void;
+  peopleToggled?(open: boolean): void;
 }
 
 /** Sections whose "View all" is open: kept across re-renders, not across reloads. */
@@ -125,7 +127,9 @@ export function homeSkeleton(hooks: HomeHooks): Home {
   const expected = new Map<SectionId, boolean>();
   const people = h("div", { class: "people-slot sec-body" });
   const peopleCount = h("span", { class: COUNT_CLASS }, "…");
-  const peopleSection = h("details", { class: `${SECTION_CLASS} sec-people`, id: "sec-people", open: "" }, h("summary", {}, h("span", { class: "sec-title" }, "From people"), peopleCount), people);
+  const peopleSection = h("details", { class: `${SECTION_CLASS} sec-people`, id: "sec-people" }, h("summary", {}, h("span", { class: "sec-title" }, "From people (opt in)"), peopleCount), people);
+  peopleSection.addEventListener("toggle", () => hooks.peopleToggled?.(peopleSection.open));
+  const weekly = h("section", { class: "usage-body weekly-usage", "aria-label": "Weekly subscription usage" }, h("h2", {}, "Weekly subscription usage"), h("p", { class: "note" }, "Reading usage…"));
   const needs = h("div", { class: "needs-slot" });
   const status = h("section", { class: "dashboard-status", "aria-label": "Status" }, h("h2", {}, "Status"));
   const focus = h("section", { class: "dashboard-focus", "aria-label": "Focus" }, h("h2", {}, "Focus"));
@@ -146,8 +150,8 @@ export function homeSkeleton(hooks: HomeHooks): Home {
     priority: section("priority", ctx, hooks, priority, themes.box),
     usage: section("usage", ctx, hooks, usage),
   };
-  const el = h("div", { class: HOME_CLASS }, peopleSection, sections.needs.details, status, focus, runs, ...SECTIONS.filter((id) => id !== "needs").map((id) => sections[id].details), freshness);
-  return { el, sections, slots: { people, peopleCount, runs, freshness, status, focus, needs, agents, ops: ops.slot, opsBox: ops.box, feed, news, priority, themes: themes.slot, themesBox: themes.box, usage }, expected };
+  const el = h("div", { class: HOME_CLASS }, weekly, sections.needs.details, peopleSection, status, focus, runs, ...SECTIONS.filter((id) => id !== "needs").map((id) => sections[id].details), freshness);
+  return { el, sections, slots: { people, peopleCount, runs, freshness, status, focus, needs, agents, ops: ops.slot, opsBox: ops.box, feed, news, priority, themes: themes.slot, themesBox: themes.box, usage, weekly }, expected };
 }
 
 export function fillState(home: Home, state: PageState): void {
@@ -357,6 +361,7 @@ export function fillThemes(home: Home, board: OpenBoard | undefined, filter: Tri
 }
 
 export function fillUsage(home: Home, usage: UsageData | undefined, hb: Heartbeat | null | undefined, now: number): void {
+  home.slots.weekly.replaceChildren(weeklyUsage(usage, now));
   const slot = home.slots.usage;
   const body = usageSection(usage, hb, now);
   slot.replaceChildren(body ?? h("p", { class: "note" }, "Reading…"));

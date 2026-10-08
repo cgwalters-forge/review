@@ -157,7 +157,17 @@ priority, then the newest ask. Missing request timestamps are shown as
 unknown rather than using the PR's creation date. Other queue entries and
 decisions beyond the first fifteen are in collapsed **Watching**.
 
-**From people**, above Decisions, combines open human-authored PRs requesting
+**Weekly subscription usage** is first on the dashboard, always visible. It
+reads the existing private usage comment, showing Claude's seven-day percentage,
+reset time and pace (elapsed fraction of seven days ending at reset, not the
+transcript accounting start). Observation and publication times remain explicit;
+old observations are marked stale. The available `bot-usage/v1` fixture and
+issue excerpt contain no OpenAI subscription reading, so OpenAI is explicitly
+unknown rather than estimated from tokens or Actions costs.
+
+**From people**, after Decisions, is a closed-by-default opt-in disclosure.
+Opening it starts its reads; while closed, people notifications are not polled.
+It combines open human-authored PRs requesting
 the operator's review (`review-requested:cgwalters -author:cgwalters-bot`)
 with participating unread mention/review-request notifications from the last
 14 days. Notifications require a recent explicit human comment/review mentioning
@@ -288,7 +298,7 @@ verdict chips above filter every group.
 
 **Merged PRs**, in Changes, are recently merged PRs in the bot
 (cgwalters-bot/homegit), its runner (cgwalters-devspace-sandbox, both
-copies) and this app, newest first, with the first paragraph of each
+copies), agentic-job, agent-board and this app, newest first, with the first paragraph of each
 description. Harness changes stand out: PRs labeled `harness`, or
 touching `agent.yml`, `bot-harness` or a `harness/` tree.
 

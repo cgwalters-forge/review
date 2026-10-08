@@ -160,6 +160,8 @@ export const NEWS_REPOS: readonly string[] = [
   "cgwalters-forge/cgwalters-devspace-sandbox",
   "bootc-dev/cgwalters-devspace-sandbox",
   "cgwalters-forge/review",
+  "cgwalters-forge/agentic-job",
+  "cgwalters-forge/agent-board",
 ];
 /** Closed PRs read per repository (one page). */
 export const NEWS_PER_REPO = 30;

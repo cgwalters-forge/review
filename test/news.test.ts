@@ -76,7 +76,7 @@ describe("loadNews", () => {
     const news = await loadNews(gh, cache, 10);
     assert.deepEqual(news.items.map((n) => [n.repo, n.number, n.harness]), [
       [first, 1, true],
-      ...rest.map((r) => [r, 9, false]),
+      ...rest.toSorted((a, b) => a.localeCompare(b)).map((r) => [r, 9, false]),
       [first, 3, true],
     ]);
     assert.equal(news.warnings.length, 1);

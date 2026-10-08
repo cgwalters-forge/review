@@ -53,6 +53,22 @@ const needsHooks = (sent: unknown[] = []) => ({
 afterEach(() => resetExpanded());
 
 describe("operator dashboard", () => {
+  it("puts weekly usage first and human requests behind an opt-in disclosure after Decisions", () => {
+    const home = homeSkeleton(hooks());
+    assert.equal(home.el.firstElementChild, home.slots.weekly);
+    const people = home.el.querySelector<HTMLDetailsElement>("#sec-people")!;
+    assert.equal(people.open, false);
+    assert.equal(people.previousElementSibling, home.sections.needs.details);
+    fillUsage(home, { state: "ok", usage: {
+      updatedAt: "2026-10-08T23:01:01Z", observedAt: "2026-10-08T22:58:47Z", workers: [],
+      windows: [{ kind: "seven_day", since: "2026-10-05T23:00:00Z", usedPercent: 40, resetsAt: "2026-10-12T23:00:00Z", requests: 7360, tokens: { input: 1, output: 2, cacheRead: 3, cacheWrite: 4 } }],
+    } }, undefined, Date.parse("2026-10-08T23:00:00Z"));
+    assert.match(text(home.slots.weekly), /Claude.*40%.*42\.9% of weekly time elapsed.*2\.9 percentage points below pace/);
+    assert.match(text(home.slots.weekly), /OpenAI.*not reported/);
+    fillUsage(home, { state: "unreadable" }, undefined, Date.now());
+    assert.match(text(home.slots.weekly), /cannot read/);
+  });
+
   it("shows promotion actions once and keeps approved reruns, re-signs and context in Watching with states and reasons", () => {
     const home = homeSkeleton(hooks());
     const entries: Entry[] = ["rerun", "resign", "read", "promote", "write", "sent"].map((name, i) => {
@@ -125,11 +141,11 @@ describe("operator dashboard", () => {
 });
 
 describe("homeSkeleton", () => {
-  it("has From people above the five remembered sections, each with a count", () => {
+  it("has opt-in From people after Decisions and five remembered sections, each with a count", () => {
     const home = homeSkeleton(hooks(["needs"]));
     const sections = [...home.el.querySelectorAll<HTMLDetailsElement>("details.sec")];
-    assert.deepEqual(sections.map((d) => text(d.querySelector(".sec-title"))), ["From people", ...SECTIONS.map((id) => SECTION_TITLE[id])]);
-    assert.deepEqual(sections.map((d) => d.open), [true, true, false, false, false, false]);
+    assert.deepEqual(sections.map((d) => text(d.querySelector(".sec-title"))), ["Decisions", "From people (opt in)", ...SECTIONS.filter((id) => id !== "needs").map((id) => SECTION_TITLE[id])]);
+    assert.deepEqual(sections.map((d) => d.open), [true, false, false, false, false, false]);
     for (const d of sections) assert.ok(d.querySelector(`summary .${COUNT_CLASS}`), "a count in each header");
     assert.ok(home.slots.opsBox, "the ops detail folds under the agents");
     assert.ok(home.sections.priority.body.contains(home.slots.themesBox), "the themes fold under by-priority");
