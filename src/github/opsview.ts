@@ -384,6 +384,22 @@ export function weeklyUsage(data: UsageData | undefined, now: number): HTMLEleme
     return sec;
   }
   const usage = data.usage;
+  if (usage.pools) {
+    for (const [name, label] of [["claude", "Claude"], ["openai", "OpenAI"]] as const) {
+      sec.append(h("h3", {}, label));
+      const pool = usage.pools[name];
+      if (!pool) {
+        sec.append(h("p", { class: "note" }, "Weekly usage not reported."));
+        continue;
+      }
+      const over = pool.usedPercent > pool.allowedPercent;
+      sec.append(h("p", { class: pool.hold || over ? "warn" : "note" }, `${pool.usedPercent.toFixed(1)}% used / ${pool.allowedPercent.toFixed(1)}% allowed by pace · ${resetText(pool.resetsAt, now)}`, ` (${time(pool.resetsAt)})`, over ? " · over pace" : "", pool.hold ? " · held" : ""));
+      const stale = now - Date.parse(pool.observedAt) > HEARTBEAT_STALE_MS;
+      sec.append(h("p", { class: stale ? "warn" : "fine" }, `Observed ${time(pool.observedAt)}${stale ? " · stale" : ""}.`));
+    }
+    sec.append(h("p", { class: "fine" }, usage.updatedAt ? `Published ${time(usage.updatedAt)}. ` : "Publication time unknown. ", usage.commentUrl ? link(usage.commentUrl, "Source ↗") : ""));
+    return sec;
+  }
   const weekly = usage.windows.find((w) => w.kind === "seven_day");
   sec.append(h("h3", {}, "Claude"));
   if (weekly) {
@@ -435,7 +451,8 @@ export function usageSection(data: UsageData | undefined, hb: Heartbeat | null |
   // Published with the heartbeat but in a comment of its own: stale with
   // it, or when it fell behind it (its publishing failed); with no
   // heartbeat, by its own age.
-  const behind = (since: number) => since - Date.parse(usage.updatedAt) > HEARTBEAT_STALE_MS;
+  if (!usage.windows.length && usage.pools) return weeklyUsage(data, now);
+  const behind = (since: number) => !usage.updatedAt || since - Date.parse(usage.updatedAt) > HEARTBEAT_STALE_MS;
   const stale = hb ? isStale(hb, now) || behind(Date.parse(hb.updatedAt)) : behind(now);
   sec.append(h("div", { class: `uw-list${stale ? " stale" : ""}` }, ...usage.windows.map((w) => windowRow(w, now))));
   const listed = new Map((hb?.workers ?? []).map((w) => [w.name, w]));
@@ -455,7 +472,7 @@ export function usageSection(data: UsageData | undefined, hb: Heartbeat | null |
       { class: "fine" },
       usage.observedAt ? `Percent used: Claude Code's status line on the coordinator's machine, as of ${time(usage.observedAt)}. ` : "Percent used: not reported yet; it comes from the coordinator's status line (bot-heartbeat statusline). ",
       "Tokens: that machine's transcripts, cache reads included; a worker's are all of its subagents'. ",
-      `Published at ${time(usage.updatedAt)} to `,
+      usage.updatedAt ? `Published at ${time(usage.updatedAt)} to ` : "Publication time unknown; source: ",
       usage.commentUrl ? link(usage.commentUrl, USAGE_REPO) : USAGE_REPO,
       ", private.",
     ),

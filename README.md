@@ -158,12 +158,12 @@ unknown rather than using the PR's creation date. Other queue entries and
 decisions beyond the first fifteen are in collapsed **Watching**.
 
 **Weekly subscription usage** is first on the dashboard, always visible. It
-reads the existing private usage comment, showing Claude's seven-day percentage,
-reset time and pace (elapsed fraction of seven days ending at reset, not the
-transcript accounting start). Observation and publication times remain explicit;
-old observations are marked stale. The available `bot-usage/v1` fixture and
-issue excerpt contain no OpenAI subscription reading, so OpenAI is explicitly
-unknown rather than estimated from tokens or Actions costs.
+reads Claude and OpenAI from `bot-usage/v1`'s `pools`, showing each pool's used
+and pace-allowed percentages, reset time, and over-pace or held state.
+Observation and publication times remain explicit; old observations are marked
+stale. Older publications retain the Claude window display.
+Open questions come immediately below usage, with Decisions open on entry,
+ranked by Priority, showing what they block and their inline answer forms.
 
 **From people**, after Decisions, is a closed-by-default opt-in disclosure.
 Opening it starts its reads; while closed, people notifications are not polled.
@@ -316,7 +316,7 @@ something notable happens to an item (`bot-board set --news` in
 homegit); a new line shows highlighted under the item.
 
 **The "Ask anything" box** atop the page files a note onto the board
-(below). Its `#chat` slot is the hook for a future chat (`chat.ts`).
+(below). Its `#chat` slot is where a future coordinator chat view attaches (`chat.ts`).
 
 Devspaces are the live runs of `devspace.yml` in
 bootc-dev/cgwalters-devspace-sandbox, each with its tailnet host, cores,

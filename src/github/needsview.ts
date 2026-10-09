@@ -6,7 +6,7 @@
 import type { Answer } from "../answer.ts";
 import { h, link } from "../dom.ts";
 import type { Renderer } from "../markdown.ts";
-import { questionOf } from "./board.ts";
+import { blockedBy, questionOf } from "./board.ts";
 import { OPERATOR } from "./config.ts";
 import type { Entry } from "./queue.ts";
 import { ACTION_LABEL, ACTION_TITLE, type Need } from "./needs.ts";
@@ -96,7 +96,9 @@ export function needRow(n: Need, hooks: NeedsHooks): HTMLElement {
     n.done ? h("span", { class: "state answered" }, STATE_LABEL.answered) : label ? h("span", { class: `state ${label.cls}` }, label.text) : null,
   );
   const main = h("div", { class: "main" }, h("span", { class: "title" }, h("a", { href: n.href }, n.title)), sub);
-  if (ask && ask !== n.title) main.append(h("span", { class: "why", title: ask }, excerpt(ask, ASK_EXCERPT)));
+   if (ask && ask !== n.title) main.append(h("span", { class: "why", title: ask }, excerpt(ask, ASK_EXCERPT)));
+  const blocked = item ? blockedBy(item) ?? item.parent : undefined;
+  if (question && blocked) main.append(h("p", { class: "note" }, "Blocks: ", link(`https://github.com/${blocked.owner}/${blocked.repo}/issues/${blocked.number}`, n.parent?.title ?? `${blocked.owner}/${blocked.repo}#${blocked.number}`)));
   if (question?.recommendation) main.append(h("p", { class: "note" }, `Recommended: ${question.recommendation}`));
   if (question?.optionsProblem) {
     main.append(h("p", { class: "warn" }, `Not every option can be offered: ${question.optionsProblem}. Read the question below, and answer in your own words if one is missing.`));

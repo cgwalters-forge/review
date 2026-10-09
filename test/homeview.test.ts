@@ -10,9 +10,9 @@ import { buildNeeds } from "../src/github/needs.ts";
 import { buildEntries, type Entry } from "../src/github/queue.ts";
 import { needsSignature } from "../src/github/needsview.ts";
 import { PREVIEW_ROWS, SECTION_TITLE, SECTIONS, type SectionId } from "../src/github/sections.ts";
-import type { UsageData } from "../src/github/usage.ts";
+import { parseUsage, USAGE_MARKER, type UsageData } from "../src/github/usage.ts";
 import { createRenderer } from "../src/markdown.ts";
-import { installDom } from "./helpers.ts";
+import { fixture, installDom } from "./helpers.ts";
 
 const win = installDom();
 const render = createRenderer(win as unknown as Parameters<typeof createRenderer>[0]);
@@ -53,6 +53,18 @@ const needsHooks = (sent: unknown[] = []) => ({
 afterEach(() => resetExpanded());
 
 describe("operator dashboard", () => {
+  it("reads both published pools, marks held and over-pace usage, and keeps questions open", () => {
+    const home = homeSkeleton(hooks());
+    const usage = parseUsage(`${USAGE_MARKER}\n\`\`\`json\n${JSON.stringify(fixture("usage-pools.json"))}\n\`\`\``)!;
+    fillUsage(home, { state: "ok", usage }, undefined, Date.parse("2026-10-09T14:00:00Z"));
+    assert.match(text(home.slots.weekly), /Claude.*42\.0% used \/ 49\.2% allowed/);
+    assert.match(text(home.slots.weekly), /OpenAI.*80\.0% used \/ 30\.1% allowed.*over pace.*held/);
+    assert.match(text(home.slots.weekly), /Publication time unknown/);
+    assert.doesNotMatch(text(home.slots.usage), /Invalid Date|not reported yet/);
+    assert.equal(home.sections.needs.details.open, true);
+    assert.equal(home.slots.weekly.nextElementSibling, home.sections.needs.details);
+  });
+
   it("puts weekly usage first and human requests behind an opt-in disclosure after Decisions", () => {
     const home = homeSkeleton(hooks());
     assert.equal(home.el.firstElementChild, home.slots.weekly);
@@ -120,13 +132,24 @@ describe("operator dashboard", () => {
 
   it("keeps overflow in collapsed Watching and reveals it for action continuation", () => {
     const home = homeSkeleton(hooks(["needs"]));
-    const entries = buildEntries(questions(DECISION_LIMIT + 3), [], new Map());
+    const entries = buildEntries(questions(DECISION_LIMIT + 3).map((q) => ({ ...q, labels: ["escalate"] })), [], new Map());
     fillNeeds(home, buildNeeds({ entries }), needsHooks(), entries);
     document.body.replaceChildren(home.el);
     assert.equal(walkRows(home.el).length, DECISION_LIMIT);
     const overflow = home.slots.needs.querySelector<HTMLElement>(".watching .need")!;
     reveal(overflow, home.slots.needs, "needs", ".need");
     assert.ok(walkRows(home.el).includes(overflow));
+  });
+
+  it("keeps every open question visible with its blocked item and answer options", () => {
+    const home = homeSkeleton(hooks());
+    const entries = buildEntries(questions(DECISION_LIMIT + 3), [], new Map());
+    fillNeeds(home, buildNeeds({ entries }), needsHooks(), entries);
+    document.body.replaceChildren(home.el);
+    assert.equal(walkRows(home.el).length, DECISION_LIMIT + 3);
+    assert.match(text(home.slots.needs), /Blocks: cgwalters-forge\/tracker#9/);
+    assert.equal(home.slots.needs.querySelector(".watching .need"), null);
+    assert.ok(home.slots.needs.querySelector("form"));
   });
 
   it("counts each Watching identity once and excludes decision context", () => {

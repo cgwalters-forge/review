@@ -48,6 +48,14 @@ export interface UsageWindow {
   tokens: Tokens;
 }
 
+export interface UsagePool {
+  usedPercent: number;
+  allowedPercent: number;
+  resetsAt: string;
+  observedAt: string;
+  hold: boolean;
+}
+
 export interface Usage {
   updatedAt: string;
   /** When the status line last reported the percents. */
@@ -58,6 +66,7 @@ export interface Usage {
   /** Each worker's subagents' tokens (itself and its reviewer), all told, by the heartbeat's worker name. */
   workers: { name: string; tokens: Tokens }[];
   commentUrl?: string;
+  pools?: Partial<Record<"claude" | "openai", UsagePool>>;
 }
 
 /** What the ops view knows of the usage: the snapshot, none published yet, or a repository this token can't read. */
@@ -99,6 +108,16 @@ function parseWindow(raw: unknown): UsageWindow | undefined {
   return w;
 }
 
+function parsePool(raw: unknown): UsagePool | undefined {
+  if (!isObject(raw)) return undefined;
+  const usedPercent = count(raw.used_percent, MAX_PERCENT);
+  const allowedPercent = count(raw.allowed_percent, MAX_PERCENT);
+  const resetsAt = time(raw.resets_at);
+  const observedAt = time(raw.observed_at);
+  if (usedPercent === undefined || allowedPercent === undefined || !resetsAt || !observedAt || typeof raw.hold !== "boolean") return undefined;
+  return { usedPercent, allowedPercent, resetsAt, observedAt, hold: raw.hold };
+}
+
 /** The usage in a comment's body, or undefined if it isn't one. Malformed windows and workers are left out. */
 export function parseUsage(body: string | null | undefined): Usage | undefined {
   if (!body?.startsWith(USAGE_MARKER)) return undefined;
@@ -110,16 +129,23 @@ export function parseUsage(body: string | null | undefined): Usage | undefined {
   } catch {
     return undefined;
   }
-  if (!isObject(raw) || raw.schema !== SCHEMA || !Array.isArray(raw.windows)) return undefined;
+  if (!isObject(raw) || raw.schema !== SCHEMA) return undefined;
+  const pools: NonNullable<Usage["pools"]> = {};
+  for (const name of ["claude", "openai"] as const) {
+    const pool = isObject(raw.pools) ? parsePool(raw.pools[name]) : undefined;
+    if (pool) pools[name] = pool;
+  }
   const updatedAt = time(raw.updated_at);
-  const windows = raw.windows.slice(0, MAX_WINDOWS).flatMap((w) => parseWindow(w) ?? []);
-  if (!updatedAt || !windows.length) return undefined;
+  const windows = (Array.isArray(raw.windows) ? raw.windows.slice(0, MAX_WINDOWS) : []).flatMap((w) => parseWindow(w) ?? []);
+  if (!Object.keys(pools).length && (!updatedAt || !windows.length)) return undefined;
   const workers = (Array.isArray(raw.workers) ? raw.workers.slice(0, MAX_WORKERS) : []).flatMap((w) => {
     const name = isObject(w) ? str(w.name, NAME_RE) : undefined;
     const tokens = isObject(w) ? parseTokens(w.tokens) : undefined;
     return name && tokens ? [{ name, tokens }] : [];
   });
-  const usage: Usage = { updatedAt, windows, workers };
+  // A pool-only publication need not carry a publication timestamp.
+  const usage: Usage = { updatedAt: updatedAt ?? "", windows, workers };
+  if (Object.keys(pools).length) usage.pools = pools;
   const observedAt = time(raw.observed_at);
   if (observedAt) usage.observedAt = observedAt;
   const coordinatorTokens = parseTokens(raw.coordinator_tokens);
