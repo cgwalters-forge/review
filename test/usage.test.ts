@@ -35,6 +35,16 @@ describe("findUsage", () => {
 });
 
 describe("parseUsage", () => {
+  it("accepts pool-only publications and drops malformed pools independently", () => {
+    const raw = fixture<{ pools: Record<string, Record<string, unknown>> }>("usage-pools.json");
+    assert.equal(parseUsage(body(raw))?.pools?.openai?.usedPercent, 80);
+    for (const edit of [{ used_percent: -1 }, { allowed_percent: "30" }, { resets_at: "soon" }, { observed_at: null }, { hold: "true" }]) {
+      const parsed = parseUsage(body({ ...raw, pools: { ...raw.pools, openai: { ...raw.pools.openai, ...edit } } }));
+      assert.equal(parsed?.pools?.openai, undefined);
+      assert.equal(parsed?.pools?.claude?.usedPercent, 42);
+    }
+  });
+
   // (edit, windows kept, whether the first has a percent, workers kept)
   type Json = ReturnType<typeof valid>;
   const cases: [string, (j: Json) => unknown, number | undefined, boolean?, number?][] = [

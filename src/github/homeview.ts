@@ -106,7 +106,7 @@ function section(id: SectionId, home: Pick<Home, "expected">, hooks: HomeHooks, 
     h("summary", {}, h("span", { class: "sec-title" }, SECTION_TITLE[id]), count, h("span", { class: "sec-hint" }, SECTION_HINT[id])),
     bodyEl,
   );
-  details.open = hooks.open(id);
+  details.open = id === "needs" || hooks.open(id);
   home.expected.set(id, details.open);
   details.addEventListener("toggle", () => {
     if (details.open === home.expected.get(id)) return;
@@ -249,8 +249,9 @@ export function fillPeople(home: Home, people: People | undefined, now: number, 
 export function fillNeeds(home: Home, needs: readonly Need[], hooks: NeedsHooks, entries: readonly Entry[] = []): number {
   const slot = home.slots.needs;
   const waiting = waitingCount(needs);
+  const limit = Math.max(DECISION_LIMIT, needs.filter((n) => n.action === "answer" && !n.done).length);
   if (needs.length === 0) slot.replaceChildren(h("p", { class: `empty ${CAUGHT_UP_CLASS}` }, "All caught up: nothing needs you right now."));
-  else slot.replaceChildren(...needs.slice(0, DECISION_LIMIT).map((n) => needRow(n, hooks)));
+  else slot.replaceChildren(...needs.slice(0, limit).map((n) => needRow(n, hooks)));
   const keys = new Set(needs.map((n) => n.key));
   const identity = (e: Entry): string => {
     const ref = e.pr?.ref ?? e.item?.ref;
@@ -263,7 +264,7 @@ export function fillNeeds(home: Home, needs: readonly Need[], hooks: NeedsHooks,
     seen.add(key);
     return true;
   });
-  const overflow = needs.slice(DECISION_LIMIT);
+  const overflow = needs.slice(limit);
   if (watching.length || overflow.length) slot.append(h("details", { class: "watching" }, h("summary", {}, `Watching (${watching.length + overflow.length})`), ...overflow.map((n) => needRow(n, hooks)), ...watching.map((e) => {
     const label = hooks.labelOf(e);
     const state = e.verdict ? VERDICT_LABEL[e.verdict.state] : label?.text ?? "read";

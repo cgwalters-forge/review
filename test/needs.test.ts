@@ -73,7 +73,7 @@ describe("representative operator asks", () => {
     const needs = buildNeeds({ entries: [...entriesOf(items, ["answered"]), ...cases.map((c, i) => ({ ...c.entry, key: `case:${i}` }))] });
     assert.equal(needs.length, 8);
     assert.ok(needs.length <= 15);
-    assert.equal(needs[0]?.key, "item:escalate");
+    assert.equal(needs[0]?.key, "item:question");
     assert.ok(needs.every((n) => ["answer", "review", "write", "promote"].includes(n.action)));
   });
 

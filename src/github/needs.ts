@@ -165,7 +165,7 @@ export function buildNeeds(input: NeedsInput): Need[] {
     }
     return priorityRank(priority);
   };
-  out.sort((a, b) => Number(b.priority === "P0") - Number(a.priority === "P0") || focusRank(a) - focusRank(b) || time(b) - time(a) || a.key.localeCompare(b.key));
+  out.sort((a, b) => Number(b.action === "answer") - Number(a.action === "answer") || (a.action === "answer" && b.action === "answer" ? priorityRank(a.priority) - priorityRank(b.priority) : Number(b.priority === "P0") - Number(a.priority === "P0")) || focusRank(a) - focusRank(b) || time(b) - time(a) || a.key.localeCompare(b.key));
   return [...out, ...done];
 }
 

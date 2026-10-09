@@ -1,0 +1,33 @@
+{
+  "schema": "bot-usage/v1",
+  "pools": {
+    "claude": {
+      "source": "statusline",
+      "observed_at": "2026-10-09T13:36:09.000Z",
+      "used_percent": 42,
+      "window_minutes": 10080,
+      "resets_at": "2026-10-12T23:00:00.000Z",
+      "target_percent": 95,
+      "burst": 3,
+      "allowed_percent": 49.2129230406746,
+      "ahead": -7.212923040674603,
+      "hold": false,
+      "reason": null,
+      "next_dispatch_at": null
+    },
+    "openai": {
+      "source": "praxis",
+      "observed_at": "2026-10-09T13:58:19.000Z",
+      "used_percent": 80,
+      "window_minutes": 10080,
+      "resets_at": "2026-10-14T08:47:12.000Z",
+      "target_percent": 95,
+      "burst": 3,
+      "allowed_percent": 30.10736748511905,
+      "ahead": 49.89263251488095,
+      "hold": true,
+      "reason": "pace",
+      "next_dispatch_at": "2026-10-13T00:57:18.315Z"
+    }
+  }
+}
