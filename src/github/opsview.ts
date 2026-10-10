@@ -22,7 +22,7 @@ import {
   workGroups,
   type WorkGroup,
 } from "./ops.ts";
-import { type Tokens, tokenTotal, type UsageData, type UsageWindow } from "./usage.ts";
+import { type Tokens, tokenTotal, type UsageData, type UsagePool, type UsageWindow } from "./usage.ts";
 import { age, pill, time } from "./view.ts";
 
 const SECOND = 1000;
@@ -376,6 +376,65 @@ interface Consumer {
   tokens: Tokens;
 }
 
+/** The subscription pools of bot-usage/v1, in the order shown. */
+const POOLS = [["claude", "Claude"], ["openai", "OpenAI"]] as const;
+/** Names a pool's expander, so a redraw can keep it open. */
+export const POOL_ATTR = "data-pool";
+/** The pool bar's box: a 6-unit track with the pace tick standing 2 units proud of it on each side. */
+const POOL_BAR = { width: 100, height: 10, track: 6, tick: 1 };
+
+/**
+ * One pool as a compact row: its name, a thin bar of the percent used
+ * with a tick where the pace allows, and a short label. The sentence it
+ * replaces (exact percents, reset, observation time) is in its expander.
+ */
+function poolRow(name: string, label: string, pool: UsagePool | undefined, now: number): HTMLElement {
+  if (!pool) return h("div", { class: "pool-sum none" }, h("span", { class: "pool-name" }, label), " ", h("span", { class: "pool-label" }, "Weekly usage not reported."));
+  const used = pool.usedPercent.toFixed(1);
+  const allowed = pool.allowedPercent.toFixed(1);
+  const over = pool.usedPercent > pool.allowedPercent;
+  const stale = now - Date.parse(pool.observedAt) > HEARTBEAT_STALE_MS;
+  const flags = `${over ? " · over pace" : ""}${pool.hold ? " · held" : ""}`;
+  const clamp = (n: number, max: number) => String(Math.max(0, Math.min(max, n)));
+  const y = String((POOL_BAR.height - POOL_BAR.track) / 2);
+  const track = { x: "0", y, height: String(POOL_BAR.track), rx: String(POOL_BAR.track / 2) };
+  const bar = svg(
+    "svg",
+    {
+      class: "bar",
+      viewBox: `0 0 ${POOL_BAR.width} ${POOL_BAR.height}`,
+      preserveAspectRatio: "none",
+      role: "progressbar",
+      "aria-label": `${label} weekly usage`,
+      "aria-valuemin": "0",
+      "aria-valuemax": "100",
+      "aria-valuenow": clamp(pool.usedPercent, 100),
+      "aria-valuetext": `${used}% used, ${allowed}% allowed by pace${flags.replaceAll(" ·", ",")}${stale ? ", stale" : ""}`,
+    },
+    svg("rect", { class: "track", ...track, width: String(POOL_BAR.width) }),
+    svg("rect", { class: "fill", ...track, width: clamp(pool.usedPercent, POOL_BAR.width) }),
+    svg("rect", { class: "tick", x: clamp(pool.allowedPercent - POOL_BAR.tick / 2, POOL_BAR.width - POOL_BAR.tick), y: "0", width: String(POOL_BAR.tick), height: String(POOL_BAR.height) }),
+  );
+  return h(
+    "details",
+    { class: `pool${pool.hold || over ? " over" : ""}`, [POOL_ATTR]: name },
+    h(
+      "summary",
+      { class: "pool-sum" },
+      h("span", { class: "pool-name" }, label),
+      " ",
+      bar,
+      h("span", { class: "pool-label" }, `${Math.round(pool.usedPercent)}% · pace ${Math.round(pool.allowedPercent)}%`, pool.hold ? " · held" : "", stale && h("span", { class: "pool-stale" }, " · stale")),
+    ),
+    h(
+      "div",
+      { class: "pool-detail" },
+      h("p", {}, `${used}% used / ${allowed}% allowed by pace · ${resetText(pool.resetsAt, now)}`, ` (${time(pool.resetsAt)})`, flags),
+      h("p", {}, `Observed ${time(pool.observedAt)}${stale ? " · stale" : ""}.`),
+    ),
+  );
+}
+
 /** Weekly pace uses the subscription's seven days, not the transcript accounting start. */
 export function weeklyUsage(data: UsageData | undefined, now: number): HTMLElement {
   const sec = h("div", {}, h("h2", {}, "Weekly subscription usage"));
@@ -385,19 +444,14 @@ export function weeklyUsage(data: UsageData | undefined, now: number): HTMLEleme
   }
   const usage = data.usage;
   if (usage.pools) {
-    for (const [name, label] of [["claude", "Claude"], ["openai", "OpenAI"]] as const) {
-      sec.append(h("h3", {}, label));
-      const pool = usage.pools[name];
-      if (!pool) {
-        sec.append(h("p", { class: "note" }, "Weekly usage not reported."));
-        continue;
-      }
-      const over = pool.usedPercent > pool.allowedPercent;
-      sec.append(h("p", { class: pool.hold || over ? "warn" : "note" }, `${pool.usedPercent.toFixed(1)}% used / ${pool.allowedPercent.toFixed(1)}% allowed by pace · ${resetText(pool.resetsAt, now)}`, ` (${time(pool.resetsAt)})`, over ? " · over pace" : "", pool.hold ? " · held" : ""));
-      const stale = now - Date.parse(pool.observedAt) > HEARTBEAT_STALE_MS;
-      sec.append(h("p", { class: stale ? "warn" : "fine" }, `Observed ${time(pool.observedAt)}${stale ? " · stale" : ""}.`));
-    }
-    sec.append(h("p", { class: "fine" }, usage.updatedAt ? `Published ${time(usage.updatedAt)}. ` : "Publication time unknown. ", usage.commentUrl ? link(usage.commentUrl, "Source ↗") : ""));
+    sec.append(
+      h(
+        "div",
+        { class: "pools" },
+        ...POOLS.map(([name, label]) => poolRow(name, label, usage.pools?.[name], now)),
+        h("p", { class: "fine" }, usage.updatedAt ? `Published ${time(usage.updatedAt)}. ` : "Publication time unknown. ", usage.commentUrl ? link(usage.commentUrl, "Source ↗") : ""),
+      ),
+    );
     return sec;
   }
   const weekly = usage.windows.find((w) => w.kind === "seven_day");

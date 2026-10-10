@@ -390,6 +390,27 @@ details.history summary { cursor: pointer; color: var(--accent); }
 .uw .bar .track { fill: var(--line); }
 .uw .bar .fill { fill: var(--fill); }
 .uw.past-reset .pct { opacity: 0.5; }
+/* Weekly pools: one thin bar each, the pace as a tick, the sentence behind the expander. */
+.pools { display: grid; gap: 2px; }
+.pool-sum { display: grid; grid-template-columns: 1em 4.5em minmax(0, 1fr) auto; gap: 2px 10px; align-items: center; min-height: 32px; font-size: 14px; --fill: var(--accent); }
+summary.pool-sum { cursor: pointer; list-style: none; }
+summary.pool-sum::-webkit-details-marker { display: none; }
+.pool-sum::before { content: ""; color: var(--muted); }
+summary.pool-sum::before { content: "▸"; }
+.pool[open] > summary.pool-sum::before { content: "▾"; }
+.pool.over > .pool-sum { --fill: var(--p1); }
+.pool-name { font-weight: 600; }
+.pool-sum .bar { display: block; width: 100%; height: 10px; }
+.pool-sum .bar .track { fill: var(--line); }
+.pool-sum .bar .fill { fill: var(--fill); }
+.pool-sum .bar .tick { fill: var(--ink); }
+.pool-label { font: 12px var(--mono); color: var(--muted); font-variant-numeric: tabular-nums; text-align: right; }
+.pool.over .pool-label { color: var(--fill); }
+.pool-sum.none .pool-label { grid-column: 3 / -1; }
+.pool-label .pool-stale { color: var(--muted); }
+.pool-detail { padding: 0 0 6px calc(1em + 10px); }
+.pool-detail p, .pools .fine { font-size: 12px; color: var(--muted); margin: 2px 0; overflow-wrap: anywhere; }
+.pools .fine { margin-top: 4px; }
 .uw .reset, .uw .tok, .uc .tok { font: 12px var(--mono); color: var(--muted); font-variant-numeric: tabular-nums; }
 .uc-list { list-style: none; margin: 4px 0 0; padding: 0; }
 .uc { display: grid; grid-template-columns: minmax(0, 1fr) 8em 4.5em; gap: 2px 12px; align-items: center; padding: 3px 0; font-size: 14px; }
@@ -423,6 +444,8 @@ details.history summary { cursor: pointer; color: var(--accent); }
   .lw { grid-template-columns: 7.5em minmax(0, 1fr) auto; }
   .uw { grid-template-columns: 4.5em minmax(0, 1fr); }
   .uw .reset, .uw .tok { grid-column: 2; }
+  .pool-sum { grid-template-columns: 1em minmax(0, 1fr) auto; }
+  .pool-sum .bar { grid-row: 2; grid-column: 1 / -1; }
   .uc { grid-template-columns: minmax(0, 1fr) 4em 4.5em; }
   .lw .ds { grid-column: 2; }
 }
