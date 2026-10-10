@@ -23,7 +23,7 @@ import { peopleView, type PeopleHooks } from "./peopleview.ts";
 import { type Need, waitingCount } from "./needs.ts";
 import { NEED_CLASS, needRow, type NeedsHooks } from "./needsview.ts";
 import { type Ops } from "./ops.ts";
-import { opsDetail, usageSection, usageSummary, weeklyUsage } from "./opsview.ts";
+import { opsDetail, POOL_ATTR, usageSection, usageSummary, weeklyUsage } from "./opsview.ts";
 import { type Entry, priorityRank } from "./queue.ts";
 import { PREVIEW_ROWS, SECTION_HINT, SECTION_TITLE, SECTIONS, type SectionId } from "./sections.ts";
 import type { OpenBoard, ProjectStatus } from "./backend.ts";
@@ -150,7 +150,7 @@ export function homeSkeleton(hooks: HomeHooks): Home {
     priority: section("priority", ctx, hooks, priority, themes.box),
     usage: section("usage", ctx, hooks, usage),
   };
-  const el = h("div", { class: HOME_CLASS }, weekly, sections.needs.details, peopleSection, status, focus, runs, ...SECTIONS.filter((id) => id !== "needs").map((id) => sections[id].details), freshness);
+  const el = h("div", { class: HOME_CLASS }, weekly, status, sections.needs.details, peopleSection, focus, runs, ...SECTIONS.filter((id) => id !== "needs").map((id) => sections[id].details), freshness);
   return { el, sections, slots: { people, peopleCount, runs, freshness, status, focus, needs, agents, ops: ops.slot, opsBox: ops.box, feed, news, priority, themes: themes.slot, themesBox: themes.box, usage, weekly }, expected };
 }
 
@@ -362,7 +362,11 @@ export function fillThemes(home: Home, board: OpenBoard | undefined, filter: Tri
 }
 
 export function fillUsage(home: Home, usage: UsageData | undefined, hb: Heartbeat | null | undefined, now: number): void {
+  // A redraw rebuilds the rows: keep the pool expanders he opened as they were.
+  const pools = () => [...home.slots.weekly.querySelectorAll<HTMLDetailsElement>(`details[${POOL_ATTR}]`)];
+  const open = new Set(pools().filter((d) => d.open).map((d) => d.getAttribute(POOL_ATTR)));
   home.slots.weekly.replaceChildren(weeklyUsage(usage, now));
+  for (const d of pools()) d.open = open.has(d.getAttribute(POOL_ATTR));
   const slot = home.slots.usage;
   const body = usageSection(usage, hb, now);
   slot.replaceChildren(body ?? h("p", { class: "note" }, "Reading…"));

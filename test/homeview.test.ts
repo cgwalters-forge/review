@@ -62,7 +62,46 @@ describe("operator dashboard", () => {
     assert.match(text(home.slots.weekly), /Publication time unknown/);
     assert.doesNotMatch(text(home.slots.usage), /Invalid Date|not reported yet/);
     assert.equal(home.sections.needs.details.open, true);
-    assert.equal(home.slots.weekly.nextElementSibling, home.sections.needs.details);
+    assert.equal(home.slots.weekly.nextElementSibling, home.slots.status);
+    assert.equal(home.slots.status.nextElementSibling, home.sections.needs.details);
+  });
+
+  it("shows each pool as a compact bar with a pace tick, the sentence folded away", () => {
+    const home = homeSkeleton(hooks());
+    const usage = parseUsage(`${USAGE_MARKER}\n\`\`\`json\n${JSON.stringify(fixture("usage-pools.json"))}\n\`\`\``)!;
+    const at = (iso: string) => fillUsage(home, { state: "ok", usage }, undefined, Date.parse(iso));
+    const pool = (name: string) => home.slots.weekly.querySelector<HTMLDetailsElement>(`details[data-pool="${name}"]`)!;
+    const attrs = (el: Element | null, ...names: string[]) => names.map((n) => el?.getAttribute(n));
+    at("2026-10-09T13:50:00Z");
+    // pool, its label, over pace or held, [valuenow, valuetext], the fill's width and the tick's x
+    const cases = [
+      ["claude", "42% · pace 49%", false, ["42", "42.0% used, 49.2% allowed by pace"], "42", "48.7129230406746"],
+      ["openai", "80% · pace 30% · held", true, ["80", "80.0% used, 30.1% allowed by pace, over pace, held"], "80", "29.60736748511905"],
+    ] as const;
+    for (const [name, label, over, aria, fill, tick] of cases) {
+      const d = pool(name);
+      assert.equal(d.open, false, name);
+      assert.equal(text(d.querySelector(".pool-label")), label);
+      assert.equal(d.classList.contains("over"), over, name);
+      const bar = d.querySelector("summary [role=progressbar]");
+      assert.deepEqual(attrs(bar, "aria-valuemin", "aria-valuemax", "aria-valuenow", "aria-valuetext"), ["0", "100", ...aria]);
+      assert.deepEqual([attrs(bar!.querySelector(".fill"), "width")[0], attrs(bar!.querySelector(".tick"), "x")[0]], [fill, tick]);
+      assert.match(text(d.querySelector(".pool-detail")), /allowed by pace · resets .*Observed .*\.$/);
+      assert.doesNotMatch(text(d.querySelector(".pool-detail")), /stale/);
+    }
+    assert.equal(home.slots.weekly.querySelector(".warn"), null, "no warning boxes");
+
+    pool("openai").open = true;
+    at("2026-10-10T14:00:00Z");
+    assert.deepEqual([pool("claude").open, pool("openai").open], [false, true], "a redraw keeps his expander open");
+    assert.equal(text(pool("claude").querySelector(".pool-label")), "42% · pace 49% · stale");
+    assert.match(pool("claude").querySelector("[role=progressbar]")!.getAttribute("aria-valuetext")!, /, stale$/);
+    assert.match(text(pool("claude").querySelector(".pool-detail")), /Observed .* · stale\.$/);
+
+    fillUsage(home, { state: "ok", usage: { ...usage, pools: { claude: { ...usage.pools!.claude!, usedPercent: 130, allowedPercent: 100 } } } }, undefined, Date.parse("2026-10-09T13:50:00Z"));
+    const full = pool("claude").querySelector("[role=progressbar]")!;
+    assert.deepEqual([attrs(full, "aria-valuenow")[0], attrs(full.querySelector(".fill"), "width")[0], attrs(full.querySelector(".tick"), "x")[0]], ["100", "100", "99"]);
+    assert.match(text(home.slots.weekly.querySelector(".pool-sum.none")), /OpenAI Weekly usage not reported/);
   });
 
   it("puts weekly usage first and human requests behind an opt-in disclosure after Decisions", () => {
