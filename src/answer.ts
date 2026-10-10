@@ -21,7 +21,9 @@
 //     Blocks: `https://github.com/example/widget/pull/42`
 //
 // `Q:`, `Options:` and `Recommended:` count only outside fenced code
-// blocks, and `Options:` and `Recommended:` only after the `Q:` line. Each
+// blocks, and `Options:` and `Recommended:` only after the `Q:` line. A
+// body with no `Q:` line at all (the bot has written such: the title asks)
+// still offers its options, read from the whole body. Each
 // option is exactly one line, `A) text`, lettered from A without gaps,
 // at least two; an option wrapped onto a second line, or a lone option,
 // makes the list unreadable, and the app says so rather than guess.
@@ -252,8 +254,8 @@ export function parseQuestion(body: string): Question {
   const blocks = parseBlocks(lines);
   if (blocks) q.blocks = blocks;
   const askAt = lines.findIndex((l) => ASK_RE.test(l));
-  if (askAt < 0) return q;
-  q.ask = (ASK_RE.exec(lines[askAt] as string)?.[1] as string).trim();
+  if (askAt >= 0) q.ask = (ASK_RE.exec(lines[askAt] as string)?.[1] as string).trim();
+  // Without a `Q:` line the whole body is the question (see the top).
   const after = lines.slice(askAt + 1);
   const rec = after.map((l) => RECOMMENDED_RE.exec(l)).find((m) => m);
   if (rec) q.recommendation = (rec[1] as string).trim();
