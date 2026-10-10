@@ -20,8 +20,8 @@ import type { News } from "./news.ts";
 import { newsList } from "./newsview.ts";
 import type { People } from "./people.ts";
 import { peopleView, type PeopleHooks } from "./peopleview.ts";
-import { type Need, waitingCount } from "./needs.ts";
-import { NEED_CLASS, needRow, type NeedsHooks } from "./needsview.ts";
+import { ALL_PRIORITIES, type Need, waitingCount } from "./needs.ts";
+import { applyPriority, NEED_CLASS, NEED_FILTERED_CLASS, needRow, needsHead, type NeedsHooks } from "./needsview.ts";
 import { type Ops } from "./ops.ts";
 import { opsDetail, POOL_ATTR, usageSection, usageSummary, weeklyUsage } from "./opsview.ts";
 import { type Entry, priorityRank } from "./queue.ts";
@@ -220,9 +220,9 @@ export function reveal(row: HTMLElement, slot: HTMLElement, id: string, rowSelec
   applyLimit(slot, id, rowSelector);
 }
 
-/** The rows the keyboard walks: those in an open section, not hidden by "View all". */
+/** The rows the keyboard walks: those in an open section, not hidden by "View all" or the priority filter. */
 export function walkRows(root: HTMLElement): HTMLElement[] {
-  return [...root.querySelectorAll<HTMLElement>(`.${ROW_CLASS}`)].filter((r) => !r.closest("[hidden], details:not([open])"));
+  return [...root.querySelectorAll<HTMLElement>(`.${ROW_CLASS}`)].filter((r) => !r.closest(`[hidden], .${NEED_FILTERED_CLASS}, details:not([open])`));
 }
 
 /** Move within the walkable rows, stopping at either end; without a selection, start at the first. */
@@ -251,7 +251,7 @@ export function fillNeeds(home: Home, needs: readonly Need[], hooks: NeedsHooks,
   const waiting = waitingCount(needs);
   const limit = Math.max(DECISION_LIMIT, needs.filter((n) => n.action === "answer" && !n.done).length);
   if (needs.length === 0) slot.replaceChildren(h("p", { class: `empty ${CAUGHT_UP_CLASS}` }, "All caught up: nothing needs you right now."));
-  else slot.replaceChildren(...needs.slice(0, limit).map((n) => needRow(n, hooks)));
+  else slot.replaceChildren(needsHead(needs, hooks, slot), ...needs.slice(0, limit).map((n) => needRow(n, hooks)));
   const keys = new Set(needs.map((n) => n.key));
   const identity = (e: Entry): string => {
     const ref = e.pr?.ref ?? e.item?.ref;
@@ -271,6 +271,7 @@ export function fillNeeds(home: Home, needs: readonly Need[], hooks: NeedsHooks,
     const reason = e.wait?.onBot ? ON_BOT_LABEL : e.wait?.reasons.length ? e.wait.reasons.map((r) => REASON_LABEL[r]).join(" · ") : rowText(e) || "No concrete ask; read for context.";
     return h("p", { class: "watching-item" }, h("a", { href: e.href }, e.title), ` · ${e.where} `, h("span", { class: `state ${label?.cls ?? "read"}` }, state), h("span", { class: "why" }, ` · ${reason}`));
   })));
+  applyPriority(slot, hooks.priority ?? ALL_PRIORITIES);
   setCount(home, "needs", String(waiting), { title: `${waiting} waiting on you`, hot: waiting > 0 });
   return waiting;
 }

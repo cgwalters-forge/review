@@ -186,7 +186,7 @@ describe("operator dashboard", () => {
     fillNeeds(home, buildNeeds({ entries }), needsHooks(), entries);
     document.body.replaceChildren(home.el);
     assert.equal(walkRows(home.el).length, DECISION_LIMIT + 3);
-    assert.match(text(home.slots.needs), /Blocks: cgwalters-forge\/tracker#9/);
+    assert.match(text(home.slots.needs), /Blocks: tracker#9/);
     assert.equal(home.slots.needs.querySelector(".watching .need"), null);
     assert.ok(home.slots.needs.querySelector("form"));
   });

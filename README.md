@@ -165,6 +165,17 @@ stale. Each row expands to the exact percentages, reset time and when it was
 observed. Older publications retain the Claude window display.
 **Status** comes right after usage, then the open questions, with Decisions open on entry,
 ranked by Priority, showing what they block and their inline answer forms.
+Each question leads with what it asks, then one small line (priority, the
+issue as a link to GitHub, how long it has waited), its options as radio
+buttons (the recommended one marked, none picked for you), a short text box
+and Send. Chips over the rows (All, P0, P1, P2, each with its count) filter
+them by priority; the choice is remembered in this browser, and picking one
+never discards a half-written answer. Who may answer is said once, over the
+rows: nothing for cgwalters, the login for anyone else. If GitHub didn't say
+whose token this is when the page started (offline, a suspended phone), the
+page uses the login the cache was filled as, asks again at each poll, and
+meanwhile still offers the forms, saying that answers post as the token's
+owner.
 
 **From people**, after Decisions, is a closed-by-default opt-in disclosure.
 Opening it starts its reads; while closed, people notifications are not polled.

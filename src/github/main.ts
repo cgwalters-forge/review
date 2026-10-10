@@ -70,7 +70,7 @@ import { deleteCacheDatabase, IdbStore } from "./idbstore.ts";
 import type { Active } from "./agents.ts";
 import { fillAgents, fillChanges, fillFocus, fillStatus, fillNeeds, fillOps, fillPeople, fillPriority, fillState, fillThemes, fillUsage, type Home, type HomeHooks, homeSkeleton, LIMIT_ID, NEED_ROW_SELECTOR, reveal, setSectionOpen, stepRow, walkRows } from "./homeview.ts";
 import { loadProjectStatus } from "./backend.ts";
-import { type Need, needStops } from "./needs.ts";
+import { filterNeeds, type Need, needStops } from "./needs.ts";
 import { needId, type NeedsForm, type NeedsHooks, needsRedraw, needsSignature } from "./needsview.ts";
 import { activeFromOps, type JobCache, loadActive, loadOps, type Ops } from "./ops.ts";
 import { tickOps } from "./opsview.ts";
@@ -96,7 +96,7 @@ import {
 import { APPROVE_ACTION, canReview, type PrPane, prView, REVIEW_FORM_CLASS, type ReviewAskInfo } from "./prview.ts";
 import { buildEntries, type Entry, itemHref, onBot, staleItems } from "./queue.ts";
 import { isSection, loadSectionPrefs, type SectionId, type SectionPrefs, saveSectionPref, sectionOpen } from "./sections.ts";
-import { loadAdvance, loadFilter, saveAdvance, saveFilter } from "./store.ts";
+import { loadAdvance, loadFilter, loadNeedsPriority, saveAdvance, saveFilter, saveNeedsPriority } from "./store.ts";
 import { buildTriage, type Decision, decisionLabel, parseDecision, sortDecisions, triageOrder, type TriageFilter } from "./triage.ts";
 import { age, answerState, type BoardHref, type ContextHooks, CONTEXT_CLASS, contextView, itemView, ROW_CLASS, ROW_HREF_ATTR, ROW_KEY_ATTR, ROW_SECTION_ATTR, type RowLabel, STATE_LABEL } from "./view.ts";
 import { afterReview, ON_BOT_LABEL, REASON_LABEL } from "./waiting.ts";
@@ -191,6 +191,11 @@ interface State {
   prefs: SectionPrefs;
   /** The rows of "Needs you" as last drawn, and a signature of them. */
   needs: Need[];
+  /** The priority those rows are filtered by. */
+  needsPriority: string;
+  /** Why GitHub hasn't confirmed `login` (it is then the cache's, or unknown); retried at each poll. */
+  loginError?: string;
+  loginChecking?: boolean;
   needsSig?: string;
   /** Keys of questions answered from the page: kept in the list, dimmed, until a reload. */
   answeredHere: Set<string>;
@@ -448,7 +453,21 @@ function renderHome(state: State): void {
 
 /** What the "Needs you" rows act through. */
 function needsHooks(state: State, now: number): NeedsHooks {
-  return { login: state.login, now, render, labelOf: labelOf(state), send: (need, answer) => sendNeed(state, need, answer) };
+  return {
+    login: state.login,
+    loginError: state.loginError,
+    checkLogin: () => void confirmLogin(state),
+    priority: state.needsPriority,
+    pickPriority: (priority) => {
+      state.needsPriority = priority;
+      saveNeedsPriority(priority);
+      markSelected(state, false);
+    },
+    now,
+    render,
+    labelOf: labelOf(state),
+    send: (need, answer) => sendNeed(state, need, answer),
+  };
 }
 
 function currentNeeds(state: State): Need[] {
@@ -1215,7 +1234,9 @@ function allRows(): HTMLElement[] {
 
 /** "Needs you" as a list to step through: questions are answered in place, the rest open. */
 function needsOrigin(state: State, hash: string): Origin {
-  return { hash, stops: needStops(state.needs), live: () => needStops(currentNeeds(state)) };
+  // Moving on after an answer stays within the rows the priority filter shows.
+  const shown = (needs: readonly Need[]) => needStops(filterNeeds(needs, state.needsPriority));
+  return { hash, stops: shown(state.needs), live: () => shown(currentNeeds(state)) };
 }
 
 /** The themes under "By priority" as a list to step through: their rows that open in the app, in their order. */
@@ -1519,11 +1540,35 @@ function pollSections(state: State): void {
 }
 
 /**
+ * Ask GitHub whose token this is, after the read at start failed: until
+ * it answers, the rows can't say who is answering, and the capture bar
+ * stays away. A 401 signs out through the client's onUnauthorized.
+ */
+async function confirmLogin(state: State): Promise<void> {
+  if (state.closed || state.loginChecking || state.loginError === undefined) return;
+  state.loginChecking = true;
+  try {
+    state.login = await viewer(state.gh);
+    delete state.loginError;
+    // Persisting is a convenience: failing at it doesn't unconfirm the login.
+    if (state.session.store) await state.session.cache.attach(state.session.store, state.login, state.session.tokenHash).catch(() => false);
+    if (state.closed) return;
+    if (state.login === OPERATOR && !state.capture) showCapture(state);
+  } catch (e) {
+    state.loginError = message(e);
+  } finally {
+    state.loginChecking = false;
+  }
+  if (!state.closed) paintNeeds(state);
+}
+
+/**
  * One poll; state.poller runs them one at a time and schedules the next.
  * One it gave up on (no longer `current`) drops what it reads late.
  */
 async function poll(state: State, current: () => boolean): Promise<void> {
   if (state.closed) return;
+  void confirmLogin(state);
   pollSections(state);
   // The board and the forge load side by side; whichever answers first shows first.
   const forge = pollForge(state);
@@ -1819,6 +1864,7 @@ async function start(source: TokenSource): Promise<void> {
     openedFrom: "needs",
     prefs: loadSectionPrefs(),
     needs: [],
+    needsPriority: loadNeedsPriority(),
     answeredHere: new Set(),
     triageFilter: "all",
     harness: new Map(),
@@ -1832,8 +1878,9 @@ async function start(source: TokenSource): Promise<void> {
   };
   state.gh.onUnauthorized = () => void rejected(state);
   byId("meta").textContent = "Checking the token…";
-  // This token was used here before: show what it saw last time while
-  // GitHub confirms it.
+  // This token was used here before: show what it saw last time, as the
+  // login it had then, while GitHub confirms it.
+  if (session.knownLogin) state.login = session.knownLogin;
   const cached = session.knownLogin ? showCached(state) : Promise.resolve();
   try {
     state.login = await viewer(state.gh);
@@ -1843,10 +1890,12 @@ async function start(source: TokenSource): Promise<void> {
       await rejected(state);
       return;
     }
-    // Anything else (offline, rate limited) the poll reports too.
+    // Anything else (offline, rate limited, the page suspended while it
+    // waited) the poll reports too; it also asks again (confirmLogin).
+    state.loginError = message(e);
   }
   // Persist from now on, as this login's; a store another login filled is wiped.
-  if (state.login && session.store) await session.cache.attach(session.store, state.login, session.tokenHash);
+  if (state.login && !state.loginError && session.store) await session.cache.attach(session.store, state.login, session.tokenHash);
   const lacking = missingScopes(state.gh.scopes, CLASSIC_SCOPES);
   if (lacking.length) {
     state.tokenWarning = `This token lacks the ${lacking.map((n) => n.any.join(" or ")).join(", ")} scope${lacking.length > 1 ? "s" : ""}; some reads or answers will fail.`;
