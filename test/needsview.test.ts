@@ -3,10 +3,11 @@
 
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import type { Answer } from "../src/answer.ts";
+import { type Answer, formatAnswer } from "../src/answer.ts";
 import { type Item } from "../src/github/board.ts";
-import { buildNeeds, type Need } from "../src/github/needs.ts";
-import { NEEDS_CHANGED_NOTE, needId, type NeedsForm, type NeedsHooks, needRow, needsRedraw, needsSignature } from "../src/github/needsview.ts";
+import { ALL_PRIORITIES, buildNeeds, filterNeeds, type Need, priorityChips } from "../src/github/needs.ts";
+import { applyPriority, NEED_FILTERED_CLASS, NEEDS_CHANGED_NOTE, needId, type NeedsForm, type NeedsHooks, needRow, needsHead, needsRedraw, needsSignature } from "../src/github/needsview.ts";
+import { loadNeedsPriority, saveNeedsPriority } from "../src/github/store.ts";
 import { buildEntries } from "../src/github/queue.ts";
 import { parseDecision } from "../src/github/triage.ts";
 import { createRenderer } from "../src/markdown.ts";
@@ -105,23 +106,73 @@ describe("needRow", () => {
     assert.equal(row.getAttribute("data-section"), "needs");
     assert.equal(row.getAttribute("data-key"), "item:PVTI_q");
     assert.equal(row.id, needId(n));
-    assert.equal(text(row.querySelector(".action")), "Answer");
-    assert.match(text(row.querySelector(".why")), /Which prefix\?/);
+    // The question leads, in the title's place; the issue's title and one small line follow.
+    assert.equal(text(row.querySelector(".title")), "Which prefix?");
+    assert.equal(text(row.querySelector(".why")), "Prefix?");
+    assert.equal(text(row.querySelector(".sub")), "P0tracker#21 · age unknown");
+    assert.equal(row.querySelector(".sub a")?.getAttribute("href"), `${TRACKER}/21`);
+    assert.equal(row.querySelector(".action"), null, "the form is the action");
+    assert.equal(text(row.querySelector(".blocks")), "Blocks: tracker#9");
     assert.match(text(row), /Recommended: A, because it is safer/);
-    assert.deepEqual([...row.querySelectorAll("input[type=radio]")].map((r) => r.id), ["n21-opt-A", "n21-opt-B"]);
+    const radios = [...row.querySelectorAll<HTMLInputElement>("input[type=radio]")];
+    assert.deepEqual(radios.map((r) => r.id), ["n21-opt-A", "n21-opt-B"]);
+    // Real radios, each in its label, the recommended one marked but not picked for him.
+    assert.deepEqual(radios.map((r) => text(r.closest("label"))), ["A) this recommended", "B) that"]);
+    assert.deepEqual(radios.map((r) => r.closest("label")?.getAttribute("for")), radios.map((r) => r.id));
+    assert.deepEqual(radios.map((r) => r.checked), [false, false]);
+    assert.equal(row.querySelector("textarea")?.getAttribute("rows"), "2");
+    assert.equal(text(row.querySelector("button[type=submit]")), "Send answer");
     (row.querySelector("#n21-opt-B") as HTMLInputElement).checked = true;
     (row.querySelector("textarea") as HTMLTextAreaElement).value = "ship it";
     row.querySelector("form")?.dispatchEvent(new win.Event("submit", { cancelable: true }));
     await new Promise((r) => setTimeout(r, 0));
     assert.deepEqual(sent, [["item:PVTI_q", { text: "ship it", choice: "B" }]]);
     assert.match(text(row.querySelector(".status")), /Sent:/);
+    assert.equal(row.querySelector<HTMLButtonElement>("button[type=submit]")?.disabled, true);
+  });
+
+  // What the form hands to send() is what postAnswer formats into the comment.
+  const posted = async (body: string, fill: (row: HTMLElement) => void): Promise<string[]> => {
+    const sent: [string, Answer][] = [];
+    const row = needRow(first([tracked("PVTI_q", 21, { labels: ["question"], body })]), hooks(sent));
+    fill(row);
+    row.querySelector("form")?.dispatchEvent(new win.Event("submit", { cancelable: true }));
+    await new Promise((r) => setTimeout(r, 0));
+    return [...sent.map(([, a]) => formatAnswer(a)), text(row.querySelector(".status"))];
+  };
+  const pick = (letter: string) => (row: HTMLElement) => ((row.querySelector(`#n21-opt-${letter}`) as HTMLInputElement).checked = true);
+  const write = (value: string) => (row: HTMLElement) => ((row.querySelector("textarea") as HTMLTextAreaElement).value = value);
+  const NO_Q = `Blocks: ${TRACKER}/100\n\nOne stale PR is left.\n\nOptions:\nA) Close it.\nB) Keep it open.\n\nRecommended: A. Nothing depends on it.\n`;
+  const comments: [string, string, (row: HTMLElement) => void, string[]][] = [
+    ["a pick alone is the letter on a line", BODY, pick("A"), ["A\n", "Sent: https://github.com/c/1"]],
+    ["a pick with a note is the letter, then the note", BODY, (r) => (pick("B")(r), write("  not yet\nsee #3 ")(r)), ["B\nnot yet\nsee #3\n", "Sent: https://github.com/c/1"]],
+    ["a question without Q: offers its options too", NO_Q, pick("B"), ["B\n", "Sent: https://github.com/c/1"]],
+    ["a question without options takes text", "Q: Which name?\n", write("widget"), ["widget\n", "Sent: https://github.com/c/1"]],
+    ["nothing picked or written is not sent", BODY, () => {}, ["Pick an option or write an answer."]],
+  ];
+  for (const [name, body, fill, want] of comments) {
+    it(`posts: ${name}`, async () => assert.deepEqual(await posted(body, fill), want));
+  }
+
+  it("leads with the Why's question when the body has no Q: line, as the bot writes it", () => {
+    const n = first([tracked("PVTI_q", 130, { labels: ["question"], body: NO_Q, title: "Stale bot PR: close or keep?", why: "Q: close the stale PR? Rec A.", priority: "P2", org: "cgwalters-bot", createdAt: "2026-01-18T00:00:00Z" })]);
+    const row = needRow(n, hooks());
+    assert.equal(text(row.querySelector(".title")), "close the stale PR? Rec A.");
+    assert.equal(text(row.querySelector(".why")), "Stale bot PR: close or keep?");
+    assert.equal(text(row.querySelector(".sub")), "P2tracker#130 · cgwalters-bot · 2w");
+    assert.equal(row.querySelectorAll("input[type=radio]").length, 2);
+    assert.equal(row.getAttribute("data-priority"), "P2");
   });
 
   it("offers no form to anyone else, and none on what is not a question", () => {
     const q = first([tracked("PVTI_q", 21, { labels: ["question"], body: BODY })]);
     const other = needRow(q, hooks([], "someone"));
     assert.equal(other.querySelector("form"), null);
-    assert.match(text(other), /Only cgwalters answers; you are signed in as someone/);
+    // Why is said once over the rows (needsHead), not in each.
+    assert.doesNotMatch(text(other), /Only cgwalters answers/);
+    assert.equal(other.querySelector("a.action")?.textContent, "Answer");
+    // A token GitHub hasn't named may be his: the form is there.
+    assert.ok(needRow(q, { ...hooks(), login: undefined }).querySelector("form.answer"));
     const review = first([tracked("PVTI_r", 22, { labels: ["escalate"], body: "Ask: Look at it\n" })]);
     const row = needRow(review, hooks());
     assert.equal(row.querySelector("form"), null);
@@ -168,5 +219,110 @@ describe("needId", () => {
     const n = (key: string) => needId({ key } as Need);
     assert.notEqual(n("pr:a/b-c#1"), n("pr:a-b/c#1"));
     assert.match(n("pr:a/b#1"), /^need-[A-Za-z0-9_-]+$/);
+  });
+});
+
+describe("the bar over the rows", () => {
+  const q = (n: number, priority?: string, over: Partial<Item> = {}) => tracked(`PVTI_q${n}`, n, { labels: ["question"], body: BODY, createdAt: `2026-01-${10 + n}T00:00:00Z`, ...(priority ? { priority } : {}), ...over });
+  const needs = buildNeeds({ entries: buildEntries([q(1, "P2"), q(2, "P0"), q(3, "P2"), q(4), q(5, "P1")], [], new Map(), true) });
+  const chips = (root: Element) => [...root.querySelectorAll(".needs-filter button")].map((b) => `${text(b)}${b.getAttribute("aria-pressed") === "true" ? "*" : ""}`);
+
+  it("counts the waiting rows per priority, offering P0 to P2 always and others only when used", () => {
+    const summary = (list: readonly Need[], selected?: string) => priorityChips(list, selected).map((c) => `${c.priority}:${c.count}`);
+    assert.deepEqual(summary(needs), ["all:5", "P0:1", "P1:1", "P2:2", "No priority:1"]);
+    assert.deepEqual(summary([]), ["all:0", "P0:0", "P1:0", "P2:0"]);
+    assert.deepEqual(summary(needs.map((n) => ({ ...n, done: n.priority === "P2" }))), ["all:3", "P0:1", "P1:1", "P2:0", "No priority:1"]);
+    // A remembered choice nothing has any more can still be seen, and undone.
+    assert.deepEqual(summary(needs.slice(0, 1), "P3"), ["all:1", "P0:1", "P1:0", "P2:0", "P3:0"]);
+  });
+
+  it("keeps the order: P0 first, then newest within a priority", () => {
+    assert.deepEqual(needs.map((n) => `${n.priority ?? "-"} ${n.where.split("#")[1]}`), ["P0 2", "P1 5", "P2 3", "P2 1", "- 4"]);
+    assert.deepEqual(filterNeeds(needs, "P2").map((n) => n.key), ["item:PVTI_q3", "item:PVTI_q1"]);
+    assert.equal(filterNeeds(needs, ALL_PRIORITIES).length, 5);
+    assert.deepEqual(filterNeeds(needs, "No priority").map((n) => n.key), ["item:PVTI_q4"]);
+  });
+
+  it("filters the rows as drawn, keeping what is written in them, and tells the page", () => {
+    const picked: string[] = [];
+    const view: NeedsHooks = { ...hooks(), priority: "P2", pickPriority: (p) => picked.push(p) };
+    const slot = document.createElement("div");
+    slot.append(needsHead(needs, view, slot), ...needs.map((n) => needRow(n, view)));
+    applyPriority(slot, "P2");
+    const shown = () => [...slot.querySelectorAll(".need")].filter((r) => !r.classList.contains(NEED_FILTERED_CLASS)).map((r) => r.getAttribute("data-key"));
+    assert.deepEqual(chips(slot), ["All 5", "P0 1", "P1 1", "P2 2*", "None 1"]);
+    assert.deepEqual(shown(), ["item:PVTI_q3", "item:PVTI_q1"]);
+    assert.equal(slot.querySelector(".needs-filter")?.getAttribute("role"), "group");
+    assert.equal(slot.querySelector(".needs-filter button")?.getAttribute("aria-label"), "All priorities: 5 waiting");
+    const draft = slot.querySelector<HTMLTextAreaElement>(`.need:not(.${NEED_FILTERED_CLASS}) textarea`)!;
+    draft.value = "half written";
+    const rows = [...slot.querySelectorAll(".need")];
+    (slot.querySelectorAll<HTMLButtonElement>(".needs-filter button")[1] as HTMLButtonElement).click();
+    assert.deepEqual(chips(slot), ["All 5", "P0 1*", "P1 1", "P2 2", "None 1"]);
+    assert.deepEqual(shown(), ["item:PVTI_q2"]);
+    (slot.querySelectorAll<HTMLButtonElement>(".needs-filter button")[0] as HTMLButtonElement).click();
+    assert.equal(shown().length, 5);
+    assert.deepEqual(picked, ["P0", ALL_PRIORITIES]);
+    assert.deepEqual([...slot.querySelectorAll(".need")], rows, "the rows are the same nodes");
+    assert.equal(draft.value, "half written");
+    assert.equal(slot.querySelector<HTMLElement>(".needs-none")?.hidden, true);
+  });
+
+  it("says so when nothing waits at the chosen priority", () => {
+    const slot = document.createElement("div");
+    const view: NeedsHooks = { ...hooks(), priority: "P1" };
+    const only = needs.filter((n) => n.priority === "P2");
+    slot.append(needsHead(only, view, slot), ...only.map((n) => needRow(n, view)));
+    applyPriority(slot, "P1");
+    assert.equal(slot.querySelectorAll(`.need.${NEED_FILTERED_CLASS}`).length, 2);
+    const none = slot.querySelector<HTMLElement>(".needs-none")!;
+    assert.equal(none.hidden, false);
+    assert.equal(text(none), "Nothing waits on you at P1.");
+  });
+
+  it("says once who answers: nothing to cgwalters, the login to anyone else, and how to check for an unnamed token", () => {
+    const who = (view: NeedsHooks) => text(needsHead(needs, view, document.createElement("div")).querySelector(".who"));
+    assert.equal(who(hooks()), "");
+    assert.equal(who(hooks([], "someone")), "Only cgwalters answers; you are signed in as someone.");
+    let checked = 0;
+    const unnamed: NeedsHooks = { ...hooks(), login: undefined, loginError: `GET /user failed <b onclick="x">`, checkLogin: () => checked++ };
+    const head = needsHead(needs, unnamed, document.createElement("div"));
+    assert.equal(text(head.querySelector(".who")), `GitHub hasn't confirmed whose token this is (GET /user failed <b onclick="x">). An answer is posted as the token's owner, and the bot acts only on answers from cgwalters. Check again`);
+    assert.equal(head.querySelector(".who b"), null);
+    head.querySelector<HTMLButtonElement>(".who button")?.click();
+    assert.equal(checked, 1);
+    // Nothing to answer in place: nothing to say.
+    assert.equal(text(needsHead(needs.map((n) => ({ ...n, inPlace: false })), hooks([], "someone"), document.createElement("div")).querySelector(".who")), "");
+  });
+
+  it("redraws when GitHub names the token", () => {
+    const unnamed = { ...hooks(), login: undefined, loginError: "offline" };
+    assert.notEqual(needsSignature(needs, unnamed), needsSignature(needs, hooks()));
+    assert.notEqual(needsSignature(needs, unnamed), needsSignature(needs, { ...unnamed, loginError: "timeout" }));
+  });
+
+  it("remembers the chosen priority per viewer, and survives storage that is missing, blocked or holds junk", () => {
+    const values = new Map<string, string>();
+    const storage = { getItem: (k: string) => values.get(k) ?? null, setItem: (k: string, v: string) => void values.set(k, v), removeItem: (k: string) => void values.delete(k) };
+    const g = globalThis as { localStorage?: unknown };
+    const before = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+    try {
+      Object.defineProperty(globalThis, "localStorage", { value: storage, configurable: true });
+      assert.equal(loadNeedsPriority(), ALL_PRIORITIES);
+      for (const p of ["P0", "No priority", ALL_PRIORITIES]) {
+        saveNeedsPriority(p);
+        assert.equal(loadNeedsPriority(), p);
+      }
+      for (const junk of ['"<script>"', "{", "7", '"p0"']) {
+        values.set("review.needs.priority", junk);
+        assert.equal(loadNeedsPriority(), ALL_PRIORITIES, junk);
+      }
+      Object.defineProperty(globalThis, "localStorage", { get: () => { throw new Error("blocked"); }, configurable: true });
+      saveNeedsPriority("P1");
+      assert.equal(loadNeedsPriority(), ALL_PRIORITIES);
+    } finally {
+      if (before) Object.defineProperty(globalThis, "localStorage", before);
+      else delete g.localStorage;
+    }
   });
 });

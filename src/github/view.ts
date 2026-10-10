@@ -302,10 +302,11 @@ function sendingForm(form: HTMLElement, button: HTMLButtonElement, status: HTMLE
 
 /**
  * The answer form for a question: its options as radio buttons, the
- * recommended one marked, and his own text. `idPrefix` keeps element ids
- * unique when a page shows several forms.
+ * recommended one marked (never picked for him), and his own text.
+ * `idPrefix` keeps element ids unique when a page shows several forms;
+ * `rows` is the height of the text box.
  */
-export function answerForm(ref: IssueRef, question: Question, answered: boolean, send: (answer: Answer) => Promise<string>, idPrefix = ""): HTMLElement {
+export function answerForm(ref: IssueRef, question: Question, answered: boolean, send: (answer: Answer) => Promise<string>, idPrefix = "", rows = 4): HTMLElement {
   const { options } = question;
   const form = h("form", { class: "answer" });
   const status = h("p", { class: "status", role: "status" });
@@ -318,7 +319,7 @@ export function answerForm(ref: IssueRef, question: Question, answered: boolean,
           "label",
           { class: "opt", for: id },
           h("input", { type: "radio", name: "choice", id, value: o.letter }),
-          h("span", {}, h("b", {}, `${o.letter}) `), o.text, o.recommended ? h("span", { class: "rec" }, "recommended") : null),
+          h("span", {}, h("b", {}, `${o.letter}) `), o.text, o.recommended ? " " : null, o.recommended ? h("span", { class: "rec" }, "recommended") : null),
         ),
       );
     }
@@ -326,7 +327,7 @@ export function answerForm(ref: IssueRef, question: Question, answered: boolean,
   }
   const text = h("textarea", {
     name: "text",
-    rows: "4",
+    rows: String(rows),
     placeholder: options.length ? "Anything to add (optional)" : "Your answer",
     "aria-label": "Answer text",
   });

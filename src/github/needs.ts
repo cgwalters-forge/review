@@ -2,7 +2,7 @@
 // current-head review requests, approved forks to promote and escalations.
 // The broader legacy queue is kept in Watching and By priority.
 
-import { askProblem, blockedBy, isQuestion, type Item } from "./board.ts";
+import { askProblem, blockedBy, isQuestion, type Item, NO_PRIORITY, PRIORITY_ORDER } from "./board.ts";
 import { effectivePriority, type Entry, onBot, priorityRank } from "./queue.ts";
 import type { Stop } from "./advance.ts";
 import { type Decision, decisionLabel } from "./triage.ts";
@@ -175,4 +175,47 @@ export const waitingCount = (needs: readonly Need[]): number => needs.filter((n)
 /** The rows as a list to step through: answerable questions are answered in place, the rest open. */
 export function needStops(needs: readonly Need[]): Stop[] {
   return needs.map((n) => ({ key: n.key, href: n.inPlace ? "#" : n.href, title: n.decision ? `${decisionLabel(n.decision)}: ${n.title}` : n.title, waiting: !n.done, inPlace: n.inPlace }));
+}
+
+/** The filter value that shows every row. */
+export const ALL_PRIORITIES = "all";
+/** The priorities the filter always offers; any other (P3, none) is offered only while a row has it. */
+export const FILTER_PRIORITIES: readonly string[] = ["P0", "P1", "P2"];
+
+/** The priority a row is filtered by: the board's name, or NO_PRIORITY. */
+export const needPriority = (n: Need): string => n.priority ?? NO_PRIORITY;
+
+/** True for a value the filter can hold: ALL_PRIORITIES, a board priority, or NO_PRIORITY. */
+export function isNeedsPriority(v: unknown): v is string {
+  return v === ALL_PRIORITIES || v === NO_PRIORITY || (typeof v === "string" && /^P[0-9]$/.test(v));
+}
+
+export interface PriorityChip {
+  /** ALL_PRIORITIES, a board priority, or NO_PRIORITY. */
+  priority: string;
+  /** Rows still waiting on him at it. */
+  count: number;
+}
+
+/**
+ * The filter's chips, in order: all, FILTER_PRIORITIES, then whatever
+ * else the rows have (or `selected` names, so that a remembered choice
+ * can always be seen and undone). Counts leave out rows already answered.
+ */
+export function priorityChips(needs: readonly Need[], selected: string = ALL_PRIORITIES): PriorityChip[] {
+  const waiting = needs.filter((n) => !n.done);
+  const counts = new Map<string, number>();
+  for (const n of waiting) counts.set(needPriority(n), (counts.get(needPriority(n)) ?? 0) + 1);
+  const extra = [...new Set([...counts.keys(), selected])].filter((p) => p !== ALL_PRIORITIES && !FILTER_PRIORITIES.includes(p));
+  const rank = (p: string) => (p === NO_PRIORITY ? PRIORITY_ORDER.length + 1 : priorityRank(p));
+  extra.sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
+  return [{ priority: ALL_PRIORITIES, count: waiting.length }, ...[...FILTER_PRIORITIES, ...extra].map((p) => ({ priority: p, count: counts.get(p) ?? 0 }))];
+}
+
+/** Whether the filter shows a row. */
+export const matchesPriority = (n: Need, selected: string): boolean => selected === ALL_PRIORITIES || needPriority(n) === selected;
+
+/** The rows the filter shows, in their order. */
+export function filterNeeds(needs: readonly Need[], selected: string): Need[] {
+  return needs.filter((n) => matchesPriority(n, selected));
 }
