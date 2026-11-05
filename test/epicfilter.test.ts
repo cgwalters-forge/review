@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { JSDOM } from "jsdom";
 import { epicChips, epicChoice, epicSelection, saveEpicChoice } from "../src/github/epicfilter.ts";
 import { parseNeedsYou } from "../src/github/holds.ts";
-import { documentCard, inboxCards } from "../src/github/inbox.ts";
+import { type Card, inboxCards } from "../src/github/inbox.ts";
 import { fillInbox, type InboxHooks } from "../src/github/inboxview.ts";
 import { parseRoute } from "../src/github/keys.ts";
 import { createRenderer } from "../src/markdown.ts";
@@ -27,7 +27,8 @@ test("661 publication: epic chain, activity map and an identity without its deta
   assert.equal(parsed.items.find((a) => a.key === key("tracker#1300"))!.epic, "unknown");
   assert.equal(cards.length, 8, "every published identity is a card, detail or not");
   assert.equal(cards.at(-1)!.key, key("tracker#1310"));
-  assert.deepEqual([parsed.complete, parsed.count, parsed.omitted, parsed.detailsOmitted], [true, 8, 0, 1]);
+  assert.deepEqual([parsed.complete, parsed.count, parsed.omitted, parsed.detailsOmitted], [false, 8, 0, 1]);
+  assert.equal(cards.at(-1)!.url, undefined, "the omitted descriptor cannot establish a GitHub target");
 });
 
 test("661 publication: in-progress default, focus first, approvals first, honest chip counts", () => {
@@ -44,9 +45,9 @@ test("661 publication: in-progress default, focus first, approvals first, honest
   assert.deepEqual(["other", "none", "all", `epic:${key("tracker#976")}`, `epic:${key("tracker#1100")}`].map((f) => model.count(f as never)), [2, 2, 8, 2, 2]);
   let chosen = "";
   const chips = epicChips(model, "active", (f) => { chosen = f; });
-  assert.match(chips.textContent!, /2 epics in progress: tracker#976 \(focus, the operator's comment this week\), tracker#1100 \(a run in 48 hours, an open PR\)\. Shown by default, with 2 whose epic is unknown or not read whole\./);
+  assert.match(chips.textContent!, /Shown by default, with 2 whose epic is unknown or not read whole \(also counted in Other epics\)/);
   const labels = [...chips.querySelectorAll("button")].map((b) => b.textContent);
-  assert.deepEqual(labels, ["In progress · 6", "Focus: tracker#976 · 2", "tracker#1100 · 2", "Other epics · 2", "No epic · 2", "Show everything · 8"]);
+  assert.deepEqual(labels, ["In progress + unknown · 6", "Focus: tracker#976 · 2", "tracker#1100 · 2", "Other epics · 2", "No epic · 2", "Show everything · 8"]);
   chips.querySelectorAll<HTMLButtonElement>("button")[5]!.click();
   assert.equal(chosen, "all");
   const twin = epicChips(epicSelection(cards, [...parsed.epics!, { item: "other/tracker#976", active: true, activeWhy: ["open-pr"], complete: true, focus: false }], "active"), "active", () => {});
@@ -59,9 +60,33 @@ test("a capped publication: placeholders only, approvals still first, the cap co
   assert.ok(typeof capped === "object");
   assert.deepEqual([capped.complete, capped.omitted, capped.items.length, capped.identities?.length], [false, 2, 0, 8]);
   const placeholders = inboxCards({ published: { asks: [], list: capped, unavailable: false } });
-  assert.ok(placeholders.every((c) => "ask" in c && c.ask.requestsUnreadable));
+  assert.ok(placeholders.every((c) => c.kind === "open" && c.ask.detailsUnavailable));
+  const list = document.createElement("div");
+  fillInbox(list, placeholders, hooks);
+  assert.match(list.textContent!, /Details unavailable/);
+  assert.equal(list.querySelector(".c-answer, form, .primary"), null);
+  assert.equal(list.querySelector("a.action")?.textContent, "Inspect");
   const model = epicSelection(placeholders, capped.epics, "active");
   assert.deepEqual(model.ordered.slice(0, 4).map((c) => c.key), [key("tracker#1261"), key("agent-board#650"), key("agentic-job#2900"), key("tracker#1310")]);
+});
+
+for (const policy of ["legacy", "github", "foreign", "malformed", "unkeyed", "absent", "overbound"] as const) test(`identity-only cards retain ${policy} descriptor navigation policy`, () => {
+  const identity = { item: "o/r#1", source: "reviews", kind: "review-withheld", waiting_since: parsed.validatedAt, detail_key: "o/r#2" };
+  const request = { key: "o/r#2", forge: "github.com", quality: "decision", actions: [] };
+  const requests = policy === "legacy" ? undefined : policy === "absent" ? [] : policy === "overbound" ? Array(501).fill(request) : [{ ...request, ...(policy === "foreign" ? { forge: "forge.example" } : policy === "malformed" ? { actions: null } : policy === "unkeyed" ? { key: null } : {}) }];
+  const p = parseNeedsYou({ ...raw, items: [], identities: [identity], requests, count: 1 });
+  assert.ok(typeof p === "object");
+  const list = document.createElement("div");
+  let calls = 0;
+  const placeholders = inboxCards({ published: { asks: [], list: p, unavailable: false } });
+  fillInbox(list, placeholders, { ...hooks, chatItem: () => { calls++; return undefined; } });
+  const navigable = policy === "legacy" || policy === "github";
+  assert.equal(list.querySelector("a.action")?.textContent ?? null, navigable ? "Inspect" : null);
+  assert.equal(list.querySelector("article")!.getAttribute("data-href"), navigable ? "#pr/o/r/1" : "#");
+  assert.equal(calls, navigable ? 1 : 0, "restricted placeholders must not construct a GitHub chat target");
+  assert.equal(list.querySelector("button, form, .primary"), null);
+  if (!navigable) assert.equal(list.querySelector("a[href]"), null);
+  if (["malformed", "unkeyed", "absent", "overbound"].includes(policy)) assert.equal(p.complete, false);
 });
 
 test("missing or malformed activity hides nothing, and neither does a list with no epic in progress", () => {
@@ -76,12 +101,13 @@ test("missing or malformed activity hides nothing, and neither does a list with 
   for (const epics of [[], idle]) {
     const model = epicSelection(cards, epics, "active");
     assert.deepEqual([model.selected.length, model.hidden], [8, 0]);
-    assert.match(epicChips(model, "active", () => {}).textContent!, /No epic is in progress: everything is shown/);
+    assert.match(epicChips(model, "active", () => {}).textContent!, /No epic is in progress: the default shows everything/);
+    assert.equal(epicChips(model, "active", () => {}).querySelector("button")!.textContent, "Default: everything · 8");
   }
 });
 
 test("epic sorting keeps pending published asks before local cards and completed cards last", () => {
-  const entry = documentCard(parseDocument("### D1 Pick one\n- [ ] A) Yes\nReply:\n")[0]!, undefined)!;
+  const entry: Card = { kind: "document", key: "document:D1", title: "D1 Pick one", where: "D1", entry: parseDocument("### D1 Pick one\n- [ ] A) Yes\nReply:\n")[0]! };
   const done = { ...entry, key: "done", answered: true };
   const [p0, , chained, approve] = cards;
   const ordered = epicSelection([done, entry, p0!, chained!, approve!], parsed.epics, "all").ordered;
@@ -114,11 +140,12 @@ test("approve rows: one line with what the pass publishes, and Approve submits i
   const row = list.querySelector<HTMLElement>(`[data-key="${key("tracker#1261")}"]`)!;
   assert.ok(row.classList.contains("c-approve"));
   assert.match(row.textContent!, /Controller PR approved by the review job.*cgwalters-forge\/tracker#1261 · review-approve/);
-  assert.match(row.querySelector(".approval-evidence")!.textContent!, /^Diff size and CI not publishedReview the diff$/);
+  assert.match(row.querySelector(".approval-evidence")!.textContent!, /^Diff, CI and review unknown: no matching published evidenceReview the diff$/);
   assert.equal(row.querySelector<HTMLAnchorElement>(".approval-evidence a")!.getAttribute("href"), "#pr/cgwalters-forge/tracker/1261");
   const withheld = document.createElement("div");
   fillInbox(withheld, cards.filter((c) => c.key === key("tracker#1300")), hooks);
-  assert.match(withheld.querySelector(".approval-evidence")!.textContent!, /^Review agent withheld/);
+  assert.match(withheld.querySelector(".approval-evidence")!.textContent!, /review unknown/);
+  assert.match(withheld.querySelector(".card-head")!.textContent!, /Review withheld/);
   assert.equal(row.querySelector(".card-full"), null, "nothing to unfold: the row is the action");
   row.querySelector<HTMLButtonElement>("button")!.click();
   await new Promise((resolve) => setTimeout(resolve, 0));
