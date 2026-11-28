@@ -15,6 +15,18 @@ Prior text remains visibly ended, separated by provider even when another
 attachment fails; it is not evidence of recovered agent context. An unsent draft
 must be cleared or copied before changing providers.
 
+The direct tailnet drawer follows agentic-job's session wire contract
+([specs/session.md](https://github.com/cgwalters-forge/agentic-job/blob/main/specs/session.md)).
+It keeps the cursor of the last notification and attaches with
+`_meta.botHarness.since` (0 at first, so the task's turn shows). A failed
+connection, or any close but a normal one, connects again with that cursor,
+2 s apart and up to 30 times in a row like `agentic-job session connect`,
+taking the cursor a `-32602` refusal offers. After reattaching it polls `_session/status` until
+the agent is idle before Send works again, and it keeps the transcript.
+End session closes with code 1000, which ends the session; Leave and
+closing the tab only drop the connection, so the page doesn't ask before
+unload.
+
 Tracks
 [cgwalters-bot/cgwalters-bot#8](https://github.com/cgwalters-bot/cgwalters-bot/issues/8)
 and builds on the review-workflow part of the pivot plan

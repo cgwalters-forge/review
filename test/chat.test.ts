@@ -30,19 +30,37 @@ const statusComment = (id: number) => ({ ...endpointComment(id), body: `Context:
 const itemPublication = (id = RUN, ref = ITEM.ref) => ({ user: { login: "cgwalters" }, body: `Context: ${ref}.\n\nSession: https://github.com/cgwalters-forge/tracker/actions/runs/${id}` });
 const published = `wss://agentic-job-${RUN}-1.tailf2eb8.ts.net/`;
 const ATTACH_TIMEOUT = 300;
-const FAST: Partial<ChatTiming> = { pollMs: 1, pollMaxMs: 2, retryMs: 1, retryMaxMs: 2, startLimitMs: 5_000, appearLimitMs: 5_000, waitLimitMs: 5_000, openTimeoutMs: 1_000, attachTimeoutMs: ATTACH_TIMEOUT };
+const FAST: Partial<ChatTiming> = { pollMs: 1, pollMaxMs: 2, startLimitMs: 5_000, appearLimitMs: 5_000, openTimeoutMs: 1_000, attachTimeoutMs: ATTACH_TIMEOUT, reattachMs: 1, statusMs: 1 };
 
+/**
+ * The bridge's side: `latest` is the cursor session/new reports, `offer` a
+ * cursor it refuses any other `since` for, and `status` the turn states
+ * _session/status reports in turn, then idle.
+ */
 class MockServer extends EventTarget {
   onmessage: ((e: { data: string }) => void) | null = null;
-  onclose: (() => void) | null = null;
+  onclose: ((e: { code?: number | undefined }) => void) | null = null;
   sent: any[] = [];
-  close() { this.onclose?.(); }
+  latest = 0;
+  offer: number | undefined;
+  status: boolean[] = [];
+  close(code?: number) { this.onclose?.({ code }); }
   send(text: string) {
     const m = JSON.parse(text); this.sent.push(m);
     if (!m.id) return;
-    queueMicrotask(() => this.emit({ jsonrpc: "2.0", id: m.id, result: m.method === "initialize" ? { protocolVersion: 1 } : m.method === "session/new" ? { sessionId: "session" } : { stopReason: "end_turn" } }));
+    if (m.method === "session/new" && this.offer !== undefined && m.params._meta.botHarness.since !== this.offer) {
+      queueMicrotask(() => this.emit({ jsonrpc: "2.0", id: m.id, error: { code: -32602, message: "cursor not kept", data: { since: this.offer } } }));
+      return;
+    }
+    queueMicrotask(() => this.emit({ jsonrpc: "2.0", id: m.id, result: m.method === "initialize" ? { protocolVersion: 1 }
+      : m.method === "session/new" ? { sessionId: "session", _meta: { botHarness: { cursor: this.latest } } }
+      : m.method === "_session/status" ? { running: this.status.shift() ?? false } : { stopReason: "end_turn" } }));
   }
   emit(m: unknown) { this.onmessage?.({ data: JSON.stringify(m) }); }
+  /** A numbered agent message, as the bridge sends it. */
+  say(cursor: number, text: string) {
+    this.emit({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "session", _meta: { botHarness: { cursor } }, update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text } } } });
+  }
 }
 
 /**
@@ -70,7 +88,8 @@ class MockSocket extends MockServer {
       if (mode === "drop") queueMicrotask(() => this.close());
     });
   }
-  override close() { if (this.closed) return; this.closed = true; super.close(); }
+  closeCode: number | undefined;
+  override close(code?: number) { if (this.closed) return; this.closed = true; this.closeCode = code; super.close(code); }
   override send(text: string) {
     const m = JSON.parse(text);
     if (this.mode === "hang") { this.sent.push(m); return; }
@@ -120,6 +139,7 @@ it("configured providers attach only on choice without claiming a fresh conversa
   const button = (text: string) => [...slot.querySelectorAll("button")].find((b) => b.textContent === text)!;
   assert.equal(button("New session"), undefined);
   assert.equal(sockets[0]!.sent.filter((m) => m.method === "session/new").length, 1);
+  assert.deepEqual(sockets[0]!.sent.find((m) => m.method === "session/new").params, { cwd: "/", mcpServers: [] }, "no replay through the service bridge");
   assert.match(slot.textContent!, /existing conversation/);
   sockets[0]!.emit({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "session", update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Retain this transcript" } } } });
   sockets[0]!.onerror?.(); await tick();
@@ -231,10 +251,10 @@ function tracker(runs: Run[] = [], comments: { user: { login: string } | null; b
   return { world, calls, gh, dispatches: () => calls.filter((c) => c.method === "POST" && c.url.endsWith("/dispatches")) };
 }
 
-function mount(gh: GitHub, modes: Mode[] = [], timing: Partial<ChatTiming> = {}) {
+function mount(gh: GitHub, modes: Mode[] = [], timing: Partial<ChatTiming> = {}, prepare: (s: MockSocket, i: number) => void = () => {}) {
   const sockets: MockSocket[] = [];
   const opened: number[] = [];
-  const socketFactory = (url: string) => { const s = new MockSocket(url, modes[sockets.length] ?? "ok"); sockets.push(s); opened.push(performance.now()); return s as unknown as WebSocket; };
+  const socketFactory = (url: string) => { const s = new MockSocket(url, modes[sockets.length] ?? "ok"); prepare(s, sockets.length); sockets.push(s); opened.push(performance.now()); return s as unknown as WebSocket; };
   const panel = chatPanel(gh, { config: live, socketFactory, timing: { ...FAST, ...timing } })!;
   const slot = document.createElement("div");
   document.body.append(slot);
@@ -327,27 +347,27 @@ it("says where a live run is from its jobs' steps", async () => {
     assert.deepEqual(found?.stage, c.want, `${c.status} ${c.joined}`);
   }
   const working = stageText({ status: "in_progress", stage: { phase: "working", since: TURN_STARTED } });
-  assert.match(working, /the agent is probably still on its first turn/i);
+  assert.match(working, /the agent job is on the tailnet/i);
   assert.ok(working.includes(`since ${TURN_CLOCK}`));
   assert.doesNotMatch(stageText({ status: "in_progress", stage: { phase: "working" } }), /since/);
   assert.match(stageText({ status: "queued", stage: { phase: "queued" } }), /queued/);
   assert.match(stageText({ status: "in_progress", stage: { phase: "joining" } }), /joining the tailnet/);
 });
 
-it("dials once, then backs off while the agent is on its first turn, saying so", async () => {
+it("connects again, reattachMs apart, until the bridge answers, saying why", async () => {
   const t = tracker([run("in_progress")], [statusComment(RUN)]);
-  const m = mount(t.gh, ["fail", "fail", "fail", "fail", "ok"], { retryMs: 20, retryMaxMs: 40 });
+  const m = mount(t.gh, ["fail", "fail", "fail", "fail", "ok"], { reattachMs: 20 });
   await until("the live run", () => m.button(/Attach/)?.disabled === false);
-  assert.match(m.status(), /still on its first turn/);
+  assert.match(m.status(), /on the tailnet/);
   m.button(/Attach/).click();
-  await until("a failed attempt", () => m.sockets.length === 1 && /retrying in/.test(m.status()));
+  await until("a failed attempt", () => m.sockets.length === 1 && /Connecting again/.test(m.status()));
   assert.equal(m.state(), "waiting");
-  assert.match(m.status(), /Not served yet .*still on its first turn .*isn't an error/);
+  assert.match(m.status(), /Connecting again \(connection refused or not allowed; 1 of 30\)/);
   await until("connected", () => m.state() === "connected");
   assert.equal(m.sockets.length, 5);
-  // Each wait doubles, up to retryMaxMs (a timer may fire a millisecond early).
+  // A timer may fire a millisecond early.
   const gaps = m.opened.slice(1).map((at, i) => at - m.opened[i]!);
-  for (const [i, min] of [20, 40, 40, 40].entries()) assert.ok(gaps[i]! >= min - 2, `gap ${i}: ${gaps[i]} < ${min}`);
+  for (const [i, gap] of gaps.entries()) assert.ok(gap >= 18, `gap ${i}: ${gap} < 20`);
   m.panel.dispose();
 });
 
@@ -419,9 +439,9 @@ for (const c of [
   });
 }
 
-it("never closes or retries a socket that opened while attach is slow, until the ACP timeout", async () => {
+it("never closes a socket that opened while attach is slow until the ACP timeout, then reattaches", async () => {
   const t = tracker([run("in_progress")], [statusComment(RUN)]);
-  const m = mount(t.gh, ["hang"]);
+  const m = mount(t.gh, ["hang"], { reattachMs: 50 });
   await until("the live run", () => m.button(/Attach/)?.disabled === false);
   const attachedAt = Date.now();
   m.button(/Attach/).click();
@@ -430,23 +450,22 @@ it("never closes or retries a socket that opened while attach is slow, until the
   assert.equal(m.sockets.length, 1);
   assert.equal(m.sockets[0]!.closed, false);
   assert.equal(m.state(), "waiting");
-  await until("ended", () => m.state() === "ended");
+  await until("timed out", () => m.sockets[0]!.closed);
   assert.ok(Date.now() - attachedAt >= ATTACH_TIMEOUT);
-  assert.equal(m.sockets[0]!.closed, true);
-  await new Promise((r) => setTimeout(r, 20));
-  assert.equal(m.sockets.length, 1, "no retry");
+  assert.match(m.status(), /Connecting again \(.*; 1 of 30\)/);
+  assert.equal(m.sockets.length, 1);
+  await until("reattached", () => m.state() === "connected");
+  assert.equal(m.sockets.length, 2);
   m.panel.dispose();
 });
 
-it("doesn't retry when the bridge closes an opened socket unanswered", async () => {
+it("reattaches when the bridge turns the client away unanswered, as while another holds its slot", async () => {
   const t = tracker([run("in_progress")], [statusComment(RUN)]);
-  const m = mount(t.gh, ["drop"]);
+  const m = mount(t.gh, ["drop", "drop", "ok"]);
   await until("the live run", () => m.button(/Attach/)?.disabled === false);
   m.button(/Attach/).click();
-  await until("ended", () => m.state() === "ended");
-  assert.match(m.status(), /another client may be attached/);
-  await new Promise((r) => setTimeout(r, 20));
-  assert.equal(m.sockets.length, 1);
+  await until("connected", () => m.state() === "connected");
+  assert.equal(m.sockets.length, 3);
   m.panel.dispose();
 });
 
@@ -495,17 +514,6 @@ it("doesn't dial a published endpoint until its agent job has joined the tailnet
   m.panel.dispose();
 });
 
-it("retries a connection that fails until the bridge answers", async () => {
-  const t = tracker([run("in_progress")], [statusComment(RUN)]);
-  const m = mount(t.gh, ["fail", "fail", "ok"]);
-  await until("the live run", () => m.button(/Attach/)?.disabled === false);
-  m.button(/Attach/).click();
-  await until("a failed attempt", () => m.sockets.length >= 1 && m.state() === "waiting" && /retrying/.test(m.status()));
-  await until("connected", () => m.state() === "connected");
-  assert.equal(m.sockets.length, 3);
-  m.panel.dispose();
-});
-
 it("attaches to the running session, not one queued behind it", async () => {
   const t = tracker([run("queued", RUN + 1), run("in_progress")], [statusComment(RUN)]);
   const m = mount(t.gh);
@@ -516,26 +524,15 @@ it("attaches to the running session, not one queued behind it", async () => {
   m.panel.dispose();
 });
 
-it("ends when the run finishes before it could be reached", async () => {
-  const t = tracker([run("in_progress")], [statusComment(RUN)]);
-  const m = mount(t.gh, Array(1000).fill("fail"));
-  await until("the live run", () => m.button(/Attach/)?.disabled === false);
-  m.button(/Attach/).click();
-  await until("a failed attempt", () => m.sockets.length >= 2);
-  t.world.runs = [run("completed")];
-  await until("ended", () => m.state() === "ended");
-  assert.match(m.status(), /finished before/);
-  m.panel.dispose();
-});
-
-it("ends when the attached socket closes, and offers to start again", async () => {
+it("ends when the bridge closes normally, and offers to start again", async () => {
   const t = tracker([run("in_progress")], [statusComment(RUN)]);
   const m = mount(t.gh);
   await until("the live run", () => m.button(/Attach/)?.disabled === false);
   m.button(/Attach/).click();
   await until("connected", () => m.state() === "connected");
-  m.sockets[0]!.close();
+  m.sockets[0]!.close(1000);
   assert.equal(m.state(), "ended");
+  assert.match(m.status(), /session has ended/);
   assert.equal(m.button(/Start again/).disabled, false);
   // The ending run is still in progress for a while; Start must not attach to it again.
   t.world.onDispatch = () => {};
@@ -545,22 +542,110 @@ it("ends when the attached socket closes, and offers to start again", async () =
   m.panel.dispose();
 });
 
-it("confirms before disconnecting", async () => {
+it("End session closes normally once confirmed; Leave only drops, and Attach resumes after its cursor", async () => {
   const t = tracker([run("in_progress")], [statusComment(RUN)]);
-  const m = mount(t.gh);
+  const m = mount(t.gh, [], {}, (s, i) => { s.latest = 2; if (i) s.status = [true]; });
   await until("the live run", () => m.button(/Attach/)?.disabled === false);
   m.button(/Attach/).click();
   await until("connected", () => m.state() === "connected");
+  assert.deepEqual(m.sockets[0]!.sent[1].params._meta, { botHarness: { since: 0 } }, "the first attach replays the task's turn");
+  m.sockets[0]!.say(3, "Kept across leaving");
+  Object.assign(globalThis, { confirm: () => assert.fail("Leave doesn't ask") });
+  m.button(/Leave/).click();
+  assert.equal(m.sockets[0]!.closed, true);
+  assert.equal(m.sockets[0]!.closeCode, undefined, "a drop, not a normal close");
+  assert.equal(m.state(), "waiting");
+  assert.equal(m.panel.attached(), false);
+  m.button(/^Attach$/).click();
+  await until("back", () => m.state() === "connected");
+  assert.deepEqual(m.sockets[1]!.sent[1].params._meta, { botHarness: { since: 3 } });
+  assert.equal(m.sockets[1]!.sent.filter((x) => x.method === "_session/status").length, 2, "back after Leave, Send waits for an idle agent");
+  assert.match(m.slot.querySelector(".chat-log")!.textContent!, /Kept across leaving/);
   for (const answer of [false, true]) {
     Object.assign(globalThis, { confirm: () => answer });
-    m.button(/Disconnect/).click();
-    assert.equal(m.sockets[0]!.closed, answer);
+    m.button(/End session/).click();
+    assert.equal(m.sockets[1]!.closeCode, answer ? 1000 : undefined);
   }
   assert.equal(m.state(), "ended");
+  assert.equal(m.sockets.length, 2);
+  assert.ok(!t.calls.some((c) => c.url.endsWith("/cancel")), "ending the session isn't cancelling the run");
   m.panel.dispose();
 });
 
-it("keeps a draft editable after disconnecting, so clearing it frees the drawer", async () => {
+it("reattaches a dropped connection after its cursor, takes one the bridge offers, and enables Send once the turn is idle", async () => {
+  const t = tracker([run("in_progress")], [statusComment(RUN)]);
+  const m = mount(t.gh, ["ok", "fail", "ok", "ok"], { reattachMs: 5, statusMs: 5 }, (s, i) => {
+    if (i === 2) s.offer = 1;
+    if (i === 3) { s.latest = 4; s.status = [true, true]; }
+  });
+  await until("the live run", () => m.button(/Attach/)?.disabled === false);
+  m.button(/Attach/).click();
+  await until("connected", () => m.state() === "connected");
+  m.sockets[0]!.say(5, "Before the drop");
+  m.sockets[0]!.close(1006);
+  assert.match(m.status(), /Connecting again \(closed by the bridge; 1 of 30\)/);
+  assert.equal(m.panel.attached(), true);
+  const send = m.slot.querySelector<HTMLButtonElement>('button[type="submit"]')!;
+  await until("a status poll", () => m.sockets[3]?.sent.some((x) => x.method === "_session/status") ?? false);
+  assert.equal(send.disabled, true, "no Send while a turn may run");
+  await until("reattached", () => m.state() === "connected");
+  assert.deepEqual(m.sockets.map((s) => s.sent.find((x) => x.method === "session/new")?.params._meta.botHarness.since), [0, undefined, 5, 1]);
+  assert.equal(m.sockets[3]!.sent.filter((x) => x.method === "_session/status").length, 3);
+  assert.equal(send.disabled, false);
+  assert.match(m.slot.querySelector(".chat-log")!.textContent!, /Before the drop/);
+  m.panel.dispose();
+});
+
+it("ends when the bridge closes normally while reattaching, no longer counting as attached", async () => {
+  const t = tracker([run("in_progress")], [statusComment(RUN)]);
+  const m = mount(t.gh, [], { statusMs: 1_000 }, (s, i) => { if (i) s.status = [true]; });
+  await until("the live run", () => m.button(/Attach/)?.disabled === false);
+  m.button(/Attach/).click();
+  await until("connected", () => m.state() === "connected");
+  assert.equal(m.button(/End session/).hidden, false);
+  m.sockets[0]!.close(1006);
+  await until("a status poll", () => m.sockets[1]?.sent.some((x) => x.method === "_session/status") ?? false);
+  assert.equal(m.button(/End run/).hidden, false, "End session only once attached");
+  m.sockets[1]!.close(1000);
+  assert.equal(m.state(), "ended");
+  assert.equal(m.panel.attached(), false);
+  m.panel.dispose();
+});
+
+it("End run while reattaching cancels the run and stops reattaching", async () => {
+  const t = tracker([run("in_progress")], [statusComment(RUN)]);
+  const m = mount(t.gh, [], { statusMs: 1_000 }, (s, i) => { if (i) s.status = [true]; });
+  await until("the live run", () => m.button(/Attach/)?.disabled === false);
+  m.button(/Attach/).click();
+  await until("connected", () => m.state() === "connected");
+  m.sockets[0]!.close(1006);
+  await until("a status poll", () => m.sockets[1]?.sent.some((x) => x.method === "_session/status") ?? false);
+  Object.assign(globalThis, { confirm: () => true });
+  m.button(/End run/).click();
+  await until("cancel requested", () => /Cancellation requested/.test(m.status()));
+  m.sockets[1]!.close(1006);
+  await new Promise((r) => setTimeout(r, 20));
+  assert.match(m.status(), /Cancellation requested/);
+  assert.equal(m.sockets.length, 2);
+  assert.equal(m.panel.attached(), false);
+  m.panel.dispose();
+});
+
+it("gives up reattaching after its tries in a row, leaving the run to attach again", async () => {
+  const t = tracker([run("in_progress")], [statusComment(RUN)]);
+  const m = mount(t.gh, ["ok", "fail", "fail", "fail"], { reattachMs: 1, reattachTries: 3 });
+  await until("the live run", () => m.button(/Attach/)?.disabled === false);
+  m.button(/Attach/).click();
+  await until("connected", () => m.state() === "connected");
+  m.sockets[0]!.close(1006);
+  await until("given up", () => /Couldn't attach/.test(m.status()));
+  assert.equal(m.sockets.length, 4);
+  assert.equal(m.panel.attached(), false);
+  assert.equal(m.button(/^Attach$/).disabled, false);
+  m.panel.dispose();
+});
+
+it("keeps a draft editable after leaving, so clearing it frees the drawer", async () => {
   const t = tracker([run("in_progress")], [statusComment(RUN), itemPublication()]);
   const m = mount(t.gh);
   await until("the live run", () => m.button(/Attach/)?.disabled === false);
@@ -568,9 +653,8 @@ it("keeps a draft editable after disconnecting, so clearing it frees the drawer"
   await until("connected", () => m.state() === "connected");
   const input = m.slot.querySelector("textarea")!;
   input.value = "unsent";
-  Object.assign(globalThis, { confirm: () => true });
-  m.button(/Disconnect/).click();
-  assert.equal(m.state(), "ended");
+  m.button(/Leave/).click();
+  assert.equal(m.state(), "waiting");
   const second = { ref: "public/project#158", title: "Second item" };
   m.panel.open(second);
   assert.match(m.status(), /clear your unsent draft/);
@@ -900,7 +984,7 @@ for (const originalRemains of [true, false]) {
   });
 }
 
-it("starts a plain chat from Needs you, about no item, then disconnects", async () => {
+it("starts a plain chat from Needs you, about no item, then ends it", async () => {
   const t = tracker([], [], [{ status: 200, body: { workflow_run_id: RUN } }]);
   t.world.onDispatch = () => { t.world.runs = [run("in_progress")]; t.world.comments.push(endpointComment(RUN)); };
   const m = mount(t.gh);
@@ -918,10 +1002,10 @@ it("starts a plain chat from Needs you, about no item, then disconnects", async 
   assert.equal(m.button(/Answer/).hidden, true);
   // Another item can't take over the attached session.
   m.panel.open(ITEM);
-  assert.match(m.status(), /Finish or disconnect/);
+  assert.match(m.status(), /Leave or end/);
   assert.equal(m.pane().querySelector("h2")?.textContent, "Chat");
   Object.assign(globalThis, { confirm: () => true });
-  m.button(/Disconnect/).click();
+  m.button(/End session/).click();
   await until("ended", () => m.state() === "ended");
   assert.equal(m.panel.attached(), false);
   assert.equal(m.sockets[0]!.closed, true);

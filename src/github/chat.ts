@@ -1,10 +1,13 @@
 // The item chat drawer: start (or find) a session run of a
 // configured workflow, wait for its bridge, and talk to it over ACP.
 //
-// A session run serves one ACP client over a WebSocket in the tailnet; when
-// that client leaves, the run ends. So the pane only connects after the
-// operator asks it to here (Start or Attach), never on page load, and it
-// never dispatches a run while one is already live: it attaches to it.
+// A session run serves one ACP client at a time over a WebSocket in the
+// tailnet (agentic-job specs/session.md). Only a normal close (1000), End
+// session here, ends it; any other drop, Leave or closing the tab included,
+// leaves it waiting for the client, which comes back with the cursor of the
+// last notification it saw and gets the rest replayed. The pane only connects
+// after the operator asks it to here (Start or Attach), never on page load,
+// and it never dispatches a run while one is already live: it attaches to it.
 //
 // Operator-action proposals the agent writes show as preview cards only
 // (docs/operator-actions.md); nothing the agent sends reaches a write.
@@ -24,7 +27,7 @@ export interface ChatPanel {
   /** Open the drawer about `item`, or, without one, for a plain chat. */
   open(item?: ChatItem): void;
   dispose(): void;
-  /** Whether a session is attached: disposing would end its run. */
+  /** Whether a session is attached or reattaching: disposing would drop it. */
   attached(): boolean;
   /** Use a new sign-in's client for GitHub reads and dispatches. */
   useGitHub(gh: GitHub): void;
@@ -42,8 +45,9 @@ export interface ChatOptions {
 /**
  * none: no live run. starting: a run was dispatched or is queued/running,
  * with no endpoint yet. waiting: the endpoint is known; connecting (with
- * retries, while the bridge and its certificate come up). connected:
- * attached. ended: the attached session closed, or the run finished.
+ * retries, while the bridge and its certificate come up), or reattaching
+ * after a drop. connected: attached. ended: the session closed normally, or
+ * the run finished.
  */
 export type ChatState = "none" | "starting" | "waiting" | "connected" | "ended";
 
@@ -78,10 +82,8 @@ export interface LiveRun {
 /**
  * queued: the run hasn't started (any live status but in_progress). preparing: no job lists the tailnet step
  * yet. joining: the agent job is joining the tailnet. working: it has
- * joined, and `since` is when its current step started: the task's first
- * turn, after which the run serves the session (agentic-job serves it only
- * then, and says so only in the job summary, which has no API). left: the
- * agent job has finished or failed to join.
+ * joined, and `since` is when its current step started. left: the agent job
+ * has finished or failed to join.
  */
 export interface RunStage {
   phase: "queued" | "preparing" | "joining" | "working" | "left";
@@ -96,24 +98,18 @@ export interface ChatTiming {
   startLimitMs: number;
   /** Give up on a dispatch whose run hasn't shown up after this long. */
   appearLimitMs: number;
-  /**
-   * First wait between connection attempts once the endpoint is known; it
-   * doubles to retryMaxMs. The endpoint resolves when the agent job joins
-   * the tailnet, but is served only after the task's first turn, which can
-   * take many minutes: dialing every few seconds meanwhile only filled the
-   * browser's console with refused connections.
-   */
-  retryMs: number;
-  retryMaxMs: number;
-  /** Give up connecting after this long: longer than a first turn. */
-  waitLimitMs: number;
   /** One connection attempt's limit, until the socket opens. */
   openTimeoutMs: number;
-  /**
-   * Each of initialize and session/new, once the socket is open. Closing
-   * an open socket ends the run, so this is generous.
-   */
+  /** Each of initialize, session/new and _session/status, once the socket is open. */
   attachTimeoutMs: number;
+  /**
+   * As `agentic-job session connect`: the wait between connection attempts
+   * and how many in a row, which outlasts serve's wait for its certificate,
+   * then the wait between status asks once back after a drop.
+   */
+  reattachMs: number;
+  reattachTries: number;
+  statusMs: number;
 }
 
 export const CHAT_TIMING: ChatTiming = {
@@ -121,11 +117,9 @@ export const CHAT_TIMING: ChatTiming = {
   pollMaxMs: 30_000,
   startLimitMs: 20 * 60_000,
   appearLimitMs: 2 * 60_000,
-  retryMs: 5_000,
-  retryMaxMs: 60_000,
-  waitLimitMs: 30 * 60_000,
   openTimeoutMs: 15_000,
   attachTimeoutMs: 120_000,
+  reattachMs: 2_000, reattachTries: 30, statusMs: 1_000,
 };
 
 /**
@@ -191,8 +185,7 @@ export function stageText(run: Pick<LiveRun, "stage" | "status">): string {
     case "preparing": return "The run is preparing its agent job.";
     case "joining": return "The agent job is joining the tailnet.";
     case "left": return "The agent job isn't on the tailnet.";
-    // The steps can't tell the first turn from serving afterwards: hedged.
-    case "working": return `The agent is probably still on its first turn${s.since ? ` (agent step since ${clock(s.since)})` : ""}: the run serves the session only once that turn ends, so this isn't an error. If it has served, check your tailnet login.`;
+    case "working": return `The agent job is on the tailnet${s.since ? ` (agent step since ${clock(s.since)})` : ""}.`;
   }
 }
 
@@ -267,35 +260,43 @@ export async function dispatchSession(gh: GitHub, source: ChatSource, item: Chat
 
 type Pending = { resolve: (v: any) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> };
 
-/** One JSON-RPC message per WebSocket text frame; no GitHub credentials. */
+/**
+ * One JSON-RPC message per WebSocket text frame; no GitHub credentials.
+ * `cursor` is the last notification seen, which attach asks the bridge to
+ * replay after, or the one the bridge offers when it no longer keeps that.
+ */
 export class AcpClient {
   #next = 0;
   #pending = new Map<number, Pending>();
   sessionId = "";
+  cursor: number | undefined;
   readonly socket: WebSocket;
 
-  constructor(socket: WebSocket, update: (value: any) => void, closed: () => void) {
-    this.socket = socket;
+  /** Without a cursor, attach asks for no replay. */
+  constructor(socket: WebSocket, update: (value: any) => void, closed: (code?: number) => void, cursor?: number) {
+    this.socket = socket; this.cursor = cursor;
     socket.onmessage = (event) => {
       // Bound unsolicited agent data before parsing/rendering it.
       if (typeof event.data !== "string" || event.data.length > 512 * 1024) { socket.close(); return; }
       try {
         const m = JSON.parse(event.data);
         if (m.jsonrpc !== "2.0") return;
-        if (m.method === "session/update" && m.params?.sessionId === this.sessionId) update(m.params.update);
+        // The replay comes before session/new's answer names the session.
+        if (m.method === "session/update" && m.params && (!this.sessionId || m.params.sessionId === this.sessionId)) { this.#take(m.params._meta?.botHarness?.cursor); update(m.params.update); }
         else if (m.id !== undefined && m.method) socket.send(JSON.stringify({ jsonrpc: "2.0", id: m.id, error: { code: -32601, message: "Unsupported client method" } }));
         else {
           const p = this.#pending.get(m.id);
           if (!p) return;
           clearTimeout(p.timer); this.#pending.delete(m.id);
+          if (m.error?.code === -32602) this.#take(m.error.data?.since);
           if (m.error) p.reject(new Error(String(m.error.message ?? "ACP request failed")));
           else p.resolve(m.result);
         }
       } catch { socket.close(); }
     };
-    socket.onclose = () => {
+    socket.onclose = (event) => {
       for (const p of this.#pending.values()) { clearTimeout(p.timer); p.reject(new Error("Session disconnected")); }
-      this.#pending.clear(); closed();
+      this.#pending.clear(); closed(event?.code);
     };
   }
 
@@ -312,10 +313,14 @@ export class AcpClient {
   async attach(timeout = 60_000): Promise<void> {
     const init = await this.request("initialize", { protocolVersion: 1, clientCapabilities: {} }, timeout);
     if (init?.protocolVersion !== 1) throw new Error("Unsupported ACP protocol version");
-    const session = await this.request("session/new", { cwd: "/", mcpServers: [] }, timeout);
+    const session = await this.request("session/new", { cwd: "/", mcpServers: [], ...(this.cursor === undefined ? {} : { _meta: { botHarness: { since: this.cursor } } }) }, timeout);
     if (typeof session?.sessionId !== "string" || !session.sessionId) throw new Error("Missing ACP session id");
     this.sessionId = session.sessionId;
+    this.#take(session._meta?.botHarness?.cursor);
   }
+
+  /** A cursor the bridge numbered. */
+  #take(c: any) { if (Number.isSafeInteger(c) && c >= 0) this.cursor = c; }
 
   cancel(): void {
     this.socket.send(JSON.stringify({ jsonrpc: "2.0", method: "session/cancel", params: { sessionId: this.sessionId } }));
@@ -361,9 +366,9 @@ export function chatPanel(gh: GitHub, options: ChatOptions = {}): ChatPanel | un
     const start = h("button", { type: "button", class: "small primary" }, "Start session");
     const check = h("button", { type: "button", class: "small" }, "Check");
     const full = h("button", { type: "button", class: "small", "aria-pressed": "false" }, "Full screen");
-    const disconnect = h("button", { type: "button", class: "small" }, "Disconnect");
+    const disconnect = h("button", { type: "button", class: "small" }, sessions ? "Disconnect" : "Leave");
     const existing = h("button", { type: "button", class: "small" }, "Attach existing session");
-    const end = h("button", { type: "button", class: "small" }, "End run");
+    const end = h("button", { type: "button", class: "small" });
     const close = h("button", { type: "button", class: "small" }, "Close drawer");
     const status = h("p", { class: "status chat-status", role: "status" });
     const runLink = h("a", { class: "chat-run", target: "_blank", rel: "noopener" });
@@ -386,6 +391,10 @@ export function chatPanel(gh: GitHub, options: ChatOptions = {}): ChatPanel | un
     let dispatched: { at: number; source: ChatSource; id?: number; published?: boolean } | undefined;
     /** Runs whose session this tab ended or saw end: never attach to them again. */
     const finished = new Set<number>();
+    /** The run the transcript is of, and the cursor of its last notification: a reattach replays only what follows. */
+    let shown: number | undefined, cursor = 0;
+    /** Reattaches tried in a row since a connection dropped, and why this tab closes its own, if it does. */
+    let tries = 0, closing: "end" | "leave" | undefined;
     /** The pinned configured listener admits only one client, even after close. */
     const consumed = new Set<string>();
     let selectedProvider = "";
@@ -393,7 +402,6 @@ export function chatPanel(gh: GitHub, options: ChatOptions = {}): ChatPanel | un
     let timer: ReturnType<typeof setTimeout> | undefined;
     let deadline = 0;
     let delay = t.pollMs;
-    let retryDelay = t.retryMs;
     let busy = false;
     /** A prompt was refused because a turn is running: Cancel turn stays offered. */
     let refused = false;
@@ -430,7 +438,9 @@ export function chatPanel(gh: GitHub, options: ChatOptions = {}): ChatPanel | un
       start.textContent = attachable ? "Attach" : state === "ended" ? "Start again" : "Start session";
       start.disabled = working || armed || !!client || other;
       existing.hidden = !other || armed || !!client;
-      end.hidden = !run || !!client || state === "ended";
+      // Attached, End closes normally, which ends the session; otherwise it cancels the run.
+      end.textContent = state === "connected" ? "End session" : "End run";
+      end.hidden = !run || state === "ended";
       existing.disabled = end.disabled = working;
       check.disabled = working || armed || !!client;
       sourceSelect.disabled = armed || !!client;
@@ -561,14 +571,14 @@ export function chatPanel(gh: GitHub, options: ChatOptions = {}): ChatPanel | un
         if (gen !== generation || disposed) return;
         run = found;
         if (!found) go(state === "ended" ? "ended" : "none", state === "ended" ? status.textContent ?? "" : "No session is running. Start one to talk to it.");
-        else go(found.endpoint ? "waiting" : "starting", !matches(found) ?"A session is live about another or unknown item. Attach existing session or end its run before starting another." : `A session run is ${found.status.replace("_", " ")}. ${found.stage.phase === "queued" ? "" : `${stageText(found)} `}Attach to talk to it; while attached, leaving or disconnecting ends it.`);
+        else go(found.endpoint ? "waiting" : "starting", !matches(found) ?"A session is live about another or unknown item. Attach existing session or end its run before starting another." : `A session run is ${found.status.replace("_", " ")}. ${found.stage.phase === "queued" ? "" : `${stageText(found)} `}Attach to talk to it.`);
       } catch (e) { if (gen === generation) say(message(e)); }
       finally { if (gen === generation) { working = false; controls(); } }
     };
 
     const endRun = (text: string) => {
       if (run) finished.add(run.id);
-      armed = false; dispatched = undefined; clearTimeout(timer);
+      armed = false; tries = 0; dispatched = undefined; clearTimeout(timer);
       if (sessions) log.append(h("p", { class: "note" }, "Session ended"));
       go("ended", text);
     };
@@ -612,35 +622,18 @@ export function chatPanel(gh: GitHub, options: ChatOptions = {}): ChatPanel | un
       schedule(() => void poll(gen), delay);
     };
 
-    /** waiting: connect, retrying after retryMs, doubling to retryMaxMs, for at most waitLimitMs. */
-    const wait = (gen: number) => {
-      deadline = Date.now() + t.waitLimitMs; retryDelay = t.retryMs;
-      go("waiting", "Connecting to the session…");
-      connect(gen);
-    };
+    const wait = (gen: number) => { go("waiting", "Connecting to the session…"); connect(gen); };
 
-    const retry = (gen: number, why: string) => {
-      if (gen !== generation || disposed) return;
-      if (sessions) { endRun(CONFIGURED_ENDED); return; }
-      if (Date.now() > deadline) {
-        armed = false;
-        go("waiting", `Couldn't attach: ${why}. Check your tailnet login, then Attach to try again.`);
-        return;
-      }
-      const ms = retryDelay;
-      retryDelay = Math.min(t.retryMaxMs, retryDelay * 2);
-      say(`Not served yet (${why}); retrying in ${Math.ceil(ms / 1000)} s. ${run ? stageText(run) : ""}`.trim());
-      schedule(async () => {
-        if (gen !== generation || disposed) return;
-        try {
-          const found = await detect();
-          if (gen !== generation || disposed) return;
-          if (!found || found.id !== run?.id) { endRun("The run finished before its session could be reached."); return; }
-          run = found;
-          if (!found.endpoint) { startPolling(gen, "Waiting for the session endpoint…"); return; }
-        } catch { /* GitHub being unreachable doesn't stop the attempt. */ }
-        if (gen === generation && !disposed) connect(gen);
-      }, ms);
+    /**
+     * A connection failed or closed: connect again with the cursor,
+     * reattachMs apart, at most reattachTries in a row. That also outlasts
+     * the bridge's minute before it drops a connection of ours that went
+     * silent, which holds the one client slot meanwhile.
+     */
+    const reattach = (gen: number, why: string) => {
+      if (sessions) endRun(CONFIGURED_ENDED);
+      else if (++tries > t.reattachTries) { tries = 0; armed = false; go("waiting", `Couldn't attach (${why}): check your tailnet login; another client may be attached. Attach to retry.`); }
+      else { go("waiting", `Connecting again (${why}; ${tries} of ${t.reattachTries})…`); schedule(() => { if (gen === generation && !disposed) connect(gen); }, t.reattachMs); }
     };
 
     const connect = (gen: number) => {
@@ -652,42 +645,46 @@ export function chatPanel(gh: GitHub, options: ChatOptions = {}): ChatPanel | un
         // No replay exists: retain ended conversations, clearly separated.
         endMessage(); tools.clear();
         log.append(h("p", { class: "note" }, `Provider: ${sessions.find((s) => s.id === provider.value)?.label ?? provider.value}`));
-      } else clearLog();
-      refused = false;
-      let opened = false;
-      let attached = false;
+      } else if (shown !== run?.id) { clearLog(); shown = run?.id; cursor = 0; }
+      refused = false; closing = undefined;
       let why = "connection failed";
       let socket: WebSocket;
       if (sessions) consumed.add(provider.value);
       try { socket = socketFactory(endpoint); }
-      catch (e) { retry(gen, message(e)); return; }
+      catch (e) { reattach(gen, message(e)); return; }
       const opening = setTimeout(() => { why = "timed out"; socket.close(); }, t.openTimeoutMs);
-      const self = new AcpClient(socket, render, () => {
+      const self = new AcpClient(socket, render, (code) => {
         clearTimeout(opening);
         if (client === self) { client = undefined; endMessage(); }
+        cursor = self.cursor ?? 0;
         busy = false;
-        if (disposed) return;
+        // Abandoned (End run while this connected): what it says now is said.
+        if (disposed || gen !== generation) return;
         if (sessions) endRun(CONFIGURED_ENDED);
-        else if (attached) endRun("Disconnected. The session run ends when its client leaves; Start again for a new one.");
-        // Once the socket was open, the bridge saw this client: a run whose client
-        // leaves ends, and a bridge already serving another client closes unanswered.
-        // Either way connecting again can't help.
-        else if (opened) endRun(`The session closed while attaching (${why}): another client may be attached, or the run has ended.`);
-        else { controls(); retry(gen, why); }
-      });
+        else if (code === 1000 || closing === "end") endRun("The session has ended.");
+        else if (closing) { armed = false; go("waiting", "Left; the session goes on. Attach to return to it."); }
+        // Not served yet, a drop, a second client turned away, or a cursor refused for one the bridge offers.
+        else reattach(gen, why);
+      }, sessions ? undefined : cursor);
       client = self;
       socket.onopen = async () => {
-        opened = true;
         clearTimeout(opening);
         if (disposed || gen !== generation) { socket.close(); return; }
         why = "closed by the bridge";
         try {
           await self.attach(t.attachTimeoutMs);
+          dispatched = undefined;
+          // Back after a drop or Leave, a turn may have outlived it, and its answer isn't replayed: Send waits until the agent is idle.
+          for (let running; client === self && !sessions && (tries || cursor) && (running = (await self.request("_session/status", {}, t.attachTimeoutMs))?.running) !== false;) {
+            if (running !== true) throw new Error("unreadable session status");
+            say("Reattached; waiting for the agent's turn to finish…");
+            await new Promise((r) => setTimeout(r, t.statusMs));
+          }
           // Closed meanwhile (its handler has run): a late answer attaches nothing.
           if (client !== self) return;
           if (disposed || gen !== generation) { socket.close(); return; }
-          attached = true; dispatched = undefined;
-          go("connected", sessions ? "Attached to the server's existing conversation. Leaving or disconnecting ends the session." : "Attached. Leaving this page or disconnecting ends the session run.");
+          tries = 0;
+          go("connected", sessions ? "Attached to the server's existing conversation. Leaving or disconnecting ends the session." : "Attached.");
           input.focus();
         } catch (e) { why = message(e); socket.close(); }
       };
@@ -703,7 +700,6 @@ export function chatPanel(gh: GitHub, options: ChatOptions = {}): ChatPanel | un
         armed = true; go("waiting", "Connecting to the session…"); connect(gen); return;
       }
       armed = true; working = true;
-      clearLog();
       go(state, "Looking for a live session run…");
       try {
         const found = await detect();
@@ -761,8 +757,9 @@ export function chatPanel(gh: GitHub, options: ChatOptions = {}): ChatPanel | un
       if (run.endpoint) wait(gen); else startPolling(gen, "Waiting for the existing session…");
     };
     end.onclick = async () => {
-      if (!run || working || client || !confirm("End this live session run?")) return;
-      ++generation; clearTimeout(timer); armed = false;
+      if (!run || working || !confirm("End this live session run?")) return;
+      if (client && state === "connected") { closing = "end"; client.socket.close(1000); return; }
+      ++generation; clearTimeout(timer); armed = false; tries = 0;
       working = true; controls();
       try {
         await gh.send("POST", `/repos/${run.source.repo}/actions/runs/${run.id}/cancel`);
@@ -773,7 +770,8 @@ export function chatPanel(gh: GitHub, options: ChatOptions = {}): ChatPanel | un
       finally { working = false; controls(); }
     };
     close.onclick = () => { setFull(false); slot.hidden = true; };
-    disconnect.onclick = () => { if (client && confirm("Disconnect and end this session run?")) client.socket.close(); };
+    // Leaving drops the connection: the session goes on, to come back to.
+    disconnect.onclick = () => { if (client && (!sessions || confirm("Disconnect and end this session?"))) { closing = "leave"; client.socket.close(); } };
     answer.onclick = async () => {
       const a = answering;
       const text = input.value;
@@ -834,17 +832,11 @@ export function chatPanel(gh: GitHub, options: ChatOptions = {}): ChatPanel | un
       controls();
     };
     full.onclick = () => setFull(!pane.classList.contains("chat-full"));
-    // Closing or reloading the tab disconnects, which ends the run: ask first.
-    const win = doc.defaultView;
-    const onUnload = (ev: BeforeUnloadEvent) => { if (client) { ev.preventDefault(); ev.returnValue = ""; } };
-    win?.addEventListener("beforeunload", onUnload);
-
-    isAttached = () => state === "connected" && client !== undefined;
+    isAttached = () => (state === "connected" && client !== undefined) || tries > 0;
     cleanup = () => {
       generation++;
       clearTimeout(timer);
       doc.removeEventListener("keydown", onKey, true);
-      win?.removeEventListener("beforeunload", onUnload);
       doc.removeEventListener(ITEM_CHAT_EVENT, onItem);
       client?.socket.close(); client = undefined;
       slot.replaceChildren(); slot.hidden = true;
@@ -853,7 +845,7 @@ export function chatPanel(gh: GitHub, options: ChatOptions = {}): ChatPanel | un
     pane.append(
       h("div", { class: "chat-head" }, title, badge, close),
       h("div", { class: "chat-bar" }, provider, sourceSelect, start, check, full, disconnect, existing, end),
-      h("p", { class: "note" }, sessions ? "Uses the configured service bridge, never your GitHub token. No automatic reconnect or transcript replay." : "Uses your tailnet login, never your GitHub token. One client per session: leaving or disconnecting ends the run."),
+      h("p", { class: "note" }, sessions ? "Uses the configured service bridge, never your GitHub token. No automatic reconnect or transcript replay." : "Uses your tailnet login, never your GitHub token. One client per session: Leave or closing the page keeps it for later, End session ends it."),
       status, runLink, context, body,
     );
     /** The item, what its card asks (as read now, for an answer) and its public links. */
@@ -883,7 +875,7 @@ export function chatPanel(gh: GitHub, options: ChatOptions = {}): ChatPanel | un
       const fresh = !seen || item?.ref !== ref;
       const about = next ? "another item" : "nothing in particular";
       if (fresh && (armed || client || dispatched)) {
-        say(`Finish or disconnect the current session before chatting about ${about}. Your draft is kept.`);
+        say(`Leave or end the current session before chatting about ${about}. Your draft is kept.`);
       } else if (fresh && input.value.trim()) {
         controls();
         say(`Copy or clear your unsent draft before chatting about ${about}.`);
